@@ -1,0 +1,286 @@
+// Mirrors claude/API_REFERENCE.md. Kept intentionally close to the raw
+// API response shapes rather than remapped/renamed, so this file stays
+// easy to diff against the API docs as the backend evolves.
+
+export interface Team {
+  team_id: number;
+  name: string;
+  division: string;
+  conference: string;
+  tier: string;
+  current_rating: number;
+  sos: number;
+}
+
+export interface Player {
+  player_id: number;
+  name: string;
+  team_id: number;
+  team_name?: string;
+  tier?: string;
+  position: string;
+  class_year: string;
+  games: number;
+  ppg: number;
+  rpg: number;
+  apg: number;
+  bpg: number;
+  spg: number;
+  topg: number;
+  hoop_score: number;
+}
+
+// Full row from GET /players/{id} -- ts_pct/fg_pct here are raw fractions
+// (0-1), unlike the list endpoint and /project where they're already *100.
+export interface PlayerDetail extends Player {
+  division: string;
+  season: string;
+  avg_minutes: number;
+  ts_pct: number;
+  fg_pct: number;
+  per40_pts: number;
+  per40_reb: number;
+  per40_ast: number;
+  per40_blk: number;
+  per40_stl: number;
+  per40_tov: number;
+  hoop_score_raw: number;
+  in_transfer_portal: number | null;
+  team_tier?: string;
+}
+
+export interface TeamRoles {
+  team_id: number;
+  team_name: string;
+  roster_size: number;
+  starter: { minutes: number; player_count: number } | null;
+  sixth_man: { minutes: number } | null;
+  role_player: { minutes: number; range: [number, number]; note?: string } | null;
+  depth_piece: { minutes: number; player_count: number } | null;
+}
+
+export interface TeamNeedCategory {
+  stat: string;
+  label: string;
+  team_value: number;
+  league_mean: number;
+  z: number;
+}
+
+export interface TeamNeeds {
+  team_id: number;
+  team_name: string;
+  roster_size: number;
+  level: string | null;
+  teams_compared: number | null;
+  comparison_group: string;
+  weaknesses: TeamNeedCategory[];
+  full_profile: TeamNeedCategory[];
+}
+
+export interface FitCandidate {
+  player_id: number;
+  name: string;
+  position: string;
+  class_year: string;
+  current_team: string;
+  current_division: string;
+  current_tier: string;
+  level: string;
+  in_transfer_portal: boolean | null;
+  projected: Record<string, number>;
+  hoop_score: number;
+  confidence: string;
+  extreme_mismatch: boolean;
+}
+
+export interface FitStatInfo {
+  stat: string;
+  label: string;
+  lower_is_better: boolean;
+}
+
+export interface TeamFits {
+  team_id: number;
+  team_name: string;
+  stat: string | null;
+  stat_label: string | null;
+  lower_is_better: boolean | null;
+  stats: FitStatInfo[];
+  role_applied: { role: string; minutes: number } | null;
+  minutes_applied: number | null;
+  transfer_portal_only: boolean;
+  level_filter: string | null;
+  candidates: (FitCandidate & { fit_score: number })[];
+  candidates_considered: number;
+}
+
+export const FIT_STATS = [
+  "per40_pts",
+  "per40_reb",
+  "per40_ast",
+  "per40_blk",
+  "per40_stl",
+  "per40_tov",
+  "ts_pct",
+  "fg_pct",
+] as const;
+
+export const FIT_STAT_LABELS: Record<string, string> = {
+  per40_pts: "Scoring",
+  per40_reb: "Rebounding",
+  per40_ast: "Playmaking / assists",
+  per40_blk: "Shot blocking",
+  per40_stl: "Perimeter defense / steals",
+  per40_tov: "Ball security (fewer turnovers)",
+  ts_pct: "Scoring efficiency (TS%)",
+  fg_pct: "Field goal %",
+};
+
+export interface LeaderboardPlayer {
+  player_id: number;
+  name: string;
+  team_id: number;
+  team_name: string;
+  tier: string;
+  division: string;
+  position: string;
+  class_year: string;
+  games: number;
+  ppg: number;
+  rpg: number;
+  apg: number;
+  bpg: number;
+  spg: number;
+  topg: number;
+  ts_pct: number;
+  fg_pct: number;
+  hoop_score: number;
+  stat_value: number;
+}
+
+export interface PlayerLeaderboard {
+  stat: string;
+  stat_label: string;
+  lower_is_better: boolean;
+  level_filter: string | null;
+  division_filter: string | null;
+  min_games: number;
+  players: LeaderboardPlayer[];
+}
+
+export const LEADERBOARD_STATS = [
+  "hoop_score",
+  "ppg",
+  "rpg",
+  "apg",
+  "spg",
+  "bpg",
+  "topg",
+  "ts_pct",
+  "fg_pct",
+  "per40_pts",
+  "per40_reb",
+  "per40_ast",
+  "per40_blk",
+  "per40_stl",
+] as const;
+
+export const LEADERBOARD_STAT_LABELS: Record<string, string> = {
+  hoop_score: "Hoop Score",
+  ppg: "Points per game",
+  rpg: "Rebounds per game",
+  apg: "Assists per game",
+  spg: "Steals per game",
+  bpg: "Blocks per game",
+  topg: "Turnovers per game (lowest)",
+  ts_pct: "True shooting %",
+  fg_pct: "Field goal %",
+  per40_pts: "Points per 40",
+  per40_reb: "Rebounds per 40",
+  per40_ast: "Assists per 40",
+  per40_blk: "Blocks per 40",
+  per40_stl: "Steals per 40",
+};
+
+export interface StandoutPlayer {
+  player_id: number;
+  name: string;
+  position: string;
+  class_year: string;
+  current_team: string;
+  current_level: string;
+  current_hoop_score: number;
+  projected_hoop_score: number;
+  projected_ppg: number;
+  confidence: string;
+  extreme_mismatch: boolean;
+}
+
+export interface StandoutsLeaderboard {
+  level: string;
+  target_level: string;
+  synthetic_target_rating: number;
+  synthetic_target_note: string;
+  players: StandoutPlayer[];
+  candidates_considered: number;
+}
+
+export interface ProjectionResult {
+  player: {
+    id: number;
+    name: string;
+    position: string;
+    class_year: string;
+    current_team: string;
+    current_division: string;
+    current_tier: string;
+    games: number;
+    season: string;
+  };
+  current: Record<string, number>;
+  target: { team: string; division: string; tier: string; current_rating: number };
+  minutes_source: string;
+  projected: Record<string, number>;
+  projected_range: Record<string, [number, number] | string>;
+  projected_range_wide?: Record<string, [number, number] | string>;
+  projected_range_note?: string;
+  confidence: string;
+  strength_gap: number;
+  gap_std: number;
+  extreme_mismatch: boolean;
+  extreme_mismatch_note?: string;
+  role_applied?: { role: string; minutes: number; player_count: number };
+}
+
+export interface PlayerTrajectorySeason {
+  season: string;
+  team_id: number;
+  team_name: string;
+  games: number;
+  avg_minutes: number;
+  ppg: number;
+  rpg: number;
+  apg: number;
+  bpg: number;
+  spg: number;
+  topg: number;
+  ts_pct: number;
+  fg_pct: number;
+  per40_pts: number;
+  per40_reb: number;
+  per40_ast: number;
+  hoop_score: number;
+}
+
+export interface PlayerTrajectory {
+  player_id: number;
+  name: string;
+  seasons: PlayerTrajectorySeason[];
+  trend: "Improving" | "Declining" | "Stable";
+  avg_hoop_score_change_per_season: number;
+  trend_note: string;
+}
+
+export const ROLE_NAMES = ["starter", "sixth_man", "role_player", "depth_piece"] as const;
+export type RoleName = (typeof ROLE_NAMES)[number];
