@@ -149,13 +149,21 @@ def load(path):
     players_ws = wb["Players"]
     plh = header_map(players_ws)
     portal_col_name = next((c for c in TRANSFER_PORTAL_COLUMNS if c in plh), None)
+    has_height_col = "Height" in plh
     player_name = {}
+    player_height = {}
     player_transfer_portal = {}
     for row in players_ws.iter_rows(min_row=2, values_only=True):
         pid = row[plh["Player ID"] - 1]
         if pid is None:
             continue
         player_name[pid] = f"{row[plh['First Name'] - 1] or ''} {row[plh['Last Name'] - 1] or ''}".strip()
+        if has_height_col:
+            h = row[plh["Height"] - 1]
+            # Sheet stores this as free text like 6' 2" -- normalize stray
+            # whitespace but otherwise pass it through as-is for display;
+            # not every player has one on record, so this is often None.
+            player_height[pid] = h.strip() if isinstance(h, str) and h.strip() else None
         if portal_col_name:
             player_transfer_portal[pid] = _parse_tri_bool(row[plh[portal_col_name] - 1])
     if portal_col_name:
@@ -216,7 +224,8 @@ def load(path):
  
     wb.close()
     return dict(teams=teams, games_by_season=games_by_season, game_lookup=game_lookup,
-                player_season=player_season, player_name=player_name, game_rows_by_season=game_rows_by_season,
+                player_season=player_season, player_name=player_name, player_height=player_height,
+                game_rows_by_season=game_rows_by_season,
                 player_transfer_portal=player_transfer_portal, game_log_rows=game_log_rows,
                 schedule_rows=schedule_rows)
  
@@ -317,6 +326,7 @@ def compute_season_profiles(data, season):
         fg_pct = (total_fgm / total_fga) if total_fga >= 15 else None
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
+            height=data["player_height"].get(pid),
             team_id=meta["team_id"], division=meta["division"], position=meta["position"],
             class_year=meta["class_year"], in_transfer_portal=meta["in_transfer_portal"],
             season=season, games=n_games,
@@ -483,7 +493,7 @@ def main():
     """)
     conn.execute("""
         CREATE TABLE players (
-            player_id INTEGER PRIMARY KEY, name TEXT, team_id INTEGER, division TEXT,
+            player_id INTEGER PRIMARY KEY, name TEXT, height TEXT, team_id INTEGER, division TEXT,
             position TEXT, class_year TEXT, season TEXT, games INTEGER,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
             ts_pct REAL, fg_pct REAL,
@@ -516,7 +526,7 @@ def main():
         team_rows,
     )
     conn.executemany(
-        """INSERT INTO players VALUES (:player_id,:name,:team_id,:division,:position,:class_year,
+        """INSERT INTO players VALUES (:player_id,:name,:height,:team_id,:division,:position,:class_year,
            :season,:games,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,
            :hoop_score,:hoop_score_raw,:in_transfer_portal)""",

@@ -57,6 +57,7 @@ export default async function PlayersPage({
                 <th>Name</th>
                 <th>Team</th>
                 <th>Pos</th>
+                <th>Height</th>
                 <th>Class</th>
                 <th>PPG</th>
                 <th>RPG</th>
@@ -72,6 +73,7 @@ export default async function PlayersPage({
                   </td>
                   <td>{p.team_name ?? "--"}</td>
                   <td>{p.position}</td>
+                  <td>{p.height ?? "--"}</td>
                   <td>{p.class_year}</td>
                   <td>{p.ppg?.toFixed(1)}</td>
                   <td>{p.rpg?.toFixed(1)}</td>

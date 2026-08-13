@@ -28,8 +28,13 @@ const THEME_INIT_SCRIPT = `
 `;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // suppressHydrationWarning below: the inline script sets data-theme on
+  // <html> before React hydrates (that's the point -- no flash of the
+  // wrong theme on load), so server HTML and the first client render are
+  // expected to differ on this one attribute. Without this, React logs a
+  // harmless-but-noisy hydration mismatch warning in dev on every page.
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>

@@ -333,15 +333,24 @@ async function ResultView({ sp }: { sp: SP }) {
             <div className="label">Class / {result.player.games} GP this season</div>
           </div>
           <div className="stat-tile">
-            <div className="value">{result.minutes_source.replace(/_/g, " ")}</div>
+            <div className="value">{formatMinutesSource(result.minutes_source)}</div>
             <div className="label">Minutes source</div>
           </div>
         </div>
       </div>
-
-      {navButtons}
     </div>
   );
+}
+
+// The API's minutes_source is a machine-readable tag ("role:starter",
+// "coach_override", "auto_projected") -- translate it to the same
+// human-readable role labels used everywhere else on the site instead of
+// showing the raw tag.
+function formatMinutesSource(source: string): string {
+  if (source.startsWith("role:")) return roleLabel(source.slice("role:".length));
+  if (source === "coach_override") return "Coach-Set Minutes";
+  if (source === "auto_projected") return "Auto-Projected";
+  return source.replace(/_/g, " ");
 }
 
 // Plain-language framing for the confidence/range concept, aimed at a coach

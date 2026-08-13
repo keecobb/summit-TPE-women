@@ -104,7 +104,7 @@ a {
 .site-header .links {
   display: flex;
   flex-wrap: wrap;
-  gap: 18px;
+  gap: 30px;
   margin-left: auto;
   align-items: center;
 }
@@ -115,6 +115,7 @@ a {
   font-size: 0.92rem;
   font-weight: 500;
   white-space: nowrap;
+  padding: 4px 0;
 }
 
 .site-header .links a:hover {
@@ -595,6 +596,12 @@ tbody tr td:first-child a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text);
+  text-decoration: none;
+}
+
+.bar-row a.bar-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .bar-track {

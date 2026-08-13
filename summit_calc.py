@@ -102,9 +102,38 @@ def close_game_weight(margin):
     return clamp(1.0 - (m - 12) / 18.0, 0.25, 1.0)
 
 
+HOOPSCORE_LOW, HOOPSCORE_MID, HOOPSCORE_HIGH = 30.0, 60.0, 99.0
+# tanh steepness for the z -> Hoop/Summit Score transform below. Calibrated
+# against a real season of this cache's data: the old formula (a quadratic
+# boost for z > 0, then hard-clamped to 99) sent real per-player z-scores as
+# high as ~6 std devs (this composite is heavy-tailed, not close to normal --
+# a handful of players legitimately separate from the pack by a huge margin)
+# into unclamped values from 130 up to 244, all of which got flattened onto
+# the exact same displayed 99.0. With real 2025-26 data that was 149 of 3,899
+# current-season players (3.8%) all showing an indistinguishable "99" even
+# though their actual production ranged enormously. K=1.5 keeps that same
+# real data to about 5 players at the true 99.0 ceiling -- reserved for the
+# genuinely best players in the country, not a top-5%-ish tier -- while
+# spreading the rest of the elite tier out smoothly (e.g. the ~40th-best
+# player nationally lands around 98, the ~200th-best around 93).
+HOOPSCORE_TANH_K = 1.5
+
+
 def scale_to_hoopscore(raw_by_key, mean=None, std=None):
-    """Returns (displayed, unclamped, mean, std) -- see compute_derived_sheets.py
-    for why callers should rank/compare on `unclamped`, not `displayed`."""
+    """Returns (displayed, unclamped, mean, std). `displayed` is what's shown
+    to users, rounded to 1 decimal. `unclamped` is the same tanh-saturated
+    value before rounding -- callers should still rank/sort on `unclamped`
+    rather than `displayed` (see compute_derived_sheets.py), since rounding
+    two very close real scores to the same 1-decimal display value is normal
+    and expected, but sorting on the rounded value throws away real ordering
+    information for no reason.
+
+    Uses a tanh (not the old linear-plus-quadratic transform) specifically
+    because tanh saturates smoothly toward the 30/99 bounds without ever
+    needing a hard clamp for realistic inputs -- see HOOPSCORE_TANH_K above
+    for why that matters: it's what stops a large cluster of distinct elite
+    seasons from all piling up on the exact same displayed ceiling value.
+    """
     values = list(raw_by_key.values())
     if mean is None:
         mean = statistics.mean(values) if values else 0.0
@@ -114,9 +143,15 @@ def scale_to_hoopscore(raw_by_key, mean=None, std=None):
     displayed, unclamped = {}, {}
     for key, raw in raw_by_key.items():
         z = (raw - mean) / std
-        hs = 60.0 + 12.0 * z + 3.0 * max(0.0, z) ** 2
+        if z >= 0:
+            hs = HOOPSCORE_MID + (HOOPSCORE_HIGH - HOOPSCORE_MID) * math.tanh(z / HOOPSCORE_TANH_K)
+        else:
+            hs = HOOPSCORE_MID + (HOOPSCORE_MID - HOOPSCORE_LOW) * math.tanh(z / HOOPSCORE_TANH_K)
         unclamped[key] = hs
-        displayed[key] = round(clamp(hs, 30.0, 99.0), 1)
+        # tanh already keeps hs strictly inside (LOW, HIGH) for any finite z --
+        # this clamp is just a defensive floor/ceiling for pathological inputs
+        # (e.g. std == 0), not something normal real data should ever hit.
+        displayed[key] = round(clamp(hs, HOOPSCORE_LOW, HOOPSCORE_HIGH), 1)
     return displayed, unclamped, mean, std
 
 

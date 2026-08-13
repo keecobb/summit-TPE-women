@@ -5,18 +5,27 @@ import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS } from "@/lib/types";
 
 const CHARTS_PER_PAGE = 4;
 const CHART_TOP_N = 5;
+const LEADERBOARD_PAGE_SIZE = 10;
+const LEADERBOARD_MAX = 50;
 
 interface SP {
   stat?: string;
   level?: string;
   min_games?: string;
   chart_page?: string;
+  page?: string;
 }
 
 export default async function DataPage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
   const stat = sp.stat ?? "hoop_score";
   const isHoopScore = stat === "hoop_score";
+
+  const totalLeaderboardPages = LEADERBOARD_MAX / LEADERBOARD_PAGE_SIZE;
+  const leaderboardPage = Math.min(
+    totalLeaderboardPages - 1,
+    Math.max(0, Number(sp.page ?? 0) || 0)
+  );
 
   const chartPage = Math.max(0, Number(sp.chart_page ?? 0) || 0);
   const chartStats = LEADERBOARD_STATS.filter((s) => s !== "hoop_score");
@@ -25,7 +34,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
   const [leaderboard, lmStandouts, mmStandouts, p5VsP5, lmVsP5, mmVsP5, ...chartData] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
-      params: { stat, level: sp.level, min_games: sp.min_games ?? 8, limit: 25 },
+      params: { stat, level: sp.level, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
       params: { level: "Low-Major", target_level: "P5", limit: 8 },
@@ -102,22 +111,43 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               </tr>
             </thead>
             <tbody>
-              {leaderboard.players.map((p, i) => (
-                <tr key={p.player_id}>
-                  <td>{i + 1}</td>
-                  <td>
-                    <Link href={`/players/${p.player_id}`}>{p.name}</Link>
-                  </td>
-                  <td>{p.team_name}</td>
-                  <td>
-                    <span className="pill">{p.tier}</span>
-                  </td>
-                  <td>{p.stat_value.toFixed(stat === "ts_pct" || stat === "fg_pct" ? 1 : 2)}</td>
-                </tr>
-              ))}
+              {leaderboard.players
+                .slice(leaderboardPage * LEADERBOARD_PAGE_SIZE, leaderboardPage * LEADERBOARD_PAGE_SIZE + LEADERBOARD_PAGE_SIZE)
+                .map((p, i) => (
+                  <tr key={p.player_id}>
+                    <td>{leaderboardPage * LEADERBOARD_PAGE_SIZE + i + 1}</td>
+                    <td>
+                      <Link href={`/players/${p.player_id}`}>{p.name}</Link>
+                    </td>
+                    <td>{p.team_name}</td>
+                    <td>
+                      <span className="pill">{p.tier}</span>
+                    </td>
+                    <td>{p.stat_value.toFixed(stat === "ts_pct" || stat === "fg_pct" ? 1 : 2)}</td>
+                  </tr>
+                ))}
             </tbody>
           </table>
         </div>
+        <div className="pagination" style={{ marginTop: 12 }}>
+          {leaderboardPage > 0 && (
+            <Link className="btn" href={`/data?${withLeaderboardPage(sp, leaderboardPage - 1)}`}>
+              &larr; Previous
+            </Link>
+          )}
+          <span className="section-note" style={{ margin: "0 4px" }}>
+            Page {leaderboardPage + 1} of {Math.min(totalLeaderboardPages, Math.ceil(leaderboard.players.length / LEADERBOARD_PAGE_SIZE) || 1)}
+          </span>
+          {leaderboardPage < totalLeaderboardPages - 1 &&
+            (leaderboardPage + 1) * LEADERBOARD_PAGE_SIZE < leaderboard.players.length && (
+              <Link className="btn" href={`/data?${withLeaderboardPage(sp, leaderboardPage + 1)}`}>
+                Next &rarr;
+              </Link>
+            )}
+        </div>
+        <p className="section-note" style={{ marginTop: 12 }}>
+          Want to see how these stats stack up visually? Scroll down to Category Leaderboards below.
+        </p>
       </div>
 
       <div className="card">
@@ -204,9 +234,9 @@ function ChartCard({ stat, data }: { stat: string; data: PlayerLeaderboard }) {
       ) : (
         data.players.map((p) => (
           <div className="bar-row" key={p.player_id}>
-            <div className="bar-name" title={`${p.name} (${p.team_name})`}>
+            <Link href={`/players/${p.player_id}`} className="bar-name" title={`${p.name} (${p.team_name})`}>
               {p.name}
-            </div>
+            </Link>
             <div className="bar-track">
               <div className="bar-fill" style={{ width: `${(p.stat_value / max) * 100}%` }} />
             </div>
@@ -290,6 +320,17 @@ function withChartPage(sp: SP, page: number): string {
   if (sp.stat) p.set("stat", sp.stat);
   if (sp.level) p.set("level", sp.level);
   if (sp.min_games) p.set("min_games", sp.min_games);
+  if (sp.page) p.set("page", sp.page);
   p.set("chart_page", String(page));
+  return p.toString();
+}
+
+function withLeaderboardPage(sp: SP, page: number): string {
+  const p = new URLSearchParams();
+  if (sp.stat) p.set("stat", sp.stat);
+  if (sp.level) p.set("level", sp.level);
+  if (sp.min_games) p.set("min_games", sp.min_games);
+  if (sp.chart_page) p.set("chart_page", sp.chart_page);
+  p.set("page", String(page));
   return p.toString();
 }

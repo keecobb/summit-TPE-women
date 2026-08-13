@@ -87,15 +87,22 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
 
       <div className="card">
         <h2>Biggest Needs</h2>
-        <p className="section-note">Weakest categories vs. {needs.comparison_group}.</p>
+        <p className="section-note">
+          Weakest categories vs. {needs.comparison_group}
+          {needs.conference ? ` -- ${needs.conference} average shown alongside for a closer reference point` : ""}.
+        </p>
         <div className="table-scroll">
           <table>
             <thead>
               <tr>
                 <th>Category</th>
                 <th>Team</th>
+                <th>{needs.conference ?? "Conf."} Avg</th>
                 <th>League Avg</th>
-                <th>Z-score</th>
+                <th>
+                  Z-score
+                  <ZScoreHint />
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -103,6 +110,7 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
                 <tr key={w.stat}>
                   <td>{titleCase(w.label)}</td>
                   <td>{w.team_value?.toFixed(1)}</td>
+                  <td>{w.conference_mean != null ? w.conference_mean.toFixed(1) : "--"}</td>
                   <td>{w.league_mean?.toFixed(1)}</td>
                   <td>
                     <span className="pill pill-warn">{w.z?.toFixed(2)}</span>
@@ -167,6 +175,7 @@ async function RosterTab({ id }: { id: string }) {
             <tr>
               <th>Name</th>
               <th>Pos</th>
+              <th>Height</th>
               <th>Class</th>
               <th>PPG</th>
               <th>RPG</th>
@@ -181,6 +190,7 @@ async function RosterTab({ id }: { id: string }) {
                   <Link href={`/players/${p.player_id}`}>{p.name}</Link>
                 </td>
                 <td>{p.position}</td>
+                <td>{p.height ?? "--"}</td>
                 <td>{p.class_year}</td>
                 <td>{p.ppg?.toFixed(1)}</td>
                 <td>{p.rpg?.toFixed(1)}</td>
@@ -260,8 +270,9 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
     <div className="card">
       <h2>Full Stats Breakdown</h2>
       <p className="section-note">
-        Every category vs. {needs.comparison_group}. {team.name} rating: {team.current_rating.toFixed(2)} &middot;
-        SOS: {team.sos?.toFixed(2)}.
+        Every category vs. {needs.comparison_group}
+        {needs.conference ? ` and vs. the ${needs.conference} (${needs.teams_in_conference} teams)` : ""}.{" "}
+        {team.name} rating: {team.current_rating.toFixed(2)} &middot; SOS: {team.sos?.toFixed(2)}.
       </p>
       <div className="table-scroll">
         <table>
@@ -269,8 +280,12 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
             <tr>
               <th>Category</th>
               <th>Team</th>
+              <th>{needs.conference ?? "Conf."} Avg</th>
               <th>League Avg</th>
-              <th>Z-score</th>
+              <th>
+                Z-score
+                <ZScoreHint />
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -278,6 +293,7 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
               <tr key={w.stat}>
                 <td>{titleCase(w.label)}</td>
                 <td>{w.team_value?.toFixed(1)}</td>
+                <td>{w.conference_mean != null ? w.conference_mean.toFixed(1) : "--"}</td>
                 <td>{w.league_mean?.toFixed(1)}</td>
                 <td>
                   <span className={w.z < 0 ? "pill pill-warn" : "pill pill-good"}>{w.z?.toFixed(2)}</span>
@@ -288,6 +304,17 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
         </table>
       </div>
     </div>
+  );
+}
+
+function ZScoreHint() {
+  return (
+    <span
+      className="hint"
+      title="How many standard deviations above or below the peer average this team is in that category. 0 means exactly average; +1.0 is solidly better than most peers; -1.0 is a real weakness relative to peers. It's not a percentage -- it's a measure of how unusual the team's number is compared to its peer group."
+    >
+      ?
+    </span>
   );
 }
 

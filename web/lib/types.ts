@@ -15,6 +15,7 @@ export interface Team {
 export interface Player {
   player_id: number;
   name: string;
+  height?: string | null;
   team_id: number;
   team_name?: string;
   tier?: string;
@@ -47,6 +48,8 @@ export interface PlayerDetail extends Player {
   hoop_score_raw: number;
   in_transfer_portal: number | null;
   team_tier?: string;
+  // "Top X%" nationally by hoop_score_raw -- see API_REFERENCE.md.
+  national_percentile?: number | null;
 }
 
 export interface TeamRoles {
@@ -65,6 +68,7 @@ export interface TeamNeedCategory {
   team_value: number;
   league_mean: number;
   z: number;
+  conference_mean: number | null;
 }
 
 export interface TeamNeeds {
@@ -74,6 +78,8 @@ export interface TeamNeeds {
   level: string | null;
   teams_compared: number | null;
   comparison_group: string;
+  conference: string | null;
+  teams_in_conference: number;
   weaknesses: TeamNeedCategory[];
   full_profile: TeamNeedCategory[];
 }

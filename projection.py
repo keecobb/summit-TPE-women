@@ -580,8 +580,31 @@ def _level_comparison_stats(conn, level):
             mean, std = 0.0, 1.0
         stats[stat] = dict(mean=mean, std=std)
     return stats, len(profiles)
- 
- 
+
+
+def _conference_comparison_means(conn, conference):
+    """Plain per-category means for every team in one conference -- used
+    only as an extra reference column on /teams/{id}/needs (a much smaller,
+    more direct peer group than a whole tier), not for z-scoring. A
+    conference with only one team (this one) still returns that team's own
+    values with n_teams=1, since that's a legitimate (if unhelpful) answer
+    rather than an error.
+    """
+    if not conference:
+        return {}, 0
+    cols = [d[0] for d in conn.execute("SELECT * FROM team_profile LIMIT 0").description]
+    rows = conn.execute(
+        "SELECT tp.* FROM team_profile tp JOIN teams t ON tp.team_id = t.team_id WHERE t.conference = ?",
+        (conference,),
+    ).fetchall()
+    profiles = [dict(zip(cols, row)) for row in rows]
+    means = {}
+    for stat in CATEGORY_INFO:
+        vals = [p[stat] for p in profiles if p.get(stat) is not None]
+        means[stat] = statistics.mean(vals) if vals else None
+    return means, len(profiles)
+
+
 def team_needs(conn, team_id, top_n=3, level=None):
     """A team's roster-weighted per-40 category profile (team_profile,
     built once by build_cache.py) compared against a peer group. Returns
@@ -604,7 +627,7 @@ def team_needs(conn, team_id, top_n=3, level=None):
         raise ProjectionError(f"No team_profile row for team {team_id} -- team may have too "
                                f"thin a roster this season, or the cache needs rebuilding.")
     team = get_team(conn, team_id)
- 
+
     n_teams_compared = None
     if level is not None:
         if level not in VALID_LEVELS:
@@ -614,7 +637,15 @@ def team_needs(conn, team_id, top_n=3, level=None):
             raise ProjectionError(f"No teams with tier {level!r} in the current-season cache.")
     else:
         meta = _load_meta(conn)
- 
+
+    # Conference average is always computed alongside whatever the main
+    # comparison group is (whole league or a tier) -- a much narrower, more
+    # concrete peer group ("how do we stack up against our own conference")
+    # that a coach can sanity-check at a glance, shown as an extra reference
+    # column rather than replacing the z-score comparison group above.
+    conference = team.get("conference") if team else None
+    conf_means, n_conf_teams = _conference_comparison_means(conn, conference)
+
     categories = []
     for stat, info in CATEGORY_INFO.items():
         val = profile.get(stat)
@@ -633,21 +664,29 @@ def team_needs(conn, team_id, top_n=3, level=None):
         z = (val - mean) / std if std else 0.0
         if info["lower_is_better"]:
             z = -z
+        conf_mean = conf_means.get(stat)
+        # ts_pct/fg_pct are stored in team_profile as raw fractions (0-1),
+        # same as everywhere else in the cache -- scale to a percentage for
+        # display only (z above is computed from the unscaled fraction, but
+        # z is scale-invariant here so this doesn't change it).
+        scale = 100.0 if stat in ("ts_pct", "fg_pct") else 1.0
         categories.append(dict(
             # kept as "league_mean" even when level-scoped (not renamed to
             # "peer_mean") so existing callers reading this field don't
             # silently break -- see comparison_group/level on the outer
             # dict for what group this mean was actually computed over.
             stat=stat, label=info["label"],
-            team_value=round(val, 3), league_mean=round(mean, 3), z=round(z, 2),
+            team_value=round(val * scale, 3), league_mean=round(mean * scale, 3), z=round(z, 2),
+            conference_mean=round(conf_mean * scale, 3) if conf_mean is not None else None,
         ))
     categories.sort(key=lambda c: c["z"])
- 
+
     return dict(
         team_id=team_id, team_name=team["name"] if team else None,
         roster_size=profile.get("roster_size"),
         level=level, teams_compared=n_teams_compared,
         comparison_group=f"{level} teams only" if level else "whole league",
+        conference=conference, teams_in_conference=n_conf_teams,
         weaknesses=categories[:top_n],
         full_profile=categories,
     )
@@ -1009,6 +1048,13 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
         params.append(division)
     where = " AND ".join(clauses)
     order = "ASC" if info["lower_is_better"] else "DESC"
+    # For hoop_score specifically, sort by hoop_score_raw (unclamped), not
+    # hoop_score (the displayed, 30-99-bounded value) -- same reasoning as
+    # the fix already applied to /players: several distinct real seasons can
+    # legitimately round to the same displayed value near the ceiling, and
+    # sorting on that rounded value would tie those players and order them
+    # arbitrarily instead of by their real, distinct performance.
+    order_col = "p.hoop_score_raw" if stat == "hoop_score" else f"p.{stat}"
 
     rows = conn.execute(
         f"""SELECT p.player_id, p.name, p.team_id, t.name AS team_name, t.tier, p.division, p.position,
@@ -1016,7 +1062,7 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
                    p.hoop_score, p.{stat} AS stat_value
             FROM players p JOIN teams t ON p.team_id = t.team_id
             WHERE {where} AND p.{stat} IS NOT NULL
-            ORDER BY p.{stat} {order}
+            ORDER BY {order_col} {order}
             LIMIT ?""",
         params + [limit],
     ).fetchall()

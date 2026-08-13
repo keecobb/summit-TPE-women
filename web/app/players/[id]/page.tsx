@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { PlayerDetail, PlayerTrajectory } from "@/lib/types";
@@ -23,8 +24,9 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
     <div>
       <h1>{player.name}</h1>
       <p className="subtitle">
-        {player.position} &middot; {player.class_year} &middot; {player.team_name ?? "--"} (
-        {player.team_tier ?? player.tier}) &middot; {player.season}
+        {player.position}
+        {player.height ? ` · ${player.height}` : ""} &middot; {player.class_year} &middot;{" "}
+        {player.team_name ?? "--"} ({player.team_tier ?? player.tier}) &middot; {player.season}
       </p>
 
       <div className="hero-actions" style={{ marginBottom: 24 }}>
@@ -60,6 +62,12 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           <Stat label="TO/40" value={player.per40_tov} />
           <Stat label="Summit Score" value={player.hoop_score} highlight />
         </div>
+        {player.national_percentile != null && (
+          <p className="section-note">
+            <strong>Top {player.national_percentile}%</strong> nationally by Summit Score, among{" "}
+            {player.season} Division I players on record.
+          </p>
+        )}
         {player.in_transfer_portal != null && (
           <p className="section-note">
             Transfer portal status: <strong>{player.in_transfer_portal ? "In the portal" : "Not in the portal"}</strong>
@@ -96,8 +104,8 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                 const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
                 const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
                 return (
-                  <>
-                    <tr key={s.season}>
+                  <Fragment key={s.season}>
+                    <tr>
                       <td>{s.season}</td>
                       <td>
                         {s.team_name}
@@ -111,8 +119,8 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                       <td>{s.ts_pct?.toFixed(1)}</td>
                       <td>{s.hoop_score?.toFixed(1)}</td>
                     </tr>
-                    <SeasonGameLog key={`${s.season}-log`} playerId={player.player_id} season={s.season} />
-                  </>
+                    <SeasonGameLog playerId={player.player_id} season={s.season} />
+                  </Fragment>
                 );
               })}
             </tbody>

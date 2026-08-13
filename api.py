@@ -195,7 +195,7 @@ def list_players(
         # round to the same displayed 99.0 by design (see summit_calc.py's
         # scale_to_hoopscore), so sorting on the displayed value ties players
         # who aren't actually tied and orders them arbitrarily.
-        f"""SELECT p.player_id, p.name, p.team_id, t.name AS team_name, t.tier, p.position,
+        f"""SELECT p.player_id, p.name, p.height, p.team_id, t.name AS team_name, t.tier, p.position,
                    p.class_year, p.games, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg, p.hoop_score
             FROM players p LEFT JOIN teams t ON p.team_id = t.team_id
             {where} ORDER BY p.hoop_score_raw DESC LIMIT ? OFFSET ?""",
@@ -214,10 +214,31 @@ def get_player_detail(player_id: int):
            WHERE p.player_id = ?""",
         (player_id,),
     ).fetchone()
-    conn.close()
     if row is None:
+        conn.close()
         raise HTTPException(status_code=404, detail=f"No player with id {player_id}")
-    return dict(row)
+    result = dict(row)
+
+    # National percentile for Summit Score -- computed live off hoop_score_raw
+    # (unclamped) rather than the displayed/clamped hoop_score, same reasoning
+    # as the leaderboard sort fix: gives real separation among players who'd
+    # otherwise show the same rounded displayed score. Gives coaches/scouts
+    # context for what the number actually means (e.g. "Top 4% of Division I"),
+    # which matters more now that far fewer players show a flat 99.
+    if result.get("hoop_score_raw") is not None:
+        total = conn.execute("SELECT COUNT(*) AS c FROM players").fetchone()["c"]
+        better = conn.execute(
+            "SELECT COUNT(*) AS c FROM players WHERE hoop_score_raw > ?", (result["hoop_score_raw"],)
+        ).fetchone()["c"]
+        # "Top X%" semantics -- rank 1 of 3,899 reads as Top 0.03%, not Top 100%.
+        # 2 decimals, not 1 -- at 1 decimal, "Top 0.0%" is indistinguishable
+        # for dozens of players near the very top of a ~3,900-player pool.
+        result["national_percentile"] = round(100 * (better + 1) / total, 2) if total else None
+    else:
+        result["national_percentile"] = None
+
+    conn.close()
+    return result
  
  
 @app.get("/project", dependencies=[Depends(require_api_key)])
