@@ -206,27 +206,56 @@ def opponent_strength_factor(opp_rating, reference, scale):
 # ---------- conference tier classification ----------
 # Confirmed with the user (not derived from data): the Big East is treated
 # as a de facto 5th power conference for women's hoops, so "P4" is really a
-# P5 group here. A handful of specific programs that historically punch
-# above their conference's weight are hardcoded up to that same tier
+# High-Major group here. A handful of specific programs that historically
+# punch above their conference's weight are hardcoded up to that same tier
 # regardless of which conference they're actually in -- this is an
 # explicit, user-specified list, not a statistical outlier detector, so it
 # won't silently drift season to season the way a ratings-based rule would.
+#
+# Tier naming: originally "P5" -- renamed to "High-Major" (displayed as HM,
+# alongside MM/Mid-Major and LM/Low-Major) at the user's request. The
+# workbook's own "School Level" column (the normal source of teams.tier --
+# see build_cache.py) already uses "High-Major" as of the current
+# WomensSummitTPE.xlsx, so this heuristic (only used as a fallback when that
+# column is missing for a team) is kept in sync with it. "P5" is still
+# accepted as a query-param alias everywhere a tier/level is read, for any
+# old bookmarked links -- see TIER_ALIASES below.
 
-P5_CONFERENCES = {"ACC", "Big 10", "SEC", "Big 12", "Big East"}
+HIGH_MAJOR_CONFERENCES = {"ACC", "Big 10", "SEC", "Big 12", "Big East"}
 MID_MAJOR_CONFERENCES = {"American", "Atlantic 10", "MWC", "WCC", "Coastal", "MVC"}
 # Everything else observed in the Teams sheet's Conference column falls to Low-Major
 # by default (Sun Belt, Metro, MAC, SWAC, ASUN, CUSA, Southland, Big West, Horizon,
 # OVC, Patriot League, Big Sky, America East, Northeast, Summit, MEAC, Ivy League,
 # Big South, Southern, WAC).
 
-OUTLIER_P5_PROGRAMS = {"Gonzaga", "South Dakota State", "Princeton", "Florida Gulf Coast"}
+OUTLIER_HIGH_MAJOR_PROGRAMS = {"Gonzaga", "South Dakota State", "Princeton", "Florida Gulf Coast"}
+
+# Canonical tier values, in HM -> MM -> LM order, plus a display abbreviation
+# for each. Used by projection.py/api.py for validation and by the frontend
+# (via /meta or hardcoded from this same list) for dropdowns/labels.
+TIERS = ("High-Major", "Mid-Major", "Low-Major")
+TIER_ABBREV = {"High-Major": "HM", "Mid-Major": "MM", "Low-Major": "LM"}
+# Backward-compat: old stored data / old bookmarked API query params may
+# still say "P5" -- normalize it to the new canonical value everywhere a
+# tier/level string comes in from the outside (see normalize_tier() below).
+TIER_ALIASES = {"P5": "High-Major"}
+
+
+def normalize_tier(value):
+    """Map a possibly-old tier string ("P5") to its current canonical form.
+    Pass-through for anything already canonical or unrecognized (so a typo'd
+    filter value still fails validation loudly downstream, instead of being
+    silently swallowed here)."""
+    if value is None:
+        return None
+    return TIER_ALIASES.get(value, value)
 
 
 def classify_tier(team_name, conference):
-    if team_name in OUTLIER_P5_PROGRAMS:
-        return "P5"
-    if conference in P5_CONFERENCES:
-        return "P5"
+    if team_name in OUTLIER_HIGH_MAJOR_PROGRAMS:
+        return "High-Major"
+    if conference in HIGH_MAJOR_CONFERENCES:
+        return "High-Major"
     if conference in MID_MAJOR_CONFERENCES:
         return "Mid-Major"
     return "Low-Major"

@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { Team, TeamFits } from "@/lib/types";
-import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel } from "@/lib/types";
+import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
+
+const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"];
+const POSITIONS = ["G", "F", "C"];
 
 interface SP {
   team_id?: string;
@@ -12,6 +15,8 @@ interface SP {
   level?: string;
   role?: string;
   minutes?: string;
+  class_year?: string;
+  position?: string;
 }
 
 export default async function TeamFitsPage({ searchParams }: { searchParams: Promise<SP> }) {
@@ -60,6 +65,8 @@ async function FitsView({ sp }: { sp: SP }) {
         level: sp.level,
         role: sp.minutes ? undefined : sp.role,
         minutes: sp.minutes,
+        class_year: sp.class_year,
+        position: sp.position,
         limit: 20,
       },
     });
@@ -96,9 +103,33 @@ async function FitsView({ sp }: { sp: SP }) {
               <label htmlFor="level">Level</label>
               <select id="level" name="level" defaultValue={sp.level ?? ""}>
                 <option value="">Any</option>
-                <option value="P5">P5</option>
-                <option value="Mid-Major">Mid-Major</option>
-                <option value="Low-Major">Low-Major</option>
+                {TIERS.map((t) => (
+                  <option key={t} value={t}>
+                    {t} ({tierAbbrev(t)})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="class_year">Class</label>
+              <select id="class_year" name="class_year" defaultValue={sp.class_year ?? ""}>
+                <option value="">Any</option>
+                {CLASS_YEARS.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label htmlFor="position">Position</label>
+              <select id="position" name="position" defaultValue={sp.position ?? ""}>
+                <option value="">Any</option>
+                {POSITIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="field">
@@ -164,7 +195,7 @@ async function FitsView({ sp }: { sp: SP }) {
                     </td>
                     <td>{c.current_team}</td>
                     <td>
-                      <span className="pill">{c.level}</span>
+                      <span className="pill" title={c.level}>{tierAbbrev(c.level)}</span>
                     </td>
                     <td>{c.class_year}</td>
                     <td>

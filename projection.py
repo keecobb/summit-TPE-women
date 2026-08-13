@@ -122,7 +122,8 @@ import sqlite3
 import statistics
 from collections import defaultdict
  
-from summit_calc import clamp
+from summit_calc import clamp, normalize_tier
+from summit_calc import TIERS as VALID_LEVELS
  
 # Fit directly against ~1,359 real transfers in the workbook (see
 # calibration note above): actual_factor = INTERCEPT + slope * gap_std,
@@ -239,9 +240,13 @@ CATEGORY_INFO = {
 }
  
 # Same 3 tiers classify_tier() (summit_calc.py) assigns every team at cache
-# build time -- see teams.tier in build_cache.py.
-VALID_LEVELS = ("P5", "Mid-Major", "Low-Major")
- 
+# build time -- see teams.tier in build_cache.py. VALID_LEVELS is imported
+# from summit_calc.TIERS ("High-Major", "Mid-Major", "Low-Major") above --
+# every level/own_level/opponent_level/target_level param below is run
+# through normalize_tier() first, so an old "P5" value (a stale bookmark,
+# an old integration) still resolves correctly instead of failing
+# validation.
+
  
 def _load_meta(conn):
     rows = dict(conn.execute("SELECT key, value FROM meta").fetchall())
@@ -531,8 +536,14 @@ def project_player(conn, player_id, target_team_id, minutes_override=None, role=
     """
     player = get_player(conn, player_id)
     if player is None:
-        raise ProjectionError(f"No player with id {player_id} in the current-season cache "
-                               f"(either unknown, or she didn't meet the minimum-games threshold).")
+        raise ProjectionError(f"No player with id {player_id} in the current-season cache.")
+    if player.get("hoop_score_raw") is None:
+        # A bare placeholder row (see build_cache.py) -- on the roster, but
+        # zero games/box-score data anywhere this season, so there's no
+        # real per-40 production to project from. Findable/viewable via
+        # /players and /players/{id}, just not projectable.
+        raise ProjectionError(f"{player.get('name', 'This player')} has no recorded games this season "
+                               f"({player_id}) -- not enough data to project.")
     target_team = get_team(conn, target_team_id)
     if target_team is None:
         raise ProjectionError(f"No team with id {target_team_id} in the current-season cache.")
@@ -558,7 +569,7 @@ def project_player(conn, player_id, target_team_id, minutes_override=None, role=
  
 def _level_comparison_stats(conn, level):
     """Live mean/std per team_profile category, computed only over teams
-    whose tier == level (P5/Mid-Major/Low-Major), instead of the
+    whose tier == level (High-Major/Mid-Major/Low-Major), instead of the
     whole-league figures precomputed in the cache's meta table at build
     time. Cheap to compute per request (a few hundred teams at most), so
     this doesn't need to be precomputed for every tier up front the way
@@ -613,14 +624,14 @@ def team_needs(conn, team_id, top_n=3, level=None):
     turnover rate always reads as a negative z (a weakness), consistent
     with every other category where negative = below-peer-average = weak.
  
-    level: optional -- one of VALID_LEVELS ("P5", "Mid-Major", "Low-Major").
+    level: optional -- one of VALID_LEVELS ("High-Major", "Mid-Major", "Low-Major").
     When given, the comparison group is ONLY teams at that tier instead of
     the whole league (the default, and the original behavior). This
     matters for the same reason it mattered for /teams/{id}/fits: a
-    Low-Major team's rebounding rate can look "weak" purely because P5
-    rosters pull the whole-league average up, even if it's average for its
-    own level. Pass level=<this team's own tier> to judge weaknesses
-    against realistic peers instead of the entire tracked pool.
+    Low-Major team's rebounding rate can look "weak" purely because High-
+    Major rosters pull the whole-league average up, even if it's average
+    for its own level. Pass level=<this team's own tier> to judge
+    weaknesses against realistic peers instead of the entire tracked pool.
     """
     profile = get_team_profile(conn, team_id)
     if profile is None:
@@ -628,6 +639,7 @@ def team_needs(conn, team_id, top_n=3, level=None):
                                f"thin a roster this season, or the cache needs rebuilding.")
     team = get_team(conn, team_id)
 
+    level = normalize_tier(level)
     n_teams_compared = None
     if level is not None:
         if level not in VALID_LEVELS:
@@ -693,7 +705,7 @@ def team_needs(conn, team_id, top_n=3, level=None):
  
  
 def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, transfer_portal_only=False,
-              level=None, role=None, minutes=None):
+              level=None, role=None, minutes=None, class_year=None, position=None):
     """Ranks every player NOT currently on team_id by her PROJECTED
     contribution to one or more stat categories if she transferred to
     team_id -- reusing the exact same _core_projection() math as
@@ -731,21 +743,27 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
     walked into my starting five" instead.
 
     Every candidate includes current_division ("Level" -- D1/D2/etc, from
-    the Teams sheet), current_tier/level ("Level" in the P5/Mid-Major/Low-
-    Major sense -- the more useful read for "is this realistic," since a
-    top scorer at a P5 blue-blood will still project well statistically at
-    a struggling Low-Major program even though that transfer is not
-    realistic), and class_year ("Class"). By default this is a plain
+    the Teams sheet), current_tier/level ("Level" in the High-Major/Mid-
+    Major/Low-Major sense -- the more useful read for "is this realistic,"
+    since a top scorer at a High-Major blue-blood will still project well
+    statistically at a struggling Low-Major program even though that
+    transfer is not realistic), and class_year ("Class"). By default this is a plain
     ranking by projected production, NOT filtered by recruiting realism --
     those fields let a coach eyeball and skip unrealistic candidates by
     hand. Pass `level` to have this function do that filtering itself
     instead.
 
-    level: optional -- one of VALID_LEVELS ("P5", "Mid-Major", "Low-Major").
+    level: optional -- one of VALID_LEVELS ("High-Major", "Mid-Major", "Low-Major").
     When given, ONLY players whose CURRENT team is at that tier are
     considered at all -- e.g. level="Low-Major" for a Low-Major team
-    excludes every P5/Mid-Major player from the candidate pool outright,
-    instead of just labeling them and relying on manual eyeballing.
+    excludes every High-Major/Mid-Major player from the candidate pool
+    outright, instead of just labeling them and relying on manual
+    eyeballing.
+
+    class_year / position: optional exact-match filters on the candidate
+    pool (e.g. class_year="FR" for underclassmen only, position="G" for
+    guards only) -- useful when a coach only wants to see fits at a
+    specific position or eligibility window, not just by statistical need.
 
     transfer_portal_only: if True, only considers players with
     in_transfer_portal = 1 in the cache. That column comes from an OPTIONAL
@@ -777,6 +795,7 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
             raise ProjectionError(f"stat/stats entries must be one of {list(CATEGORY_INFO)}, got {key!r}.")
     stat_infos = [dict(stat=key, **CATEGORY_INFO[key]) for key in stat_keys]
 
+    level = normalize_tier(level)
     if level is not None and level not in VALID_LEVELS:
         raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
 
@@ -801,13 +820,26 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
             )
 
     cols = [d[0] for d in conn.execute("SELECT * FROM players LIMIT 0").description]
-    query = "SELECT p.* FROM players p JOIN teams t ON p.team_id = t.team_id WHERE p.team_id != ? AND p.games >= ?"
+    # Excludes thin_sample candidates (a handful of games / very few
+    # minutes this season) -- a fit ranking is meant to surface realistic,
+    # well-evidenced transfer targets, and a noisy small-sample projection
+    # would just clutter that list. Thin-sample players are still fully
+    # findable via /players search and their own profile page (see
+    # build_cache.py) -- just not recommended here.
+    query = ("SELECT p.* FROM players p JOIN teams t ON p.team_id = t.team_id "
+             "WHERE p.team_id != ? AND p.games >= ? AND (p.thin_sample IS NULL OR p.thin_sample = 0)")
     params = [team_id, min_games]
     if transfer_portal_only:
         query += " AND p.in_transfer_portal = 1"
     if level is not None:
         query += " AND t.tier = ?"
         params.append(level)
+    if class_year is not None:
+        query += " AND p.class_year = ?"
+        params.append(class_year)
+    if position is not None:
+        query += " AND p.position = ?"
+        params.append(position)
     candidates = [dict(zip(cols, row)) for row in conn.execute(query, params).fetchall()]
 
     ranked = []
@@ -947,16 +979,16 @@ def player_trajectory(conn, player_id):
     different trend: one still climbing, one already past her peak.
     """
     rows = conn.execute(
-        """SELECT season, team_id, team_name, games, avg_minutes, ppg, rpg, apg, bpg, spg, topg,
-                  ts_pct, fg_pct, per40_pts, per40_reb, per40_ast, hoop_score, hoop_score_raw
+        """SELECT season, team_id, team_name, games, total_minutes, avg_minutes, ppg, rpg, apg, bpg, spg, topg,
+                  ts_pct, fg_pct, per40_pts, per40_reb, per40_ast, hoop_score, hoop_score_raw, thin_sample
            FROM player_history WHERE player_id = ? ORDER BY season""",
         (player_id,),
     ).fetchall()
     if not rows:
-        raise ProjectionError(f"No player_history rows for player {player_id} -- unknown, or she "
-                               f"never met the minimum-games/minutes threshold in any season.")
-    cols = ["season", "team_id", "team_name", "games", "avg_minutes", "ppg", "rpg", "apg", "bpg", "spg",
-            "topg", "ts_pct", "fg_pct", "per40_pts", "per40_reb", "per40_ast", "hoop_score", "hoop_score_raw"]
+        raise ProjectionError(f"No player_history rows for player {player_id} -- unknown to this cache.")
+    cols = ["season", "team_id", "team_name", "games", "total_minutes", "avg_minutes", "ppg", "rpg", "apg", "bpg",
+            "spg", "topg", "ts_pct", "fg_pct", "per40_pts", "per40_reb", "per40_ast", "hoop_score",
+            "hoop_score_raw", "thin_sample"]
     seasons = [dict(zip(cols, row)) for row in rows]
     for s in seasons:
         if s["ts_pct"] is not None:
@@ -969,20 +1001,27 @@ def player_trajectory(conn, player_id):
  
     name_row = conn.execute("SELECT name FROM player_history WHERE player_id = ? LIMIT 1", (player_id,)).fetchone()
  
-    if len(seasons) < 2:
-        trend, avg_delta = "Insufficient data (only one season on record)", None
+    # hoop_score_raw can be None for a season that's a bare placeholder row
+    # (on the roster with zero games/no box-score data at all that season --
+    # see build_cache.py's third player-inclusion tier) -- exclude those
+    # from the trend calc (nothing to compare), but still SHOW them in
+    # `seasons` below like every other season on record.
+    scored_seasons = [s for s in seasons if s["hoop_score_raw"] is not None]
+    if len(scored_seasons) < 2:
+        trend, avg_delta = "Insufficient data (fewer than two scored seasons on record)", None
     else:
-        first_hs, last_hs = seasons[0]["hoop_score_raw"], seasons[-1]["hoop_score_raw"]
-        avg_delta = (last_hs - first_hs) / (len(seasons) - 1)
+        first_hs, last_hs = scored_seasons[0]["hoop_score_raw"], scored_seasons[-1]["hoop_score_raw"]
+        avg_delta = (last_hs - first_hs) / (len(scored_seasons) - 1)
         if avg_delta >= TRAJECTORY_IMPROVING_THRESHOLD:
             trend = "Improving"
         elif avg_delta <= TRAJECTORY_DECLINING_THRESHOLD:
             trend = "Declining"
         else:
             trend = "Stable"
- 
+
     for s in seasons:
-        s["hoop_score_raw"] = round(s["hoop_score_raw"], 1)
+        if s["hoop_score_raw"] is not None:
+            s["hoop_score_raw"] = round(s["hoop_score_raw"], 1)
  
     return dict(
         player_id=player_id, name=name_row[0] if name_row else None,
@@ -999,13 +1038,14 @@ def player_trajectory(conn, player_id):
 # Both functions below deliberately stay within what the current cache
 # schema actually supports: season-aggregate per-player/per-team rows
 # (players, team_profile), not per-game logs. That means a genuinely
-# useful leaderboard like "P5 players who perform best specifically
-# against other P5 opponents" is NOT built here -- the cache has no
+# useful leaderboard like "High-Major players who perform best specifically
+# against other High-Major opponents" is NOT built here -- the cache has no
 # opponent-level split (no per-game table with each opponent's tier
 # attached), so that would have to be faked from season aggregates. It
 # isn't. If/when a per-game PlayerGameStats table with opponent info is
 # exposed to the cache, that's a real, separate leaderboard worth adding
-# then -- not simulated now.
+# then -- not simulated now. (Update: player_game_logs now exists --
+# opponent_split_leaderboard() below is exactly that follow-up leaderboard.)
 
 LEADERBOARD_STATS = {
     "ppg":        dict(label="points per game",            lower_is_better=False),
@@ -1035,10 +1075,14 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
         raise ProjectionError(f"stat must be one of {list(LEADERBOARD_STATS)}, got {stat!r}.")
     info = LEADERBOARD_STATS[stat]
 
+    level = normalize_tier(level)
     if level is not None and level not in VALID_LEVELS:
         raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
 
-    clauses = ["p.games >= ?"]
+    # Excludes thin_sample rows (see build_cache.py) -- a public leaderboard
+    # shouldn't let a 2-game/12-minute stint's noisy per-game rate outrank a
+    # real season. Those players are still fully findable via /players.
+    clauses = ["p.games >= ?", "(p.thin_sample IS NULL OR p.thin_sample = 0)"]
     params = [min_games]
     if level is not None:
         clauses.append("t.tier = ?")
@@ -1082,7 +1126,7 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
     )
 
 
-def standout_projections(conn, level, target_level="P5", min_games=8, limit=20):
+def standout_projections(conn, level, target_level="High-Major", min_games=8, limit=20):
     """'Who from a lower level projects best at the top level' -- every
     current player at `level` (e.g. Low-Major or Mid-Major), projected
     against a SYNTHETIC team at `target_level` whose current_rating is the
@@ -1095,6 +1139,8 @@ def standout_projections(conn, level, target_level="P5", min_games=8, limit=20):
     synthetic_target_rating in the response for the exact number used, so
     it's never confused with a real team's rating.
     """
+    level = normalize_tier(level)
+    target_level = normalize_tier(target_level)
     if level not in VALID_LEVELS:
         raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
     if target_level not in VALID_LEVELS:
@@ -1119,7 +1165,7 @@ def standout_projections(conn, level, target_level="P5", min_games=8, limit=20):
     candidates = [
         dict(zip(cols, row)) for row in conn.execute(
             """SELECT p.* FROM players p JOIN teams t ON p.team_id = t.team_id
-               WHERE t.tier = ? AND p.games >= ?""",
+               WHERE t.tier = ? AND p.games >= ? AND (p.thin_sample IS NULL OR p.thin_sample = 0)""",
             (level, min_games),
         ).fetchall()
     ]
@@ -1161,7 +1207,7 @@ def standout_projections(conn, level, target_level="P5", min_games=8, limit=20):
 # ---------------- opponent-level splits, game logs, schedule ----------------
 # Added once player_game_logs/games existed in the cache (per-game rows with
 # each game's real opponent_team_id, joined here against teams.tier --
-# that's the actual P5/Mid-Major/Low-Major level, NOT the sheet's
+# that's the actual High-Major/Mid-Major/Low-Major level, NOT the sheet's
 # "Opponent Division" column, which is just D1/D2 and was never a good
 # proxy for level). Previously declined as unsupported ("Not shown here:
 # performance splits against a specific opponent tier") because only
@@ -1177,19 +1223,22 @@ OPPONENT_SPLIT_STATS = {
 }
 
 
-def opponent_split_leaderboard(conn, own_level=None, opponent_level="P5", stat="points",
+def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major", stat="points",
                                 min_games=3, limit=20, season=None):
     """Real per-game production, filtered to games played against opponents
-    at a specific tier -- the "P5 players who perform best specifically
-    against other P5 opponents" / "Low-Major players who perform best
-    against P5 opponents" leaderboards. own_level restricts which players'
-    OWN team tier qualifies (None = any level, e.g. for the LM/MM vs P5
-    "who travels well" read); opponent_level is required (which tier of
-    opponent these games were against). min_games is the minimum number of
-    games AGAINST THAT OPPONENT TIER specifically, not season-total games --
-    a player might have played 30 games this season but only 4 against P5
-    competition, and it's the 4-game sample this leaderboard is about.
+    at a specific tier -- the "High-Major players who perform best
+    specifically against other High-Major opponents" / "Low-Major players
+    who perform best against High-Major opponents" leaderboards. own_level
+    restricts which players' OWN team tier qualifies (None = any level,
+    e.g. for the LM/MM vs HM "who travels well" read); opponent_level is
+    required (which tier of opponent these games were against). min_games
+    is the minimum number of games AGAINST THAT OPPONENT TIER specifically,
+    not season-total games -- a player might have played 30 games this
+    season but only 4 against High-Major competition, and it's the 4-game
+    sample this leaderboard is about.
     """
+    own_level = normalize_tier(own_level)
+    opponent_level = normalize_tier(opponent_level)
     if stat not in OPPONENT_SPLIT_STATS:
         raise ProjectionError(f"stat must be one of {list(OPPONENT_SPLIT_STATS)}, got {stat!r}.")
     if opponent_level not in VALID_LEVELS:

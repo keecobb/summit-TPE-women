@@ -9,7 +9,7 @@ Run:
  
 Then, e.g.:
     GET /players?search=troxell
-    GET /teams?tier=P5
+    GET /teams?tier=High-Major
     GET /teams/4/roles
     GET /project?player_id=1234&target_team_id=4&minutes=28
     GET /project?player_id=1234&target_team_id=4&role=starter
@@ -56,6 +56,7 @@ from projection import (
     find_fits, leaderboard, opponent_split_leaderboard, player_game_logs, player_trajectory, project_batch,
     project_player, standout_projections, team_needs, team_roles, team_schedule,
 )
+from summit_calc import TIER_ABBREV, normalize_tier
  
 DB_PATH = Path(__file__).parent / "summit_tpe_cache.sqlite"
  
@@ -111,13 +112,15 @@ def health():
  
 @app.get("/teams", dependencies=[Depends(require_api_key)])
 def list_teams(
-    tier: str | None = Query(None, description="Filter by tier: P5, Mid-Major, or Low-Major"),
+    tier: str | None = Query(None, description=f"Filter by tier: one of {list(VALID_LEVELS)} "
+                                                 f"(\"P5\" is still accepted as an alias for High-Major)."),
     conference: str | None = Query(None),
     search: str | None = Query(None, description="Case-insensitive substring match on team name"),
     limit: int = Query(100, le=500),
     offset: int = 0,
 ):
     conn = get_conn()
+    tier = normalize_tier(tier)
     clauses, params = [], []
     if tier:
         clauses.append("tier = ?")
@@ -169,11 +172,29 @@ def get_team_roles(team_id: int):
     return dict(team_name=team["name"], **roles)
  
  
+
+# Columns the /players list is allowed to sort on -- a whitelist, not a
+# raw pass-through of the `sort` query param, so it can never be used to
+# inject arbitrary SQL via ORDER BY (string-interpolated below since sqlite3
+# params can't parameterize a column/direction name). Maps the public sort
+# key to the real column to order by (hoop_score sorts on the unclamped
+# hoop_score_raw, same reasoning as the default order -- see below).
+PLAYERS_SORT_COLUMNS = {
+    "name": "p.name", "team_name": "t.name", "tier": "t.tier", "position": "p.position",
+    "class_year": "p.class_year", "games": "p.games", "ppg": "p.ppg", "rpg": "p.rpg",
+    "apg": "p.apg", "bpg": "p.bpg", "spg": "p.spg", "topg": "p.topg",
+    "hoop_score": "p.hoop_score_raw", "height": "p.height",
+}
+
+
 @app.get("/players", dependencies=[Depends(require_api_key)])
 def list_players(
     search: str | None = Query(None, description="Case-insensitive substring match on player name"),
     team_id: int | None = None,
     position: str | None = None,
+    sort: str | None = Query(None, description=f"Column to sort by, one of {list(PLAYERS_SORT_COLUMNS)}. "
+                                                 f"Omit for the default (Summit Score, best first)."),
+    order: str = Query("desc", description="asc or desc. Ignored if `sort` is omitted."),
     limit: int = Query(50, le=500),
     offset: int = 0,
 ):
@@ -189,16 +210,41 @@ def list_players(
         clauses.append("p.position = ?")
         params.append(position)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    if sort is not None:
+        if sort not in PLAYERS_SORT_COLUMNS:
+            raise HTTPException(status_code=422, detail=f"sort must be one of {list(PLAYERS_SORT_COLUMNS)}, got {sort!r}.")
+        direction = "ASC" if str(order).lower() == "asc" else "DESC"
+        # thin_sample rows still sort after full-sample rows for any column
+        # (not just the default hoop_score order) -- clicking "PPG" shouldn't
+        # let a 2-minute cameo's inflated per-game rate jump to the top.
+        order_by = f"COALESCE(p.thin_sample, 0) ASC, {PLAYERS_SORT_COLUMNS[sort]} {direction}"
+    else:
+        order_by = "COALESCE(p.thin_sample, 0) ASC, p.hoop_score_raw DESC"
+
     rows = conn.execute(
         # Sort by hoop_score_raw (unclamped), not hoop_score (the displayed,
         # 30-99-clamped value) -- several distinct elite seasons legitimately
         # round to the same displayed 99.0 by design (see summit_calc.py's
         # scale_to_hoopscore), so sorting on the displayed value ties players
         # who aren't actually tied and orders them arbitrarily.
+        #
+        # thin_sample players (see build_cache.py -- below the games/minutes
+        # threshold, or a placeholder row with no game logs at all this
+        # season) sort AFTER every full-sample player instead of being
+        # excluded outright -- this endpoint is the site's directory/search,
+        # so every rostered player needs to be findable here (that's the
+        # whole point of including them in the cache at all), just not
+        # crowding out real, well-evidenced seasons in the default browse
+        # order. NULLS LAST on hoop_score_raw DESC handles the zero-game
+        # placeholder rows, which have no computed score at all.
         f"""SELECT p.player_id, p.name, p.height, p.team_id, t.name AS team_name, t.tier, p.position,
-                   p.class_year, p.games, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg, p.hoop_score
+                   p.class_year, p.games, p.total_minutes, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg,
+                   p.hoop_score, p.thin_sample
             FROM players p LEFT JOIN teams t ON p.team_id = t.team_id
-            {where} ORDER BY p.hoop_score_raw DESC LIMIT ? OFFSET ?""",
+            {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?""",
         params + [limit, offset],
     ).fetchall()
     conn.close()
@@ -225,10 +271,20 @@ def get_player_detail(player_id: int):
     # otherwise show the same rounded displayed score. Gives coaches/scouts
     # context for what the number actually means (e.g. "Top 4% of Division I"),
     # which matters more now that far fewer players show a flat 99.
+    #
+    # Comparison pool excludes thin_sample players (see build_cache.py) --
+    # comparing against a pool diluted by small, noisy samples would make
+    # the percentile less meaningful for everyone, including thin_sample
+    # players themselves (whose own percentile is still shown, just judged
+    # against the same real, well-evidenced season pool a full-sample
+    # player is judged against).
     if result.get("hoop_score_raw") is not None:
-        total = conn.execute("SELECT COUNT(*) AS c FROM players").fetchone()["c"]
+        total = conn.execute(
+            "SELECT COUNT(*) AS c FROM players WHERE (thin_sample IS NULL OR thin_sample = 0)"
+        ).fetchone()["c"]
         better = conn.execute(
-            "SELECT COUNT(*) AS c FROM players WHERE hoop_score_raw > ?", (result["hoop_score_raw"],)
+            "SELECT COUNT(*) AS c FROM players WHERE hoop_score_raw > ? "
+            "AND (thin_sample IS NULL OR thin_sample = 0)", (result["hoop_score_raw"],)
         ).fetchone()["c"]
         # "Top X%" semantics -- rank 1 of 3,899 reads as Top 0.03%, not Top 100%.
         # 2 decimals, not 1 -- at 1 decimal, "Top 0.0%" is indistinguishable
@@ -266,9 +322,10 @@ def get_team_needs(
     team_id: int,
     top_n: int = Query(3, ge=1, le=len(CATEGORY_INFO), description="How many weakest categories to call out"),
     level: str | None = Query(
-        None, description=f"One of {list(VALID_LEVELS)}. Restrict the comparison group to teams at that "
-                           f"tier only, instead of the whole league (default). E.g. level=Low-Major judges "
-                           f"a Low-Major team's weaknesses against other Low-Major rosters, not P5 ones."),
+        None, description=f"One of {list(VALID_LEVELS)} (\"P5\" still accepted as an alias for High-Major). "
+                           f"Restrict the comparison group to teams at that tier only, instead of the whole "
+                           f"league (default). E.g. level=Low-Major judges a Low-Major team's weaknesses "
+                           f"against other Low-Major rosters, not High-Major ones."),
 ):
     """This team's roster-weighted stat profile (rebounding, assists,
     blocks, steals, turnovers, shooting) vs. a peer group (whole league by
@@ -304,14 +361,19 @@ def get_team_fits(
                             "clearly (404) if no transfer portal data has been loaded yet, instead of "
                             "silently returning an empty list."),
     level: str | None = Query(
-        None, description=f"One of {list(VALID_LEVELS)}. Only consider candidates whose CURRENT team is "
-                           f"at that tier -- e.g. level=Low-Major for a Low-Major team excludes every "
-                           f"P5/Mid-Major player from the pool outright, instead of just labeling them."),
+        None, description=f"One of {list(VALID_LEVELS)} (\"P5\" still accepted as an alias for High-Major). "
+                           f"Only consider candidates whose CURRENT team is at that tier -- e.g. "
+                           f"level=Low-Major for a Low-Major team excludes every High-Major/Mid-Major "
+                           f"player from the pool outright, instead of just labeling them."),
     role: str | None = Query(None, description=f"One of {ROLE_NAMES} -- resolved from THIS team's (team_id's) "
                                                 f"own current roster via /teams/{{id}}/roles, and applied to "
                                                 f"every candidate's projection. Ignored if `minutes` is given."),
     minutes: float | None = Query(None, description="Exact 0-40 minutes applied to every candidate's "
                                                       "projection. Wins over `role` if both are given."),
+    class_year: str | None = Query(None, description="Exact match, e.g. FR/SO/JR/SR/GR. Restrict the "
+                                                       "candidate pool to one eligibility class."),
+    position: str | None = Query(None, description="Exact match, e.g. G/F/C. Restrict the candidate pool "
+                                                     "to one position."),
 ):
     """Reverse lookup: every player NOT on this roster, ranked by her
     PROJECTED contribution to `stat`/`stats` (or this team's biggest
@@ -323,11 +385,14 @@ def get_team_fits(
     current_tier/level, and class_year. By default this is a plain ranking
     by projected production, not filtered by recruiting realism -- pass
     `level` to restrict the candidate pool to one tier instead of just
-    labeling unrealistic candidates (a P5 starter, etc) for manual skip."""
+    labeling unrealistic candidates (a High-Major starter, etc) for manual
+    skip, and/or `class_year`/`position` to narrow to a specific
+    eligibility window or position."""
     conn = get_conn()
     try:
         return find_fits(conn, team_id, stat=stat, stats=stats, limit=limit, min_games=min_games,
-                          transfer_portal_only=transfer_portal_only, level=level, role=role, minutes=minutes)
+                          transfer_portal_only=transfer_portal_only, level=level, role=role, minutes=minutes,
+                          class_year=class_year, position=position)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:
@@ -403,7 +468,7 @@ def get_player_leaderboard(
 @app.get("/leaderboards/standouts", dependencies=[Depends(require_api_key)])
 def get_standouts_leaderboard(
     level: str = Query(..., description=f"One of {list(VALID_LEVELS)} -- the level these players currently play at."),
-    target_level: str = Query("P5", description=f"One of {list(VALID_LEVELS)} -- the level to project them at."),
+    target_level: str = Query("High-Major", description=f"One of {list(VALID_LEVELS)} -- the level to project them at."),
     min_games: int = Query(8, description="Exclude players with a thinner sample than this many games."),
     limit: int = Query(20, le=100),
 ):
@@ -434,11 +499,13 @@ def get_opponent_split_leaderboard(
     limit: int = Query(20, le=100),
 ):
     """Real per-game production filtered to games played against a specific
-    opponent tier -- e.g. own_level=P5&opponent_level=P5 for 'P5 players who
-    perform best against other P5 opponents', or own_level=Low-Major&opponent_level=P5
-    for 'Low-Major players who perform best against P5 competition'. Uses
-    each game's real tracked opponent (joined via opponent_team_id ->
-    teams.tier), not a season-average approximation."""
+    opponent tier -- e.g. own_level=High-Major&opponent_level=High-Major for
+    'High-Major players who perform best against other High-Major opponents',
+    or own_level=Low-Major&opponent_level=High-Major for 'Low-Major players
+    who perform best against High-Major competition'. Uses each game's real
+    tracked opponent (joined via opponent_team_id -> teams.tier), not a
+    season-average approximation. ("P5" is still accepted as an alias for
+    High-Major in both level params.)"""
     conn = get_conn()
     try:
         return opponent_split_leaderboard(conn, own_level=own_level, opponent_level=opponent_level,

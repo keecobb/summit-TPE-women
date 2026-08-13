@@ -66,7 +66,7 @@ export default async function HomePage() {
             <h2>Data</h2>
             <p className="subtitle" style={{ marginBottom: 0 }}>
               Leaderboards built for coaches and fans alike -- top scorers, most efficient shooters, and which
-              Low-Major/Mid-Major players project as standouts at the P5 level.
+              Low-Major/Mid-Major players project as standouts at the High-Major level.
             </p>
           </div>
         </Link>

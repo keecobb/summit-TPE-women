@@ -2,6 +2,29 @@
 // API response shapes rather than remapped/renamed, so this file stays
 // easy to diff against the API docs as the backend evolves.
 
+// Canonical tier values (mirrors summit_calc.py's TIERS/TIER_ABBREV) --
+// renamed from "P5" to "High-Major" at the user's request. The backend
+// still accepts "P5" as a query-param alias, but every stored/returned
+// tier value and every place this site sends a tier as a filter uses the
+// canonical form below.
+export const TIERS = ["High-Major", "Mid-Major", "Low-Major"] as const;
+export type Tier = (typeof TIERS)[number];
+export const TIER_ABBREV: Record<string, string> = {
+  "High-Major": "HM",
+  "Mid-Major": "MM",
+  "Low-Major": "LM",
+  // Old data/links may still say "P5" -- display it the same as High-Major
+  // rather than showing a raw, unrecognized abbreviation.
+  P5: "HM",
+};
+
+// Short abbreviation (HM/MM/LM) for a tier string, for compact display in
+// tables/pills. Falls back to the raw value for anything unrecognized.
+export function tierAbbrev(tier: string | null | undefined): string {
+  if (!tier) return "--";
+  return TIER_ABBREV[tier] ?? tier;
+}
+
 export interface Team {
   team_id: number;
   name: string;
@@ -29,6 +52,13 @@ export interface Player {
   spg: number;
   topg: number;
   hoop_score: number;
+  total_minutes?: number | null;
+  // 1 when this player's season fell below the games/minutes floor for a
+  // full profile (see build_cache.py) -- she's still shown (that's the
+  // whole point: every rostered player is findable), but the numbers are a
+  // small, noisier sample and the UI should say so rather than presenting
+  // them at face value.
+  thin_sample?: number | boolean;
 }
 
 // Full row from GET /players/{id} -- ts_pct/fg_pct here are raw fractions
@@ -277,6 +307,7 @@ export interface PlayerTrajectorySeason {
   per40_reb: number;
   per40_ast: number;
   hoop_score: number;
+  thin_sample?: number | boolean;
 }
 
 export interface PlayerTrajectory {

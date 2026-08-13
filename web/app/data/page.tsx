@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard } from "@/lib/types";
-import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS } from "@/lib/types";
+import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
 const CHARTS_PER_PAGE = 4;
 const CHART_TOP_N = 5;
@@ -32,24 +32,24 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const totalChartPages = Math.ceil(chartStats.length / CHARTS_PER_PAGE);
   const pageStats = chartStats.slice(chartPage * CHARTS_PER_PAGE, chartPage * CHARTS_PER_PAGE + CHARTS_PER_PAGE);
 
-  const [leaderboard, lmStandouts, mmStandouts, p5VsP5, lmVsP5, mmVsP5, ...chartData] = await Promise.all([
+  const [leaderboard, lmStandouts, mmStandouts, hmVsHm, lmVsHm, mmVsHm, ...chartData] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
-      params: { level: "Low-Major", target_level: "P5", limit: 8 },
+      params: { level: "Low-Major", target_level: "High-Major", limit: 8 },
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
-      params: { level: "Mid-Major", target_level: "P5", limit: 8 },
+      params: { level: "Mid-Major", target_level: "High-Major", limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "P5", opponent_level: "P5", stat: "points", min_games: 5, limit: 8 },
+      params: { own_level: "High-Major", opponent_level: "High-Major", stat: "points", min_games: 5, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "Low-Major", opponent_level: "P5", stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Low-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "Mid-Major", opponent_level: "P5", stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Mid-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
     }),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
@@ -78,9 +78,11 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <label htmlFor="level">Level</label>
             <select id="level" name="level" defaultValue={sp.level ?? ""}>
               <option value="">Whole league</option>
-              <option value="P5">P5</option>
-              <option value="Mid-Major">Mid-Major</option>
-              <option value="Low-Major">Low-Major</option>
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t} ({tierAbbrev(t)})
+                </option>
+              ))}
             </select>
           </div>
           <div className="field">
@@ -121,7 +123,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                     </td>
                     <td>{p.team_name}</td>
                     <td>
-                      <span className="pill">{p.tier}</span>
+                      <span className="pill" title={p.tier}>{tierAbbrev(p.tier)}</span>
                     </td>
                     <td>{p.stat_value.toFixed(stat === "ts_pct" || stat === "fg_pct" ? 1 : 2)}</td>
                   </tr>
@@ -176,15 +178,15 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
       </div>
 
       <div className="card">
-        <h2>Standouts Projected at the P5 Level</h2>
+        <h2>Standouts Projected at the High-Major Level</h2>
         <p className="section-note">{lmStandouts.synthetic_target_note}</p>
-        <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="card-grid card-grid-2">
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Low-Major &rarr; P5</h2>
+            <h2 style={{ fontSize: "1.05rem" }}>Low-Major &rarr; High-Major</h2>
             <StandoutTable data={lmStandouts} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major &rarr; P5</h2>
+            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major &rarr; High-Major</h2>
             <StandoutTable data={mmStandouts} />
           </div>
         </div>
@@ -192,27 +194,27 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
       <div className="card">
         <h2>
-          Who Performs Best Against P5 Competition
-          <span className="hint" title="Real per-game scoring specifically in games played against P5 opponents this season -- not a projection, not a season average. Each player's own team's level is noted next to her name.">
+          Who Performs Best Against High-Major Competition
+          <span className="hint" title="Real per-game scoring specifically in games played against High-Major opponents this season -- not a projection, not a season average. Each player's own team's level is noted next to her name.">
             ?
           </span>
         </h2>
         <p className="section-note">
-          Actual production in real games against P5 opponents, not a projection -- each game&apos;s opponent is
-          tracked individually, so this is what actually happened, not an estimate.
+          Actual production in real games against High-Major opponents, not a projection -- each game&apos;s
+          opponent is tracked individually, so this is what actually happened, not an estimate.
         </p>
-        <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+        <div className="card-grid card-grid-3">
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>P5 vs. P5</h2>
-            <OpponentSplitTable data={p5VsP5} />
+            <h2 style={{ fontSize: "1.05rem" }}>HM vs. HM</h2>
+            <OpponentSplitTable data={hmVsHm} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Low-Major vs. P5</h2>
-            <OpponentSplitTable data={lmVsP5} />
+            <h2 style={{ fontSize: "1.05rem" }}>Low-Major vs. HM</h2>
+            <OpponentSplitTable data={lmVsHm} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major vs. P5</h2>
-            <OpponentSplitTable data={mmVsP5} />
+            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major vs. HM</h2>
+            <OpponentSplitTable data={mmVsHm} />
           </div>
         </div>
       </div>
@@ -259,7 +261,7 @@ function StandoutTable({ data }: { data: StandoutsLeaderboard }) {
             <th>Current</th>
             <th>
               Proj. Summit Score
-              <span className="hint" title="What this player's Summit Score projects to if placed on an average P5 roster, using the same model as the TPE Engine.">
+              <span className="hint" title="What this player's Summit Score projects to if placed on an average High-Major roster, using the same model as the TPE Engine.">
                 ?
               </span>
             </th>

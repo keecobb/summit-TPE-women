@@ -4,7 +4,11 @@
   --bg: #ffffff;
   --bg-panel: #f6f7f5;
   --bg-panel-2: #eceeec;
-  --border: #dde1de;
+  /* Was #dde1de -- too close to the panel/white backgrounds to read as a
+     real line (reported as "washed out" on table/card outlines in light
+     mode). Darkened for real contrast; dark mode's --border is unaffected
+     since it already had good contrast against its darker backgrounds. */
+  --border: #b7bfb9;
   --text: #16191a;
   --text-dim: #5c6360;
   --green: #0d3d26;
@@ -270,6 +274,33 @@ h2 {
 
 .card-grid .card {
   margin-bottom: 0;
+}
+
+/* Grid items default to a min-width based on their CONTENT's intrinsic
+   size, not the track width -- a wide, nowrap table inside a grid cell
+   (e.g. the Standouts/opponent-split tables below) was forcing the whole
+   grid, and the page, to overflow horizontally even though the table has
+   its own .table-scroll horizontal-scroll wrapper, because the grid item
+   itself never shrank enough to let that wrapper's overflow:auto do its
+   job. min-width: 0 lets the item shrink to the track width and hands
+   overflow handling back to .table-scroll, where it belongs. */
+.card-grid > * {
+  min-width: 0;
+}
+
+/* Fixed 2/3-column variants (e.g. Data page's Standouts / opponent-split
+   tables) -- a plain inline gridTemplateColumns: "1fr 1fr" doesn't respond
+   to viewport width at all, which overflowed badly on mobile (reported:
+   the 3-column "Who Performs Best Against High-Major Competition" tables
+   didn't fit and weren't usable on a phone). Collapses to 1 column under
+   720px via the media query below, same breakpoint as the rest of the
+   site's mobile rules. */
+.card-grid-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
+.card-grid-3 {
+  grid-template-columns: 1fr 1fr 1fr;
 }
 
 .card-grid a {
@@ -694,6 +725,11 @@ tbody tr td:first-child a:hover {
   }
 
   .chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card-grid-2,
+  .card-grid-3 {
     grid-template-columns: 1fr;
   }
 

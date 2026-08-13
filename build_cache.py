@@ -136,6 +136,7 @@ def load(path):
     ps_ws = wb["PlayerSeasons"]
     ph = header_map(ps_ws)
     player_season = {}
+    players_with_any_season = set()
     for row in ps_ws.iter_rows(min_row=2, values_only=True):
         pid, season = row[ph["Player ID"] - 1], row[ph["Season"] - 1]
         if pid is None or season is None:
@@ -144,6 +145,7 @@ def load(path):
             team_id=row[ph["Team ID"] - 1], division=row[ph["Division"] - 1],
             position=row[ph["Position"] - 1], class_year=row[ph["Class"] - 1],
         )
+        players_with_any_season.add(pid)
     print(f"  PlayerSeasons: {len(player_season)}")
  
     players_ws = wb["Players"]
@@ -153,6 +155,17 @@ def load(path):
     player_name = {}
     player_height = {}
     player_transfer_portal = {}
+    # Team ID/Position/Class/Division straight off the Players sheet (the
+    # roster/biographical sheet, one row per player) -- the LAST-RESORT
+    # fallback for a current-season roster player who has NO PlayerSeasons
+    # row and NO PlayerGameStats rows at all this season (a real example:
+    # Sydney Fenn, Indiana F, present on the Players sheet with a current
+    # Team ID but zero season/game rows anywhere in the workbook). This
+    # sheet has no season column, so it's only trustworthy as "current"
+    # team info -- used in main() to backfill the CURRENT season's roster
+    # only, never for historical seasons (see main()'s sheet_meta param to
+    # compute_season_profiles).
+    player_sheet_meta = {}
     for row in players_ws.iter_rows(min_row=2, values_only=True):
         pid = row[plh["Player ID"] - 1]
         if pid is None:
@@ -166,6 +179,12 @@ def load(path):
             player_height[pid] = h.strip() if isinstance(h, str) and h.strip() else None
         if portal_col_name:
             player_transfer_portal[pid] = _parse_tri_bool(row[plh[portal_col_name] - 1])
+        player_sheet_meta[pid] = dict(
+            team_id=row[plh["Team ID"] - 1] if "Team ID" in plh else None,
+            position=row[plh["Position"] - 1] if "Position" in plh else None,
+            class_year=row[plh["Class"] - 1] if "Class" in plh else None,
+            division=row[plh["Division"] - 1] if "Division" in plh else None,
+        )
     if portal_col_name:
         n_flagged = sum(1 for v in player_transfer_portal.values() if v == 1)
         print(f"  Players: {len(player_name)} (Transfer Portal column found: {n_flagged} flagged 'Yes')")
@@ -204,7 +223,7 @@ def load(path):
             team_id=row[gsh["Team ID"] - 1], opponent_team_id=row[gsh["Opponent Team ID"] - 1],
             opponent_name=row[gsh["Opponent"] - 1] if "Opponent" in gsh else None,
             # NOTE: the sheet's "Opponent Level" column is D1/D2 (division), NOT
-            # the P5/Mid-Major/Low-Major tier -- that would need a join against
+            # the High-Major/Mid-Major/Low-Major tier -- that would need a join against
             # teams.tier via opponent_team_id, done at query time in
             # projection.py rather than stored here (avoids a second source of
             # truth that could drift from teams.tier).
@@ -227,19 +246,31 @@ def load(path):
                 player_season=player_season, player_name=player_name, player_height=player_height,
                 game_rows_by_season=game_rows_by_season,
                 player_transfer_portal=player_transfer_portal, game_log_rows=game_log_rows,
-                schedule_rows=schedule_rows)
+                schedule_rows=schedule_rows, player_sheet_meta=player_sheet_meta,
+                players_with_any_season=players_with_any_season)
  
  
 def pick_latest_season(games_by_season):
     return max(games_by_season, key=lambda s: len(games_by_season[s]))
  
  
-def compute_season_profiles(data, season):
+def compute_season_profiles(data, season, sheet_meta=None):
     """Everything derived from ONE season's games + box scores: team Off/
     Def/Rat/SoS and each player's season stat profile (same math as
     compute_derived_sheets.py). Factored out so it can be run once for the
     current season (teams/players tables) and again for every season in
-    the workbook (player_history, for trajectory)."""
+    the workbook (player_history, for trajectory).
+
+    sheet_meta: optional (pass data["player_sheet_meta"]) -- ONLY pass this
+    for the current season. Backfills a third, last-resort tier of players:
+    those with a Team ID on the Players sheet pointing at an active team
+    this season, but NO PlayerSeasons row and NO PlayerGameStats rows at
+    all (a real example: Sydney Fenn, Indiana F -- on the roster sheet,
+    zero season/game rows anywhere in the workbook). The Players sheet has
+    no season column, so this can only be trusted as "current roster" --
+    passing it for a historical season would incorrectly place a player on
+    a team she may not have been on that year.
+    """
     games = data["games_by_season"].get(season, [])
     off, def_ = iterative_off_def(games)
     rat = {t: off[t] - def_[t] for t in off}
@@ -301,17 +332,28 @@ def compute_season_profiles(data, season):
         season_raw[pid] = sraw * mult
     season_hs, season_hs_raw, _, _ = scale_to_hoopscore(season_raw)
  
+    # Every player who appears in a game log this season gets a row --
+    # INCLUDING those below the MIN_GAMES_FOR_PROFILE / MIN_TOTAL_MINUTES_
+    # FOR_PROFILE thresholds (bench players, players who only got run late
+    # in the season, etc). These used to be dropped entirely from the
+    # players/player_history tables, which meant a real rostered player
+    # (e.g. someone averaging a few minutes a game) simply didn't exist
+    # anywhere on the site -- not searchable, no profile page, 404 even by
+    # direct ID (found via a real example: Sarah Miller, Pennsylvania G,
+    # 14 games / 49 total minutes in 2025-26 -- well short of the 100-
+    # minute threshold, and completely absent from the site as a result).
+    # They're now included with a `thin_sample` flag so the frontend can
+    # caveat the numbers (small-sample noise) instead of hiding the player.
     player_rows = []
-    skipped_thin_minutes = 0
+    thin_count = 0
+    covered_pids = set()
     for pid, glist in per_player_games.items():
-        n_games = len(glist)
-        if n_games < MIN_GAMES_FOR_PROFILE:
-            continue
         meta = per_player_meta[pid]
+        n_games = len(glist)
         total_min = sum(g["minutes"] for g in glist)
-        if total_min < MIN_TOTAL_MINUTES_FOR_PROFILE:
-            skipped_thin_minutes += 1
-            continue
+        thin = n_games < MIN_GAMES_FOR_PROFILE or total_min < MIN_TOTAL_MINUTES_FOR_PROFILE
+        if thin:
+            thin_count += 1
         total_pts = sum(g["points"] for g in glist)
         total_reb = sum(g["reb"] for g in glist)
         total_ast = sum(g["ast"] for g in glist)
@@ -341,8 +383,70 @@ def compute_season_profiles(data, season):
             per40_stl=total_stl / total_min * 40.0,
             per40_tov=total_tov / total_min * 40.0,
             hoop_score=season_hs[pid], hoop_score_raw=season_hs_raw[pid],
+            thin_sample=1 if thin else 0,
         ))
- 
+        covered_pids.add(pid)
+
+    # Players officially on this season's roster (present on the
+    # PlayerSeasons sheet) but with NO game-log rows at all this season --
+    # redshirts, season-long injuries, players who never got off the bench.
+    # Still worth a placeholder row (name/team/position, no computed stats)
+    # so they're at least findable by name and show up on their team's
+    # roster, rather than being invisible.
+    for (pid, s), ps in data["player_season"].items():
+        if s != season or pid in covered_pids:
+            continue
+        player_rows.append(dict(
+            player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
+            height=data["player_height"].get(pid),
+            team_id=ps["team_id"], division=ps["division"], position=ps["position"],
+            class_year=ps["class_year"], in_transfer_portal=data["player_transfer_portal"].get(pid),
+            season=season, games=0, total_minutes=0,
+            avg_minutes=None, ppg=None, rpg=None, apg=None, bpg=None, spg=None, topg=None,
+            ts_pct=None, fg_pct=None,
+            per40_pts=None, per40_reb=None, per40_ast=None, per40_blk=None, per40_stl=None, per40_tov=None,
+            hoop_score=None, hoop_score_raw=None,
+            thin_sample=1,
+        ))
+        covered_pids.add(pid)
+
+    # Last resort: a player with a Team ID on the Players sheet pointing at
+    # a team that's active this season (has real games in `rat`), but no
+    # PlayerSeasons row for ANY season and no PlayerGameStats rows anywhere
+    # -- the workbook simply never got season/game data for her at all.
+    # Still added as a bare placeholder so she's findable/on her roster
+    # instead of invisible (see sheet_meta docstring above).
+    #
+    # Critically restricted to players with ZERO PlayerSeasons rows across
+    # the WHOLE workbook (not just this season) -- Team ID on the Players
+    # sheet is not season-scoped, so a player with PlayerSeasons rows only
+    # for 2023-24/2024-25 (graduated/departed, not on the roster this
+    # season) still has that same stale Team ID sitting on her Players-
+    # sheet row. Checked against real data: 3,580 of 8,740 Players-sheet
+    # rows are exactly this case -- without this guard, every one of them
+    # would incorrectly show up as a "current" 2025-26 roster player.
+    if sheet_meta:
+        already_seasoned = data.get("players_with_any_season", set())
+        for pid, meta in sheet_meta.items():
+            if pid in covered_pids or pid in already_seasoned:
+                continue
+            tid = meta.get("team_id")
+            if tid not in rat:
+                continue  # not on a team with games this season -- likely a stale/graduated record
+            player_rows.append(dict(
+                player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
+                height=data["player_height"].get(pid),
+                team_id=tid, division=meta.get("division"), position=meta.get("position"),
+                class_year=meta.get("class_year"), in_transfer_portal=data["player_transfer_portal"].get(pid),
+                season=season, games=0, total_minutes=0,
+                avg_minutes=None, ppg=None, rpg=None, apg=None, bpg=None, spg=None, topg=None,
+                ts_pct=None, fg_pct=None,
+                per40_pts=None, per40_reb=None, per40_ast=None, per40_blk=None, per40_stl=None, per40_tov=None,
+                hoop_score=None, hoop_score_raw=None,
+                thin_sample=1,
+            ))
+            covered_pids.add(pid)
+
     team_rows = []
     for tid, info in data["teams"].items():
         if tid not in rat:
@@ -361,7 +465,7 @@ def compute_season_profiles(data, season):
     return dict(
         team_rows=team_rows, player_rows=player_rows,
         league_mean_rat=league_mean_rat, league_std_rat=league_std_rat,
-        skipped_thin_minutes=skipped_thin_minutes,
+        thin_count=thin_count,
     )
  
  
@@ -438,12 +542,13 @@ def main():
     season = pick_latest_season(data["games_by_season"])
     print(f"\nCurrent season: {season}")
  
-    current = compute_season_profiles(data, season)
+    current = compute_season_profiles(data, season, sheet_meta=data["player_sheet_meta"])
     team_rows, player_rows = current["team_rows"], current["player_rows"]
     league_mean_rat, league_std_rat = current["league_mean_rat"], current["league_std_rat"]
     print(f"Rat: n={len(team_rows)} mean={league_mean_rat:.2f} std={league_std_rat:.2f}")
-    print(f"Player profiles (>= {MIN_GAMES_FOR_PROFILE} games AND >= {MIN_TOTAL_MINUTES_FOR_PROFILE} total minutes): "
-          f"{len(player_rows)} ({current['skipped_thin_minutes']} more had enough games but too few total minutes, excluded)")
+    print(f"Players this season: {len(player_rows)} total "
+          f"({current['thin_count']} flagged thin_sample -- below {MIN_GAMES_FOR_PROFILE} games / "
+          f"{MIN_TOTAL_MINUTES_FOR_PROFILE} total minutes; still included, just caveated on the site)")
     tier_counts = defaultdict(int)
     for t in team_rows:
         tier_counts[t["tier"]] += 1
@@ -494,12 +599,12 @@ def main():
     conn.execute("""
         CREATE TABLE players (
             player_id INTEGER PRIMARY KEY, name TEXT, height TEXT, team_id INTEGER, division TEXT,
-            position TEXT, class_year TEXT, season TEXT, games INTEGER,
+            position TEXT, class_year TEXT, season TEXT, games INTEGER, total_minutes REAL,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
             ts_pct REAL, fg_pct REAL,
             per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
             hoop_score REAL, hoop_score_raw REAL,
-            in_transfer_portal INTEGER
+            in_transfer_portal INTEGER, thin_sample INTEGER DEFAULT 0
         )
     """)
     conn.execute("""
@@ -512,11 +617,11 @@ def main():
     conn.execute("""
         CREATE TABLE player_history (
             player_id INTEGER, name TEXT, season TEXT, team_id INTEGER, team_name TEXT,
-            division TEXT, position TEXT, class_year TEXT, games INTEGER,
+            division TEXT, position TEXT, class_year TEXT, games INTEGER, total_minutes REAL,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
             ts_pct REAL, fg_pct REAL,
             per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
-            hoop_score REAL, hoop_score_raw REAL,
+            hoop_score REAL, hoop_score_raw REAL, thin_sample INTEGER DEFAULT 0,
             PRIMARY KEY (player_id, season)
         )
     """)
@@ -527,9 +632,9 @@ def main():
     )
     conn.executemany(
         """INSERT INTO players VALUES (:player_id,:name,:height,:team_id,:division,:position,:class_year,
-           :season,:games,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :season,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,
-           :hoop_score,:hoop_score_raw,:in_transfer_portal)""",
+           :hoop_score,:hoop_score_raw,:in_transfer_portal,:thin_sample)""",
         player_rows,
     )
     conn.executemany(
@@ -539,8 +644,8 @@ def main():
     )
     conn.executemany(
         """INSERT INTO player_history VALUES (:player_id,:name,:season,:team_id,:team_name,:division,
-           :position,:class_year,:games,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
-           :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,:hoop_score,:hoop_score_raw)""",
+           :position,:class_year,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,:hoop_score,:hoop_score_raw,:thin_sample)""",
         player_history_rows,
     )
     # ---- player_game_logs: every individual game a player appeared in,

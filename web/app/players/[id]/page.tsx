@@ -27,7 +27,20 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         {player.position}
         {player.height ? ` · ${player.height}` : ""} &middot; {player.class_year} &middot;{" "}
         {player.team_name ?? "--"} ({player.team_tier ?? player.tier}) &middot; {player.season}
+        {player.thin_sample ? (
+          <span className="pill pill-warn" style={{ marginLeft: 8 }}>limited sample</span>
+        ) : null}
       </p>
+
+      {player.thin_sample ? (
+        <div className="info-box">
+          Limited {player.season} sample: {player.games} game{player.games === 1 ? "" : "s"}
+          {player.total_minutes != null ? `, ${player.total_minutes} total minutes` : ""} on record this season
+          -- below the usual floor for a full profile (5 games / 100 minutes). She&apos;s shown here because
+          every rostered player should be findable, but treat the numbers below as a small, noisier sample
+          rather than a full-season read.
+        </div>
+      ) : null}
 
       <div className="hero-actions" style={{ marginBottom: 24 }}>
         <Link className="btn btn-primary" href={`/tpe?player_id=${player.player_id}`}>
@@ -52,8 +65,11 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
       <div className="card">
         <h2>Efficiency &amp; per-40</h2>
         <div className="stat-grid">
-          <Stat label="TS%" value={player.ts_pct * 100} />
-          <Stat label="FG%" value={player.fg_pct * 100} />
+          {/* null * 100 === 0 in JS -- guard explicitly so a player with too
+              few shot attempts to compute a shooting % (see build_cache.py's
+              15-attempt floor) shows "--" instead of a misleading "0.0". */}
+          <Stat label="TS%" value={player.ts_pct != null ? player.ts_pct * 100 : null} />
+          <Stat label="FG%" value={player.fg_pct != null ? player.fg_pct * 100 : null} />
           <Stat label="Pts/40" value={player.per40_pts} />
           <Stat label="Reb/40" value={player.per40_reb} />
           <Stat label="Ast/40" value={player.per40_ast} />
@@ -117,7 +133,14 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                       <td>{s.rpg?.toFixed(1)}</td>
                       <td>{s.apg?.toFixed(1)}</td>
                       <td>{s.ts_pct?.toFixed(1)}</td>
-                      <td>{s.hoop_score?.toFixed(1)}</td>
+                      <td>
+                        {s.hoop_score?.toFixed(1)}
+                        {s.thin_sample ? (
+                          <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
+                            limited
+                          </span>
+                        ) : null}
+                      </td>
                     </tr>
                     <SeasonGameLog playerId={player.player_id} season={s.season} />
                   </Fragment>
