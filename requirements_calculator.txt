@@ -1,0 +1,6 @@
+# Deps for the transfer calculator (build_cache.py + projection.py + api.py).
+# Everything else in this repo stays stdlib-only per the project's existing
+# convention -- these are additive, only needed for this piece.
+openpyxl
+fastapi
+uvicorn

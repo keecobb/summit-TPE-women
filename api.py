@@ -52,8 +52,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
  
 from projection import (
-    CATEGORY_INFO, LEADERBOARD_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS, find_fits, leaderboard,
-    player_trajectory, project_batch, project_player, standout_projections, team_needs, team_roles,
+    CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
+    find_fits, leaderboard, opponent_split_leaderboard, player_game_logs, player_trajectory, project_batch,
+    project_player, standout_projections, team_needs, team_roles, team_schedule,
 )
  
 DB_PATH = Path(__file__).parent / "summit_tpe_cache.sqlite"
@@ -398,5 +399,53 @@ def get_standouts_leaderboard(
                                      min_games=min_games, limit=limit)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/opponent-splits", dependencies=[Depends(require_api_key)])
+def get_opponent_split_leaderboard(
+    opponent_level: str = Query(..., description=f"One of {list(VALID_LEVELS)} -- the tier of opponent these games were against."),
+    own_level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)} -- restrict to players whose OWN team is at this tier. Omit for any level."),
+    stat: str = Query("points", description=f"One of {list(OPPONENT_SPLIT_STATS)}."),
+    min_games: int = Query(3, description="Minimum games played AGAINST that opponent tier specifically, not season-total games."),
+    season: str | None = Query(None, description="Defaults to the cache's current season."),
+    limit: int = Query(20, le=100),
+):
+    """Real per-game production filtered to games played against a specific
+    opponent tier -- e.g. own_level=P5&opponent_level=P5 for 'P5 players who
+    perform best against other P5 opponents', or own_level=Low-Major&opponent_level=P5
+    for 'Low-Major players who perform best against P5 competition'. Uses
+    each game's real tracked opponent (joined via opponent_team_id ->
+    teams.tier), not a season-average approximation."""
+    conn = get_conn()
+    try:
+        return opponent_split_leaderboard(conn, own_level=own_level, opponent_level=opponent_level,
+                                           stat=stat, min_games=min_games, limit=limit, season=season)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/players/{player_id}/game-logs", dependencies=[Depends(require_api_key)])
+def get_player_game_logs(player_id: int, season: str | None = Query(None)):
+    """Every individual game this player appeared in (optionally filtered
+    to one season), most recent first -- powers the expandable per-season
+    game log on the player profile page."""
+    conn = get_conn()
+    try:
+        return player_game_logs(conn, player_id, season=season)
+    finally:
+        conn.close()
+
+
+@app.get("/teams/{team_id}/schedule", dependencies=[Depends(require_api_key)])
+def get_team_schedule(team_id: int, season: str | None = Query(None)):
+    """This team's full schedule/results (optionally filtered to one
+    season), most recent first -- powers the team profile's Schedule tab."""
+    conn = get_conn()
+    try:
+        return team_schedule(conn, team_id, season=season)
     finally:
         conn.close()

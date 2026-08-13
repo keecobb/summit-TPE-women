@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { PlayerDetail, PlayerTrajectory } from "@/lib/types";
+import SeasonGameLog from "@/components/SeasonGameLog";
 
 export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -95,20 +96,23 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                 const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
                 const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
                 return (
-                  <tr key={s.season}>
-                    <td>{s.season}</td>
-                    <td>
-                      {s.team_name}
-                      {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
-                    </td>
-                    <td>{s.games}</td>
-                    <td>{s.avg_minutes?.toFixed(1)}</td>
-                    <td>{s.ppg?.toFixed(1)}</td>
-                    <td>{s.rpg?.toFixed(1)}</td>
-                    <td>{s.apg?.toFixed(1)}</td>
-                    <td>{s.ts_pct?.toFixed(1)}</td>
-                    <td>{s.hoop_score?.toFixed(1)}</td>
-                  </tr>
+                  <>
+                    <tr key={s.season}>
+                      <td>{s.season}</td>
+                      <td>
+                        {s.team_name}
+                        {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
+                      </td>
+                      <td>{s.games}</td>
+                      <td>{s.avg_minutes?.toFixed(1)}</td>
+                      <td>{s.ppg?.toFixed(1)}</td>
+                      <td>{s.rpg?.toFixed(1)}</td>
+                      <td>{s.apg?.toFixed(1)}</td>
+                      <td>{s.ts_pct?.toFixed(1)}</td>
+                      <td>{s.hoop_score?.toFixed(1)}</td>
+                    </tr>
+                    <SeasonGameLog key={`${s.season}-log`} playerId={player.player_id} season={s.season} />
+                  </>
                 );
               })}
             </tbody>

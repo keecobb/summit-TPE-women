@@ -37,25 +37,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="site-header">
           <nav>
             <Link href="/" className="brand">
-              {/* TODO: swap for the real Estrella Works logo file once uploaded --
-                  placeholder mark below approximates it in CSS/text only. */}
-              <span
-                aria-hidden
-                style={{
-                  display: "inline-flex",
-                  width: 30,
-                  height: 30,
-                  borderRadius: 6,
-                  background: "linear-gradient(135deg, var(--gold), var(--gold-dim))",
-                  color: "#191008",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontWeight: 800,
-                  fontSize: "0.95rem",
-                }}
-              >
-                W
-              </span>
+              {/* eslint-disable-next-line @next/next/no-img-element -- small fixed-size
+                  brand mark; next/image's extra runtime isn't worth it here. */}
+              <img src="/estrella-mark.png" alt="Estrella Works" />
               Summit <span>TPE</span>
             </Link>
             <MobileNav />
@@ -63,9 +47,27 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
         <main>{children}</main>
         <footer className="site-footer">
-          Summit TPE by Estrella Works &middot; team ratings, Summit Scores, and transfer projections, refreshed
-          periodically from the Summit TPE pipeline. &middot; <Link href="/about">About</Link> &middot;{" "}
-          <Link href="/contact">Contact</Link>
+          {/* The full wordmark logo has dark text baked into the image, so it's
+              wrapped in a solid white chip -- keeps it legible against the green
+              footer in both light and dark theme rather than only looking right
+              in one of the two. */}
+          <div
+            style={{
+              display: "inline-flex",
+              background: "#fff",
+              borderRadius: 8,
+              padding: "6px 14px",
+              marginBottom: 12,
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/estrella-logo-full.png" alt="Estrella Works" style={{ height: 44, width: "auto", display: "block" }} />
+          </div>
+          <div>
+            Summit TPE by Estrella Works &middot; team ratings, Summit Scores, and transfer projections, refreshed
+            periodically from the Summit TPE pipeline. &middot; <Link href="/about">About</Link> &middot;{" "}
+            <Link href="/contact">Contact</Link>
+          </div>
         </footer>
       </body>
     </html>

@@ -1112,6 +1112,158 @@ def standout_projections(conn, level, target_level="P5", min_games=8, limit=20):
     )
  
  
+# ---------------- opponent-level splits, game logs, schedule ----------------
+# Added once player_game_logs/games existed in the cache (per-game rows with
+# each game's real opponent_team_id, joined here against teams.tier --
+# that's the actual P5/Mid-Major/Low-Major level, NOT the sheet's
+# "Opponent Division" column, which is just D1/D2 and was never a good
+# proxy for level). Previously declined as unsupported ("Not shown here:
+# performance splits against a specific opponent tier") because only
+# season totals existed; this is the real thing, not an approximation.
+
+OPPONENT_SPLIT_STATS = {
+    "points":    dict(label="points per game",     lower_is_better=False),
+    "rebounds":  dict(label="rebounds per game",    lower_is_better=False),
+    "assists":   dict(label="assists per game",     lower_is_better=False),
+    "steals":    dict(label="steals per game",      lower_is_better=False),
+    "blocks":    dict(label="blocks per game",      lower_is_better=False),
+    "turnovers": dict(label="turnovers per game (lowest)", lower_is_better=True),
+}
+
+
+def opponent_split_leaderboard(conn, own_level=None, opponent_level="P5", stat="points",
+                                min_games=3, limit=20, season=None):
+    """Real per-game production, filtered to games played against opponents
+    at a specific tier -- the "P5 players who perform best specifically
+    against other P5 opponents" / "Low-Major players who perform best
+    against P5 opponents" leaderboards. own_level restricts which players'
+    OWN team tier qualifies (None = any level, e.g. for the LM/MM vs P5
+    "who travels well" read); opponent_level is required (which tier of
+    opponent these games were against). min_games is the minimum number of
+    games AGAINST THAT OPPONENT TIER specifically, not season-total games --
+    a player might have played 30 games this season but only 4 against P5
+    competition, and it's the 4-game sample this leaderboard is about.
+    """
+    if stat not in OPPONENT_SPLIT_STATS:
+        raise ProjectionError(f"stat must be one of {list(OPPONENT_SPLIT_STATS)}, got {stat!r}.")
+    if opponent_level not in VALID_LEVELS:
+        raise ProjectionError(f"opponent_level must be one of {VALID_LEVELS}, got {opponent_level!r}.")
+    if own_level is not None and own_level not in VALID_LEVELS:
+        raise ProjectionError(f"own_level must be one of {VALID_LEVELS}, got {own_level!r}.")
+    info = OPPONENT_SPLIT_STATS[stat]
+
+    clauses = ["opp_t.tier = ?"]
+    params = [opponent_level]
+    if own_level is not None:
+        clauses.append("own_t.tier = ?")
+        params.append(own_level)
+    if season is not None:
+        clauses.append("g.season = ?")
+        params.append(season)
+    else:
+        # Default to the cache's current season -- otherwise a player's
+        # rows from 3 seasons of history would all blend together.
+        current_season = _load_meta(conn)["season"]
+        clauses.append("g.season = ?")
+        params.append(current_season)
+    where = " AND ".join(clauses)
+    order = "ASC" if info["lower_is_better"] else "DESC"
+
+    rows = conn.execute(
+        f"""SELECT p.player_id, p.name, own_t.name AS team_name, own_t.tier AS own_tier,
+                   p.position, p.class_year,
+                   COUNT(*) AS games_vs_opponent,
+                   AVG(g.points) AS avg_points, AVG(g.rebounds) AS avg_rebounds,
+                   AVG(g.assists) AS avg_assists, AVG(g.steals) AS avg_steals,
+                   AVG(g.blocks) AS avg_blocks, AVG(g.turnovers) AS avg_turnovers,
+                   AVG(g.{stat}) AS stat_value
+            FROM player_game_logs g
+            JOIN players p ON g.player_id = p.player_id
+            JOIN teams own_t ON g.team_id = own_t.team_id
+            JOIN teams opp_t ON g.opponent_team_id = opp_t.team_id
+            WHERE {where}
+            GROUP BY g.player_id
+            HAVING games_vs_opponent >= ?
+            ORDER BY stat_value {order}
+            LIMIT ?""",
+        params + [min_games, limit],
+    ).fetchall()
+
+    players = [dict(
+        player_id=r["player_id"], name=r["name"], team_name=r["team_name"], own_tier=r["own_tier"],
+        position=r["position"], class_year=r["class_year"], games_vs_opponent=r["games_vs_opponent"],
+        avg_points=round(r["avg_points"], 1), avg_rebounds=round(r["avg_rebounds"], 1),
+        avg_assists=round(r["avg_assists"], 1), avg_steals=round(r["avg_steals"], 1),
+        avg_blocks=round(r["avg_blocks"], 1), avg_turnovers=round(r["avg_turnovers"], 1),
+        stat_value=round(r["stat_value"], 1),
+    ) for r in rows]
+
+    return dict(
+        stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
+        own_level=own_level, opponent_level=opponent_level, min_games=min_games,
+        players=players,
+    )
+
+
+def player_game_logs(conn, player_id, season=None):
+    """Every individual game this player appeared in (optionally filtered
+    to one season), most recent first -- powers the expandable per-season
+    game log on the player profile page. opponent_tier is resolved here via
+    a join against teams.tier (opponent_team_id may be NULL for a small
+    fraction of games -- an untracked/D2 opponent not in the teams table --
+    in which case opponent_tier comes back None rather than guessed)."""
+    clauses = ["g.player_id = ?"]
+    params = [player_id]
+    if season is not None:
+        clauses.append("g.season = ?")
+        params.append(season)
+    where = " AND ".join(clauses)
+
+    rows = conn.execute(
+        f"""SELECT g.season, g.date, g.opponent_name, opp_t.tier AS opponent_tier,
+                   g.started, g.minutes, g.points, g.rebounds, g.assists, g.steals, g.blocks,
+                   g.turnovers, g.fouls, g.fgm, g.fga, g.tfgm, g.tfga, g.ftm, g.fta
+            FROM player_game_logs g
+            LEFT JOIN teams opp_t ON g.opponent_team_id = opp_t.team_id
+            WHERE {where}
+            ORDER BY g.date DESC""",
+        params,
+    ).fetchall()
+    return dict(player_id=player_id, season=season, games=[dict(r) for r in rows])
+
+
+def team_schedule(conn, team_id, season=None):
+    """This team's full schedule/results (optionally filtered to one
+    season), most recent first -- powers the team profile's Schedule tab."""
+    clauses = ["(home_team_id = ? OR away_team_id = ?)"]
+    params = [team_id, team_id]
+    if season is not None:
+        clauses.append("season = ?")
+        params.append(season)
+    where = " AND ".join(clauses)
+
+    rows = conn.execute(
+        f"""SELECT game_id, season, date, home_team_id, home_team_name, away_team_id, away_team_name,
+                   home_score, away_score, winner_team_id, margin, neutral_site, overtime, conference_game
+            FROM games WHERE {where} ORDER BY date DESC""",
+        params,
+    ).fetchall()
+
+    games = []
+    for r in rows:
+        d = dict(r)
+        is_home = d["home_team_id"] == team_id
+        d["opponent_name"] = d["away_team_name"] if is_home else d["home_team_name"]
+        d["opponent_team_id"] = d["away_team_id"] if is_home else d["home_team_id"]
+        d["team_score"] = d["home_score"] if is_home else d["away_score"]
+        d["opponent_score"] = d["away_score"] if is_home else d["home_score"]
+        d["is_home"] = is_home
+        d["won"] = (d["winner_team_id"] == team_id) if d["winner_team_id"] is not None else None
+        games.append(d)
+
+    return dict(team_id=team_id, season=season, games=games)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="CLI smoke test for project_player")

@@ -1,0 +1,15 @@
+# Dependencies for the scraper scripts in this folder.
+# Install into the project's existing .venv:
+#   .venv\Scripts\pip install -r scrapers\requirements.txt
+#
+# Only requests + openpyxl are needed for the D1 (ESPN) pipeline
+# (cleanup_workbook.py, team_match.py, smoke_test_espn.py,
+# run_d1_scrape.py). beautifulsoup4/lxml/pandas are for the D2
+# (Sidearm) pipeline, which is paused for now -- install them later
+# when that work resumes.
+
+requests>=2.31
+openpyxl>=3.1
+beautifulsoup4>=4.12
+lxml>=5.0
+pandas>=2.0

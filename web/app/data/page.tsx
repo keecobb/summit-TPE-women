@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
-import type { PlayerLeaderboard, StandoutsLeaderboard } from "@/lib/types";
+import type { PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS } from "@/lib/types";
 
 const CHARTS_PER_PAGE = 4;
@@ -23,7 +23,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const totalChartPages = Math.ceil(chartStats.length / CHARTS_PER_PAGE);
   const pageStats = chartStats.slice(chartPage * CHARTS_PER_PAGE, chartPage * CHARTS_PER_PAGE + CHARTS_PER_PAGE);
 
-  const [leaderboard, lmStandouts, mmStandouts, ...chartData] = await Promise.all([
+  const [leaderboard, lmStandouts, mmStandouts, p5VsP5, lmVsP5, mmVsP5, ...chartData] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, min_games: sp.min_games ?? 8, limit: 25 },
     }),
@@ -32,6 +32,15 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
       params: { level: "Mid-Major", target_level: "P5", limit: 8 },
+    }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { own_level: "P5", opponent_level: "P5", stat: "points", min_games: 5, limit: 8 },
+    }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { own_level: "Low-Major", opponent_level: "P5", stat: "points", min_games: 2, limit: 8 },
+    }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { own_level: "Mid-Major", opponent_level: "P5", stat: "points", min_games: 2, limit: 8 },
     }),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
@@ -151,12 +160,31 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         </div>
       </div>
 
-      <div className="info-box">
-        Not shown here yet: performance splits against a specific opponent tier (e.g. &quot;P5 players who perform
-        best specifically against other P5 opponents&quot;). We now track each game&apos;s opponent, so this is
-        buildable -- it&apos;s queued as a pipeline update, just not live on the site yet. The standout
-        projections above are today&apos;s closest answer: real current production, run through the same
-        projection math as the TPE Engine against average competition at the target level.
+      <div className="card">
+        <h2>
+          Who Performs Best Against P5 Competition
+          <span className="hint" title="Real per-game scoring specifically in games played against P5 opponents this season -- not a projection, not a season average. Each player's own team's level is noted next to her name.">
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Actual production in real games against P5 opponents, not a projection -- each game&apos;s opponent is
+          tracked individually, so this is what actually happened, not an estimate.
+        </p>
+        <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>P5 vs. P5</h2>
+            <OpponentSplitTable data={p5VsP5} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Low-Major vs. P5</h2>
+            <OpponentSplitTable data={lmVsP5} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major vs. P5</h2>
+            <OpponentSplitTable data={mmVsP5} />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -218,6 +246,37 @@ function StandoutTable({ data }: { data: StandoutsLeaderboard }) {
               </td>
               <td>{p.current_hoop_score.toFixed(1)}</td>
               <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.projected_hoop_score.toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OpponentSplitTable({ data }: { data: OpponentSplitLeaderboard }) {
+  if (data.players.length === 0) return <p className="empty-state">No qualifying players.</p>;
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>GP</th>
+            <th>PPG</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.players.map((p) => (
+            <tr key={p.player_id}>
+              <td>
+                <Link href={`/players/${p.player_id}`}>{p.name}</Link>
+                <div className="label" style={{ marginTop: 2 }}>
+                  {p.team_name}
+                </div>
+              </td>
+              <td>{p.games_vs_opponent}</td>
+              <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.avg_points.toFixed(1)}</td>
             </tr>
           ))}
         </tbody>

@@ -1,0 +1,8 @@
+# Summit TPE prototype has zero external dependencies.
+# Everything runs on the Python standard library (sqlite3, math,
+# random, statistics, datetime, pathlib) -- Python 3.9+.
+#
+# This file is intentionally empty of packages. When real data
+# ingestion, a web API, or a DB migration to Postgres are added,
+# list those dependencies here (e.g. requests, fastapi, sqlalchemy,
+# psycopg2-binary, pandas).

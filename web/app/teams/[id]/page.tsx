@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamRoles, TeamNeeds, TeamFits, Player } from "@/lib/types";
+import type { Team, TeamRoles, TeamNeeds, TeamFits, Player, TeamSchedule } from "@/lib/types";
 import { roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
 
@@ -50,7 +50,7 @@ export default async function TeamDetailPage({
 
       {tab === "overview" && <OverviewTab id={id} team={team} />}
       {tab === "roster" && <RosterTab id={id} />}
-      {tab === "schedule" && <ScheduleTab />}
+      {tab === "schedule" && <ScheduleTab id={id} />}
       {tab === "stats" && <StatsTab id={id} team={team} />}
     </div>
   );
@@ -195,13 +195,59 @@ async function RosterTab({ id }: { id: string }) {
   );
 }
 
-function ScheduleTab() {
+async function ScheduleTab({ id }: { id: string }) {
+  const schedule = await apiFetch<TeamSchedule>(`/teams/${id}/schedule`, { params: { season: "2025-26" }, revalidate: 60 });
+
+  if (schedule.games.length === 0) {
+    return <p className="empty-state">No games on record for this team.</p>;
+  }
+
   return (
-    <div className="info-box">
-      Game-by-game schedule and results aren&apos;t wired up on the site yet -- the underlying data exists in the
-      source workbook and is queued to be added to the pipeline. Check back soon.
+    <div className="card">
+      <h2>Schedule</h2>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Opponent</th>
+              <th>Result</th>
+              <th>Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {schedule.games.map((g) => (
+              <tr key={g.game_id}>
+                <td>{formatGameDate(g.date)}</td>
+                <td>
+                  {g.is_home ? "vs " : "@ "}
+                  {g.opponent_name}
+                  {g.neutral_site ? <span className="pill" style={{ marginLeft: 6 }}>Neutral</span> : null}
+                </td>
+                <td>
+                  {g.won == null ? (
+                    <span className="pill">--</span>
+                  ) : (
+                    <span className={g.won ? "pill pill-good" : "pill pill-warn"}>{g.won ? "W" : "L"}</span>
+                  )}
+                </td>
+                <td>
+                  {g.team_score ?? "--"}-{g.opponent_score ?? "--"}
+                  {g.overtime ? " (OT)" : ""}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
+}
+
+function formatGameDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
 async function StatsTab({ id, team }: { id: string; team: Team }) {

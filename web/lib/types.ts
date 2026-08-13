@@ -282,6 +282,90 @@ export interface PlayerTrajectory {
   trend_note: string;
 }
 
+export interface PlayerGameLogRow {
+  season: string;
+  date: string;
+  opponent_name: string | null;
+  opponent_tier: string | null;
+  started: number;
+  minutes: number;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  turnovers: number;
+  fouls: number;
+  fgm: number;
+  fga: number;
+  tfgm: number;
+  tfga: number;
+  ftm: number;
+  fta: number;
+}
+
+export interface PlayerGameLogs {
+  player_id: number;
+  season: string | null;
+  games: PlayerGameLogRow[];
+}
+
+export interface ScheduleGame {
+  game_id: string;
+  season: string;
+  date: string;
+  home_team_id: number;
+  home_team_name: string;
+  away_team_id: number;
+  away_team_name: string;
+  home_score: number | null;
+  away_score: number | null;
+  winner_team_id: number | null;
+  margin: number | null;
+  neutral_site: number;
+  overtime: number;
+  conference_game: number;
+  opponent_name: string;
+  opponent_team_id: number;
+  team_score: number | null;
+  opponent_score: number | null;
+  is_home: boolean;
+  won: boolean | null;
+}
+
+export interface TeamSchedule {
+  team_id: number;
+  season: string | null;
+  games: ScheduleGame[];
+}
+
+export interface OpponentSplitPlayer {
+  player_id: number;
+  name: string;
+  team_name: string;
+  own_tier: string;
+  position: string;
+  class_year: string;
+  games_vs_opponent: number;
+  avg_points: number;
+  avg_rebounds: number;
+  avg_assists: number;
+  avg_steals: number;
+  avg_blocks: number;
+  avg_turnovers: number;
+  stat_value: number;
+}
+
+export interface OpponentSplitLeaderboard {
+  stat: string;
+  stat_label: string;
+  lower_is_better: boolean;
+  own_level: string | null;
+  opponent_level: string;
+  min_games: number;
+  players: OpponentSplitPlayer[];
+}
+
 export const ROLE_NAMES = ["starter", "sixth_man", "role_player", "depth_piece"] as const;
 export type RoleName = (typeof ROLE_NAMES)[number];
 

@@ -99,6 +99,7 @@ def load(path):
             name=row[th["Team"] - 1],
             division=row[th["Division"] - 1],
             conference=row[th["Conference"] - 1],
+            school_level=row[th["School Level"] - 1] if "School Level" in th else None,
         )
     print(f"  Teams: {len(teams)}")
  
@@ -106,6 +107,7 @@ def load(path):
     gh = header_map(games_ws)
     games_by_season = defaultdict(list)
     game_lookup = {}
+    schedule_rows = []
     for row in games_ws.iter_rows(min_row=2, values_only=True):
         gid = row[gh["Game ID"] - 1]
         if gid is None:
@@ -117,6 +119,18 @@ def load(path):
         if home_id is not None and away_id is not None and hs is not None and as_ is not None:
             games_by_season[season].append((home_id, away_id, hs, as_))
         game_lookup[gid] = (home_id, away_id, margin, season)
+        # Persisted for the team Schedule tab -- every game regardless of
+        # whether it had usable scores for the rating computation above.
+        winner_id = row[gh["Winner"] - 1] if "Winner" in gh else None
+        schedule_rows.append(dict(
+            game_id=gid, season=season, date=row[gh["Date"] - 1],
+            home_team_id=home_id, home_team_name=row[gh["Home Team"] - 1],
+            away_team_id=away_id, away_team_name=row[gh["Away Team"] - 1],
+            home_score=hs, away_score=as_, winner_team_id=winner_id, margin=margin,
+            neutral_site=1 if row[gh["Neutral Site"] - 1] else 0,
+            overtime=1 if row[gh["Overtime"] - 1] else 0,
+            conference_game=1 if row[gh["conference Game"] - 1] else 0,
+        ))
     print(f"  Games: by season {[(s, len(v)) for s, v in games_by_season.items()]}")
  
     ps_ws = wb["PlayerSeasons"]
@@ -154,6 +168,7 @@ def load(path):
     pgs_ws = wb["PlayerGameStats"]
     gsh = header_map(pgs_ws)
     game_rows_by_season = defaultdict(list)
+    game_log_rows = []
     for row in pgs_ws.iter_rows(min_row=2, values_only=True):
         pid = row[gsh["Player ID"] - 1]
         if pid is None:
@@ -167,12 +182,43 @@ def load(path):
             blk=row[gsh["Blk"] - 1] or 0, stl=row[gsh["Stl"] - 1] or 0, points=row[gsh["Points"] - 1] or 0,
             game_id=row[gsh["Game ID"] - 1],
         ))
+        # Persisted verbatim (not just used transiently for the season
+        # aggregate above) for player-profile game logs and opponent-level
+        # split leaderboards -- Opponent Level is already denormalized onto
+        # this sheet per game, so no join against teams is needed to know
+        # what tier a given game's opponent was at.
+        gs_val = row[gsh["GS"] - 1] if "GS" in gsh else None
+        started = 1 if (isinstance(gs_val, str) and gs_val.strip().lower() in ("yes", "y", "true")) else (
+            1 if gs_val is True else 0
+        )
+        game_log_rows.append(dict(
+            player_id=pid, season=season, game_id=row[gsh["Game ID"] - 1], date=row[gsh["Date"] - 1],
+            team_id=row[gsh["Team ID"] - 1], opponent_team_id=row[gsh["Opponent Team ID"] - 1],
+            opponent_name=row[gsh["Opponent"] - 1] if "Opponent" in gsh else None,
+            # NOTE: the sheet's "Opponent Level" column is D1/D2 (division), NOT
+            # the P5/Mid-Major/Low-Major tier -- that would need a join against
+            # teams.tier via opponent_team_id, done at query time in
+            # projection.py rather than stored here (avoids a second source of
+            # truth that could drift from teams.tier).
+            opponent_division=row[gsh["Opponent Level"] - 1] if "Opponent Level" in gsh else None,
+            started=started, minutes=row[gsh["Min"] - 1] or 0,
+            points=row[gsh["Points"] - 1] or 0, rebounds=row[gsh["Rebound"] - 1] or 0,
+            assists=row[gsh["Ast"] - 1] or 0, steals=row[gsh["Stl"] - 1] or 0,
+            blocks=row[gsh["Blk"] - 1] or 0, turnovers=row[gsh["To"] - 1] or 0,
+            fouls=row[gsh["Foul"] - 1] or 0,
+            fgm=row[gsh["FG Made"] - 1] or 0, fga=row[gsh["FG Attempt"] - 1] or 0,
+            tfgm=row[gsh["3FG M"] - 1] or 0 if "3FG M" in gsh else 0,
+            tfga=row[gsh["3FG A"] - 1] or 0 if "3FG A" in gsh else 0,
+            ftm=row[gsh["FT M"] - 1] or 0, fta=row[gsh["FT A"] - 1] or 0,
+        ))
     print(f"  PlayerGameStats: by season {[(s, len(v)) for s, v in game_rows_by_season.items()]}")
+    print(f"  Game logs persisted: {len(game_log_rows)}")
  
     wb.close()
     return dict(teams=teams, games_by_season=games_by_season, game_lookup=game_lookup,
                 player_season=player_season, player_name=player_name, game_rows_by_season=game_rows_by_season,
-                player_transfer_portal=player_transfer_portal)
+                player_transfer_portal=player_transfer_portal, game_log_rows=game_log_rows,
+                schedule_rows=schedule_rows)
  
  
 def pick_latest_season(games_by_season):
@@ -291,9 +337,14 @@ def compute_season_profiles(data, season):
     for tid, info in data["teams"].items():
         if tid not in rat:
             continue
+        # Prefer the explicit "School Level" column from the Teams sheet
+        # (user-curated, confirmed to match classify_tier()'s heuristic for
+        # every team in the current workbook) -- fall back to the heuristic
+        # only if a future workbook is missing the column for some team.
+        tier = info.get("school_level") or classify_tier(info["name"], info["conference"])
         team_rows.append(dict(
             team_id=tid, name=info["name"], division=info["division"], conference=info["conference"],
-            tier=classify_tier(info["name"], info["conference"]),
+            tier=tier,
             current_rating=rat[tid], sos=sos.get(tid),
         ))
  
@@ -410,7 +461,7 @@ def main():
     # ---- write sqlite ----
     print(f"\nWriting {args.out} ...")
     conn = sqlite3.connect(args.out)
-    for tbl in ("teams", "players", "meta", "team_profile", "player_history"):
+    for tbl in ("teams", "players", "meta", "team_profile", "player_history", "player_game_logs", "games"):
         conn.execute(f"DROP TABLE IF EXISTS {tbl}")
  
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -482,10 +533,54 @@ def main():
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,:hoop_score,:hoop_score_raw)""",
         player_history_rows,
     )
+    # ---- player_game_logs: every individual game a player appeared in,
+    # across every season in the workbook -- powers per-season game logs on
+    # the player profile page and opponent-level split leaderboards (a game
+    # log's opponent_level is denormalized straight from the source sheet,
+    # so those leaderboards are a plain filter/group-by, no join needed). ----
+    conn.execute("""
+        CREATE TABLE player_game_logs (
+            player_id INTEGER, season TEXT, game_id TEXT, date TEXT,
+            team_id INTEGER, opponent_team_id INTEGER, opponent_name TEXT, opponent_division TEXT,
+            started INTEGER, minutes REAL, points INTEGER, rebounds INTEGER, assists INTEGER,
+            steals INTEGER, blocks INTEGER, turnovers INTEGER, fouls INTEGER,
+            fgm INTEGER, fga INTEGER, tfgm INTEGER, tfga INTEGER, ftm INTEGER, fta INTEGER
+        )
+    """)
+    conn.executemany(
+        """INSERT INTO player_game_logs VALUES (:player_id,:season,:game_id,:date,:team_id,
+           :opponent_team_id,:opponent_name,:opponent_division,:started,:minutes,:points,:rebounds,
+           :assists,:steals,:blocks,:turnovers,:fouls,:fgm,:fga,:tfgm,:tfga,:ftm,:fta)""",
+        data["game_log_rows"],
+    )
+
+    # ---- games: full schedule/results, every season -- powers the team
+    # Schedule tab. ----
+    conn.execute("""
+        CREATE TABLE games (
+            game_id TEXT PRIMARY KEY, season TEXT, date TEXT,
+            home_team_id INTEGER, home_team_name TEXT, away_team_id INTEGER, away_team_name TEXT,
+            home_score INTEGER, away_score INTEGER, winner_team_id INTEGER, margin INTEGER,
+            neutral_site INTEGER, overtime INTEGER, conference_game INTEGER
+        )
+    """)
+    conn.executemany(
+        """INSERT OR IGNORE INTO games VALUES (:game_id,:season,:date,:home_team_id,:home_team_name,
+           :away_team_id,:away_team_name,:home_score,:away_score,:winner_team_id,:margin,
+           :neutral_site,:overtime,:conference_game)""",
+        data["schedule_rows"],
+    )
+
     conn.execute("CREATE INDEX idx_players_name ON players(name)")
     conn.execute("CREATE INDEX idx_players_team ON players(team_id)")
     conn.execute("CREATE INDEX idx_teams_tier ON teams(tier)")
     conn.execute("CREATE INDEX idx_history_player ON player_history(player_id)")
+    conn.execute("CREATE INDEX idx_gamelogs_player_season ON player_game_logs(player_id, season)")
+    conn.execute("CREATE INDEX idx_gamelogs_oppteam ON player_game_logs(opponent_team_id)")
+    conn.execute("CREATE INDEX idx_gamelogs_team ON player_game_logs(team_id)")
+    conn.execute("CREATE INDEX idx_games_season ON games(season)")
+    conn.execute("CREATE INDEX idx_games_home ON games(home_team_id)")
+    conn.execute("CREATE INDEX idx_games_away ON games(away_team_id)")
     conn.commit()
     conn.close()
     print("Done.")
