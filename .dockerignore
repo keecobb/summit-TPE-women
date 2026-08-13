@@ -1,0 +1,10 @@
+# Keep the deploy image to exactly what api.py needs at runtime.
+# Everything else in this folder (the workbook, scrapers, dev/one-off
+# scripts, backups, logs) stays on your machine and out of the image.
+
+*
+!requirements-api.txt
+!api.py
+!projection.py
+!summit_calc.py
+!summit_tpe_cache.sqlite

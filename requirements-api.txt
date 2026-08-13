@@ -1,0 +1,5 @@
+# Runtime-only deps for the deployed API container.
+# openpyxl stays out on purpose -- it's only needed by build_cache.py,
+# which never runs inside this image (see Dockerfile / DEPLOY.md).
+fastapi
+uvicorn[standard]

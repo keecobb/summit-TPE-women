@@ -1,0 +1,495 @@
+"""Builds summit_tpe_cache.sqlite from WomensSummitTPE.xlsx:
+  - teams: one row per current-season team (rating + tier)
+  - players: one row per current-season player (season stat profile)
+  - team_profile: one row per current-season team, roster-derived category
+    rates (rebounding/assists/blocks/steals/turnovers/shooting), used by
+    /teams/{id}/needs and /teams/{id}/fits to find a team's statistical
+    weaknesses and rank transfer targets against them.
+  - player_history: one row per (player, season) for EVERY season in the
+    workbook (not just the current one), used by /players/{id}/trajectory
+    to show whether a player's production is trending up or down.
+  - meta: season label + league mean/std for Rat and for each team_profile
+    category (needed to turn a team's raw category rate into "how weak is
+    this, relative to the rest of the league").
+ 
+This is the STATIC half of the transfer calculator -- a player's own
+season stats and a team's own category profile don't change based on what
+matchup you're evaluating, so they're computed once here and cached,
+instead of being recomputed on every API request. The FLUID half (target
+team, minutes, which player(s) you're comparing) is computed live per-
+request by projection.py, reading from this cache.
+ 
+Re-run this once per season (or whenever the underlying workbook's box
+scores update) to refresh the cache; the API always reads whatever's
+currently in summit_tpe_cache.sqlite.
+ 
+Usage:
+    python build_cache.py --path WomensSummitTPE.xlsx --out summit_tpe_cache.sqlite
+"""
+ 
+import argparse
+import sqlite3
+import statistics
+from collections import defaultdict
+ 
+import openpyxl
+ 
+from summit_calc import (
+    BUCKET_WEIGHTS, EXPERIENCE_MULT, MIN_GAMES_FOR_PROFILE, MIN_TOTAL_MINUTES_FOR_PROFILE,
+    POSITION_TO_BUCKET, classify_tier, close_game_weight, compute_sos, composite_game_score,
+    iterative_off_def, opponent_strength_factor, per40_scale, scale_to_hoopscore,
+)
+ 
+# Category rates a team's roster is profiled on, for /teams/{id}/needs and
+# /teams/{id}/fits. per40_tov is included but flagged LOWER_IS_BETTER in
+# projection.py -- a team with a HIGH turnover rate has a weakness there,
+# not a strength, so its z-score gets flipped at read time.
+TEAM_PROFILE_STATS = ["per40_pts", "per40_reb", "per40_ast", "per40_blk", "per40_stl", "per40_tov"]
+TEAM_PROFILE_PCT_STATS = ["ts_pct", "fg_pct"]
+ 
+ 
+def header_map(ws):
+    mapping = {}
+    for cell in next(ws.iter_rows(min_row=1, max_row=1)):
+        if cell.value is not None and str(cell.value).strip():
+            mapping[str(cell.value).strip()] = cell.column
+    return mapping
+ 
+ 
+# Column name(s) to look for on the Players sheet for transfer-portal
+# status. Optional -- most workbooks won't have this yet (see load()'s
+# "no Transfer Portal column found" note). Checked in order; first match
+# wins.
+TRANSFER_PORTAL_COLUMNS = ("Transfer Portal", "In Transfer Portal")
+_TRUE_VALUES = {"yes", "y", "true", "t", "1"}
+_FALSE_VALUES = {"no", "n", "false", "f", "0"}
+ 
+ 
+def _parse_tri_bool(value):
+    """Yes/No/TRUE/FALSE/1/0 (any case, or an actual bool/int) -> 1/0.
+    Blank or unrecognized -> None (means "unknown", NOT "confirmed not in
+    the portal" -- an important distinction for a column that mostly isn't
+    populated yet)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    s = str(value).strip().lower()
+    if s in _TRUE_VALUES:
+        return 1
+    if s in _FALSE_VALUES:
+        return 0
+    return None
+ 
+ 
+def load(path):
+    print(f"Opening {path} read-only for extraction ...")
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+ 
+    teams_ws = wb["Teams"]
+    th = header_map(teams_ws)
+    teams = {}   # team_id -> dict(name, division, conference)
+    for row in teams_ws.iter_rows(min_row=2, values_only=True):
+        tid = row[th["Team ID"] - 1]
+        if tid is None:
+            continue
+        teams[tid] = dict(
+            name=row[th["Team"] - 1],
+            division=row[th["Division"] - 1],
+            conference=row[th["Conference"] - 1],
+        )
+    print(f"  Teams: {len(teams)}")
+ 
+    games_ws = wb["Games"]
+    gh = header_map(games_ws)
+    games_by_season = defaultdict(list)
+    game_lookup = {}
+    for row in games_ws.iter_rows(min_row=2, values_only=True):
+        gid = row[gh["Game ID"] - 1]
+        if gid is None:
+            continue
+        season = row[gh["Season"] - 1]
+        home_id, away_id = row[gh["Home Team ID"] - 1], row[gh["Away Team ID"] - 1]
+        hs, as_ = row[gh["Home Score"] - 1], row[gh["Away Score"] - 1]
+        margin = row[gh["Margin"] - 1]
+        if home_id is not None and away_id is not None and hs is not None and as_ is not None:
+            games_by_season[season].append((home_id, away_id, hs, as_))
+        game_lookup[gid] = (home_id, away_id, margin, season)
+    print(f"  Games: by season {[(s, len(v)) for s, v in games_by_season.items()]}")
+ 
+    ps_ws = wb["PlayerSeasons"]
+    ph = header_map(ps_ws)
+    player_season = {}
+    for row in ps_ws.iter_rows(min_row=2, values_only=True):
+        pid, season = row[ph["Player ID"] - 1], row[ph["Season"] - 1]
+        if pid is None or season is None:
+            continue
+        player_season[(pid, season)] = dict(
+            team_id=row[ph["Team ID"] - 1], division=row[ph["Division"] - 1],
+            position=row[ph["Position"] - 1], class_year=row[ph["Class"] - 1],
+        )
+    print(f"  PlayerSeasons: {len(player_season)}")
+ 
+    players_ws = wb["Players"]
+    plh = header_map(players_ws)
+    portal_col_name = next((c for c in TRANSFER_PORTAL_COLUMNS if c in plh), None)
+    player_name = {}
+    player_transfer_portal = {}
+    for row in players_ws.iter_rows(min_row=2, values_only=True):
+        pid = row[plh["Player ID"] - 1]
+        if pid is None:
+            continue
+        player_name[pid] = f"{row[plh['First Name'] - 1] or ''} {row[plh['Last Name'] - 1] or ''}".strip()
+        if portal_col_name:
+            player_transfer_portal[pid] = _parse_tri_bool(row[plh[portal_col_name] - 1])
+    if portal_col_name:
+        n_flagged = sum(1 for v in player_transfer_portal.values() if v == 1)
+        print(f"  Players: {len(player_name)} (Transfer Portal column found: {n_flagged} flagged 'Yes')")
+    else:
+        print(f"  Players: {len(player_name)} (no Transfer Portal column on the Players sheet yet -- "
+              f"in_transfer_portal will be NULL/unknown for everyone until one is added)")
+ 
+    pgs_ws = wb["PlayerGameStats"]
+    gsh = header_map(pgs_ws)
+    game_rows_by_season = defaultdict(list)
+    for row in pgs_ws.iter_rows(min_row=2, values_only=True):
+        pid = row[gsh["Player ID"] - 1]
+        if pid is None:
+            continue
+        season = row[gsh["Season"] - 1]
+        game_rows_by_season[season].append(dict(
+            player_id=pid, team_id=row[gsh["Team ID"] - 1], opp_team_id=row[gsh["Opponent Team ID"] - 1],
+            minutes=row[gsh["Min"] - 1] or 0, fgm=row[gsh["FG Made"] - 1] or 0, fga=row[gsh["FG Attempt"] - 1] or 0,
+            ftm=row[gsh["FT M"] - 1] or 0, fta=row[gsh["FT A"] - 1] or 0, reb=row[gsh["Rebound"] - 1] or 0,
+            pf=row[gsh["Foul"] - 1] or 0, ast=row[gsh["Ast"] - 1] or 0, tov=row[gsh["To"] - 1] or 0,
+            blk=row[gsh["Blk"] - 1] or 0, stl=row[gsh["Stl"] - 1] or 0, points=row[gsh["Points"] - 1] or 0,
+            game_id=row[gsh["Game ID"] - 1],
+        ))
+    print(f"  PlayerGameStats: by season {[(s, len(v)) for s, v in game_rows_by_season.items()]}")
+ 
+    wb.close()
+    return dict(teams=teams, games_by_season=games_by_season, game_lookup=game_lookup,
+                player_season=player_season, player_name=player_name, game_rows_by_season=game_rows_by_season,
+                player_transfer_portal=player_transfer_portal)
+ 
+ 
+def pick_latest_season(games_by_season):
+    return max(games_by_season, key=lambda s: len(games_by_season[s]))
+ 
+ 
+def compute_season_profiles(data, season):
+    """Everything derived from ONE season's games + box scores: team Off/
+    Def/Rat/SoS and each player's season stat profile (same math as
+    compute_derived_sheets.py). Factored out so it can be run once for the
+    current season (teams/players tables) and again for every season in
+    the workbook (player_history, for trajectory)."""
+    games = data["games_by_season"].get(season, [])
+    off, def_ = iterative_off_def(games)
+    rat = {t: off[t] - def_[t] for t in off}
+    sos = compute_sos(games, rat)
+    rat_values = list(rat.values())
+    league_mean_rat = statistics.mean(rat_values) if rat_values else 0.0
+    league_std_rat = (statistics.pstdev(rat_values) if len(rat_values) > 1 else 1.0) or 1.0
+ 
+    rows = data["game_rows_by_season"].get(season, [])
+    game_lookup = data["game_lookup"]
+    per_player_games = defaultdict(list)
+    per_player_meta = {}
+ 
+    for r in rows:
+        pid = r["player_id"]
+        ps = data["player_season"].get((pid, season))
+        if ps is None:
+            continue
+        position = ps["position"]
+        bucket = POSITION_TO_BUCKET.get(position, "ALL")
+        minutes = max(r["minutes"], 1)
+        scale = per40_scale(minutes)
+        ftmiss = r["fta"] - r["ftm"]
+        raw = composite_game_score(bucket, r["points"], r["fgm"], r["fga"], ftmiss,
+                                    r["reb"], r["ast"], r["stl"], r["blk"], r["tov"], r["pf"])
+        composite_per40 = raw * scale
+        opp_rat = rat.get(r["opp_team_id"], league_mean_rat)
+        opp_factor = opponent_strength_factor(opp_rat, league_mean_rat, 2 * league_std_rat)
+        adjusted_value = composite_per40 * opp_factor
+ 
+        margin = None
+        gl = game_lookup.get(r["game_id"])
+        if gl:
+            home_id, away_id, gmargin, _ = gl
+            if gmargin is not None:
+                if r["team_id"] == home_id:
+                    margin = gmargin
+                elif r["team_id"] == away_id:
+                    margin = -gmargin
+        cgw = close_game_weight(margin) if margin is not None else 1.0
+        reliability = max(0.3, min(1.0, minutes / 15.0))
+        weight = cgw * reliability
+ 
+        per_player_games[pid].append(dict(
+            value=adjusted_value, weight=weight,
+            minutes=minutes, points=r["points"], reb=r["reb"], ast=r["ast"], fga=r["fga"], fta=r["fta"],
+            blk=r["blk"], stl=r["stl"], tov=r["tov"], fgm=r["fgm"],
+        ))
+        if pid not in per_player_meta:
+            per_player_meta[pid] = dict(team_id=ps["team_id"], division=ps["division"],
+                                         position=position, class_year=ps["class_year"],
+                                         in_transfer_portal=data["player_transfer_portal"].get(pid))
+ 
+    season_raw = {}
+    for pid, glist in per_player_games.items():
+        wsum = sum(g["weight"] for g in glist)
+        sraw = (sum(g["value"] * g["weight"] for g in glist) / wsum) if wsum > 0 else (sum(g["value"] for g in glist) / len(glist))
+        mult = EXPERIENCE_MULT.get(per_player_meta[pid]["class_year"], 1.0)
+        season_raw[pid] = sraw * mult
+    season_hs, season_hs_raw, _, _ = scale_to_hoopscore(season_raw)
+ 
+    player_rows = []
+    skipped_thin_minutes = 0
+    for pid, glist in per_player_games.items():
+        n_games = len(glist)
+        if n_games < MIN_GAMES_FOR_PROFILE:
+            continue
+        meta = per_player_meta[pid]
+        total_min = sum(g["minutes"] for g in glist)
+        if total_min < MIN_TOTAL_MINUTES_FOR_PROFILE:
+            skipped_thin_minutes += 1
+            continue
+        total_pts = sum(g["points"] for g in glist)
+        total_reb = sum(g["reb"] for g in glist)
+        total_ast = sum(g["ast"] for g in glist)
+        total_fga = sum(g["fga"] for g in glist)
+        total_fta = sum(g["fta"] for g in glist)
+        total_blk = sum(g["blk"] for g in glist)
+        total_stl = sum(g["stl"] for g in glist)
+        total_tov = sum(g["tov"] for g in glist)
+        total_fgm = sum(g["fgm"] for g in glist)
+        true_shot_attempts = total_fga + 0.44 * total_fta
+        ts_pct = (total_pts / (2 * true_shot_attempts)) if true_shot_attempts >= 15 else None
+        fg_pct = (total_fgm / total_fga) if total_fga >= 15 else None
+        player_rows.append(dict(
+            player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
+            team_id=meta["team_id"], division=meta["division"], position=meta["position"],
+            class_year=meta["class_year"], in_transfer_portal=meta["in_transfer_portal"],
+            season=season, games=n_games,
+            total_minutes=total_min,
+            avg_minutes=total_min / n_games, ppg=total_pts / n_games, rpg=total_reb / n_games,
+            apg=total_ast / n_games, bpg=total_blk / n_games, spg=total_stl / n_games,
+            topg=total_tov / n_games, ts_pct=ts_pct, fg_pct=fg_pct,
+            per40_pts=total_pts / total_min * 40.0,
+            per40_reb=total_reb / total_min * 40.0,
+            per40_ast=total_ast / total_min * 40.0,
+            per40_blk=total_blk / total_min * 40.0,
+            per40_stl=total_stl / total_min * 40.0,
+            per40_tov=total_tov / total_min * 40.0,
+            hoop_score=season_hs[pid], hoop_score_raw=season_hs_raw[pid],
+        ))
+ 
+    team_rows = []
+    for tid, info in data["teams"].items():
+        if tid not in rat:
+            continue
+        team_rows.append(dict(
+            team_id=tid, name=info["name"], division=info["division"], conference=info["conference"],
+            tier=classify_tier(info["name"], info["conference"]),
+            current_rating=rat[tid], sos=sos.get(tid),
+        ))
+ 
+    return dict(
+        team_rows=team_rows, player_rows=player_rows,
+        league_mean_rat=league_mean_rat, league_std_rat=league_std_rat,
+        skipped_thin_minutes=skipped_thin_minutes,
+    )
+ 
+ 
+def compute_team_profiles(player_rows):
+    """Roster-derived team category rates: each team's players' per-40
+    rates and shooting percentages, weighted by how many minutes each
+    player actually played this season (so a walk-on who saw 4 minutes
+    doesn't move the team's characteristic profile as much as a starter).
+    This is a proxy, not a real team-level box score aggregate (the
+    workbook doesn't have team-level box scores, only player-level) -- it
+    answers "what does this team's roster, weighted by playing time, look
+    like statistically" rather than "what did this team actually total
+    across all its games." Good enough to find a team's relative
+    strengths/weaknesses vs. the rest of the league; not a substitute for
+    real team-game totals if those ever become available."""
+    wsum = defaultdict(float)
+    acc = defaultdict(lambda: defaultdict(float))
+    ts_wsum = defaultdict(float)
+    fg_wsum = defaultdict(float)
+    roster_size = defaultdict(int)
+ 
+    for p in player_rows:
+        tid = p["team_id"]
+        w = p["total_minutes"]
+        if not w:
+            continue
+        roster_size[tid] += 1
+        wsum[tid] += w
+        for stat in TEAM_PROFILE_STATS:
+            acc[tid][stat] += p[stat] * w
+        if p["ts_pct"] is not None:
+            acc[tid]["ts_pct"] += p["ts_pct"] * w
+            ts_wsum[tid] += w
+        if p["fg_pct"] is not None:
+            acc[tid]["fg_pct"] += p["fg_pct"] * w
+            fg_wsum[tid] += w
+ 
+    rows = []
+    for tid, w in wsum.items():
+        if w <= 0:
+            continue
+        row = dict(team_id=tid, roster_size=roster_size[tid])
+        for stat in TEAM_PROFILE_STATS:
+            row[stat] = acc[tid][stat] / w
+        row["ts_pct"] = (acc[tid]["ts_pct"] / ts_wsum[tid]) if ts_wsum[tid] > 0 else None
+        row["fg_pct"] = (acc[tid]["fg_pct"] / fg_wsum[tid]) if fg_wsum[tid] > 0 else None
+        rows.append(row)
+    return rows
+ 
+ 
+def league_profile_stats(team_profile_rows):
+    """League-wide mean/std for each team_profile category, so a single
+    team's rate can be turned into a z-score (how unusual is this,
+    relative to every other team's roster this season)."""
+    stats = {}
+    for stat in TEAM_PROFILE_STATS + TEAM_PROFILE_PCT_STATS:
+        vals = [r[stat] for r in team_profile_rows if r.get(stat) is not None]
+        if vals:
+            mean = statistics.mean(vals)
+            std = (statistics.pstdev(vals) if len(vals) > 1 else 1.0) or 1.0
+        else:
+            mean, std = 0.0, 1.0
+        stats[stat] = dict(mean=mean, std=std)
+    return stats
+ 
+ 
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--path", required=True)
+    parser.add_argument("--out", default="summit_tpe_cache.sqlite")
+    args = parser.parse_args()
+ 
+    data = load(args.path)
+    season = pick_latest_season(data["games_by_season"])
+    print(f"\nCurrent season: {season}")
+ 
+    current = compute_season_profiles(data, season)
+    team_rows, player_rows = current["team_rows"], current["player_rows"]
+    league_mean_rat, league_std_rat = current["league_mean_rat"], current["league_std_rat"]
+    print(f"Rat: n={len(team_rows)} mean={league_mean_rat:.2f} std={league_std_rat:.2f}")
+    print(f"Player profiles (>= {MIN_GAMES_FOR_PROFILE} games AND >= {MIN_TOTAL_MINUTES_FOR_PROFILE} total minutes): "
+          f"{len(player_rows)} ({current['skipped_thin_minutes']} more had enough games but too few total minutes, excluded)")
+    tier_counts = defaultdict(int)
+    for t in team_rows:
+        tier_counts[t["tier"]] += 1
+    print(f"Team ratings: {len(team_rows)} (by tier: {dict(tier_counts)})")
+ 
+    # ---- team category profiles (for /teams/{id}/needs, /teams/{id}/fits) ----
+    team_profile_rows = compute_team_profiles(player_rows)
+    profile_stats = league_profile_stats(team_profile_rows)
+    print(f"Team category profiles: {len(team_profile_rows)}")
+ 
+    # ---- player history across EVERY season (for /players/{id}/trajectory) ----
+    print("\nComputing player history across all seasons ...")
+    player_history_rows = []
+    for hseason in data["games_by_season"]:
+        if hseason == season:
+            hres = current
+        else:
+            hres = compute_season_profiles(data, hseason)
+        for p in hres["player_rows"]:
+            team_name = data["teams"].get(p["team_id"], {}).get("name")
+            player_history_rows.append(dict(p, team_name=team_name))
+        print(f"  {hseason}: {len(hres['player_rows'])} player-season rows")
+    print(f"player_history total: {len(player_history_rows)} rows")
+ 
+    # ---- write sqlite ----
+    print(f"\nWriting {args.out} ...")
+    conn = sqlite3.connect(args.out)
+    for tbl in ("teams", "players", "meta", "team_profile", "player_history"):
+        conn.execute(f"DROP TABLE IF EXISTS {tbl}")
+ 
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    meta_rows = [
+        ("season", season),
+        ("league_mean_rat", str(league_mean_rat)),
+        ("league_std_rat", str(league_std_rat)),
+    ]
+    for stat, s in profile_stats.items():
+        meta_rows.append((f"league_mean_{stat}", str(s["mean"])))
+        meta_rows.append((f"league_std_{stat}", str(s["std"])))
+    conn.executemany("INSERT INTO meta VALUES (?, ?)", meta_rows)
+ 
+    conn.execute("""
+        CREATE TABLE teams (
+            team_id INTEGER PRIMARY KEY, name TEXT, division TEXT, conference TEXT,
+            tier TEXT, current_rating REAL, sos REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE players (
+            player_id INTEGER PRIMARY KEY, name TEXT, team_id INTEGER, division TEXT,
+            position TEXT, class_year TEXT, season TEXT, games INTEGER,
+            avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
+            ts_pct REAL, fg_pct REAL,
+            per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
+            hoop_score REAL, hoop_score_raw REAL,
+            in_transfer_portal INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE team_profile (
+            team_id INTEGER PRIMARY KEY, roster_size INTEGER,
+            per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
+            ts_pct REAL, fg_pct REAL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE player_history (
+            player_id INTEGER, name TEXT, season TEXT, team_id INTEGER, team_name TEXT,
+            division TEXT, position TEXT, class_year TEXT, games INTEGER,
+            avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
+            ts_pct REAL, fg_pct REAL,
+            per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
+            hoop_score REAL, hoop_score_raw REAL,
+            PRIMARY KEY (player_id, season)
+        )
+    """)
+ 
+    conn.executemany(
+        "INSERT INTO teams VALUES (:team_id,:name,:division,:conference,:tier,:current_rating,:sos)",
+        team_rows,
+    )
+    conn.executemany(
+        """INSERT INTO players VALUES (:player_id,:name,:team_id,:division,:position,:class_year,
+           :season,:games,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,
+           :hoop_score,:hoop_score_raw,:in_transfer_portal)""",
+        player_rows,
+    )
+    conn.executemany(
+        """INSERT INTO team_profile VALUES (:team_id,:roster_size,:per40_pts,:per40_reb,:per40_ast,
+           :per40_blk,:per40_stl,:per40_tov,:ts_pct,:fg_pct)""",
+        team_profile_rows,
+    )
+    conn.executemany(
+        """INSERT INTO player_history VALUES (:player_id,:name,:season,:team_id,:team_name,:division,
+           :position,:class_year,:games,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,:hoop_score,:hoop_score_raw)""",
+        player_history_rows,
+    )
+    conn.execute("CREATE INDEX idx_players_name ON players(name)")
+    conn.execute("CREATE INDEX idx_players_team ON players(team_id)")
+    conn.execute("CREATE INDEX idx_teams_tier ON teams(tier)")
+    conn.execute("CREATE INDEX idx_history_player ON player_history(player_id)")
+    conn.commit()
+    conn.close()
+    print("Done.")
+ 
+ 
+if __name__ == "__main__":
+    main()

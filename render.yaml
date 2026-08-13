@@ -1,0 +1,23 @@
+# Render "Blueprint" -- commit this at the root of the repo/folder you
+# connect to Render, next to the Dockerfile, and Render will read it
+# automatically when you click "New +" -> "Blueprint" and point it at
+# this folder (or the GitHub repo, if you push this folder to one).
+#
+# Starter plan ($7/mo at time of writing) keeps the service always warm
+# -- no cold starts for the first public visitor. The free tier works
+# too (see DEPLOY.md) but spins down after ~15 min idle and takes 30-60s
+# to wake back up on the next request.
+
+services:
+  - type: web
+    name: summit-tpe-api
+    runtime: docker
+    plan: starter
+    region: oregon           # pick whatever's closest to your users
+    healthCheckPath: /health
+    envVars:
+      - key: SUMMIT_TPE_API_KEY
+        sync: false           # set the real value in the Render dashboard, never commit it
+      - key: SUMMIT_TPE_ALLOWED_ORIGINS
+        value: "*"            # replace with your real site domain(s) before going public
+    autoDeploy: true           # redeploy automatically whenever you push a new image/commit
