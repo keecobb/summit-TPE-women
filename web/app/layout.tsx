@@ -44,7 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" className="brand">
               {/* eslint-disable-next-line @next/next/no-img-element -- small fixed-size
                   brand mark; next/image's extra runtime isn't worth it here. */}
-              <img src="/estrella-mark.png" alt="Estrella Works" />
+              <img src="/summit-tpe-mark.png" alt="Summit TPE" />
               Summit <span>TPE</span>
             </Link>
             <MobileNav />

@@ -7,10 +7,7 @@ export default function ContactPage() {
       <div className="card" style={{ maxWidth: 480 }}>
         <h2>Get in touch</h2>
         <p style={{ marginBottom: 4 }}>
-          <strong>Keeshaun Cobb</strong>
-        </p>
-        <p style={{ marginBottom: 4 }}>
-          <a href="mailto:keeshaun@estrellaworks.com">keeshaun@estrellaworks.com</a>
+          <a href="mailto:womens@estrellaworks.com">womens@estrellaworks.com</a>
         </p>
         {/* PLACEHOLDER -- add a phone number, X/LinkedIn, or a real contact form (needs a form backend
             or an email service like Formspree/Resend -- this static page has no server-side mail sending

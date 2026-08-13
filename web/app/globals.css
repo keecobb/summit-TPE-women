@@ -207,6 +207,24 @@ h2 {
   padding: 48px 0 32px;
 }
 
+/* Small callout banner (e.g. the "free during preview" notice above the
+   hero) -- uses the gold-soft/gold pairing so it reads as an announcement,
+   not an error or warning, and adapts automatically in dark mode since
+   --gold-soft/--gold are already theme-aware custom properties. */
+.notice-banner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--gold-soft);
+  border: 1px solid var(--gold);
+  color: var(--gold-dim);
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
 .hero-actions {
   display: flex;
   gap: 12px;

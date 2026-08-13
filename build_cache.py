@@ -173,6 +173,8 @@ def load(path):
     # only, never for historical seasons (see main()'s sheet_meta param to
     # compute_season_profiles).
     player_sheet_meta = {}
+    has_ext_id_col = "External ID" in plh
+    player_external_id = {}
     for row in players_ws.iter_rows(min_row=2, values_only=True):
         pid = row[plh["Player ID"] - 1]
         if pid is None:
@@ -184,6 +186,8 @@ def load(path):
             # whitespace but otherwise pass it through as-is for display;
             # not every player has one on record, so this is often None.
             player_height[pid] = h.strip() if isinstance(h, str) and h.strip() else None
+        if has_ext_id_col:
+            player_external_id[pid] = row[plh["External ID"] - 1]
         if portal_col_name:
             player_transfer_portal[pid] = _parse_tri_bool(row[plh[portal_col_name] - 1])
         player_sheet_meta[pid] = dict(
@@ -192,6 +196,54 @@ def load(path):
             class_year=row[plh["Class"] - 1] if "Class" in plh else None,
             division=row[plh["Division"] - 1] if "Division" in plh else None,
         )
+
+    # Duplicate-source cleanup: some players get scraped into the Players
+    # sheet twice under two different Player IDs -- once from ESPN (a real
+    # External ID, richer bio data, a full season of box scores) and once
+    # from a secondary athletics-site source (Sidearm or Presto -- no
+    # External ID, almost always just 1-2 box score rows). Most often seen
+    # right after a transfer: a real example, Alexis Black shows up as both
+    # pid 5140 (ESPN, Fordham, External ID 5107953, 22 games played) and pid
+    # 8707 (Sidearm, Fordham, no External ID, 1 game played) after her
+    # 2025-26 transfer there -- the new school's own site got scraped as a
+    # "new" roster entry instead of being matched to her existing ESPN
+    # record, so both sides of her season sat on the site as two separate
+    # players. Checked against the full current workbook: every one of 17
+    # same-name/same-team pairs splits cleanly into exactly one ESPN-sourced
+    # row (has an External ID) and one non-ESPN row (no External ID) -- no
+    # case of two real, distinct players sharing a name and team, and no
+    # case where both sides of a pair have an External ID -- so this is a
+    # safe, non-arbitrary signal for which side is the scrape artifact.
+    # The non-ESPN side is dropped entirely, every season (not just the
+    # current one), since it's a duplicate of a real person already
+    # represented elsewhere, not a second player; the 1-2 box score rows it
+    # carries (never overlapping the ESPN side's own games, checked directly)
+    # are a small, acceptable loss against no longer showing a ghost player
+    # on the site.
+    name_team_groups = defaultdict(list)
+    for pid, nm in player_name.items():
+        tid = player_sheet_meta.get(pid, {}).get("team_id")
+        name_team_groups[(nm.strip().lower(), tid)].append((pid, bool(player_external_id.get(pid))))
+    duplicate_exclude_pids = set()
+    for key, entries in name_team_groups.items():
+        if len(entries) < 2:
+            continue
+        has_ext_pids = [pid for pid, has_ext in entries if has_ext]
+        no_ext_pids = [pid for pid, has_ext in entries if not has_ext]
+        if has_ext_pids and no_ext_pids:
+            duplicate_exclude_pids.update(no_ext_pids)
+    if duplicate_exclude_pids:
+        for pid in duplicate_exclude_pids:
+            player_name.pop(pid, None)
+            player_height.pop(pid, None)
+            player_sheet_meta.pop(pid, None)
+            player_transfer_portal.pop(pid, None)
+        for k in [k for k in player_season if k[0] in duplicate_exclude_pids]:
+            player_season.pop(k, None)
+        players_with_any_season.difference_update(duplicate_exclude_pids)
+        print(f"  Duplicate-source players excluded (non-ESPN copy of a player who also has an ESPN "
+              f"record): {len(duplicate_exclude_pids)}")
+
     if portal_col_name:
         n_flagged = sum(1 for v in player_transfer_portal.values() if v == 1)
         print(f"  Players: {len(player_name)} (Transfer Portal column found: {n_flagged} flagged 'Yes')")
@@ -205,7 +257,7 @@ def load(path):
     game_log_rows = []
     for row in pgs_ws.iter_rows(min_row=2, values_only=True):
         pid = row[gsh["Player ID"] - 1]
-        if pid is None:
+        if pid is None or pid in duplicate_exclude_pids:
             continue
         season = row[gsh["Season"] - 1]
         game_rows_by_season[season].append(dict(

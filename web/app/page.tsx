@@ -22,6 +22,7 @@ export default async function HomePage() {
   return (
     <div>
       <section className="hero">
+        <div className="notice-banner">All features are free and fully open during this preview period.</div>
         <h1>Summit TPE</h1>
         <p className="subtitle" style={{ maxWidth: 68 + "ch" }}>
           A team strength rating that puts every D1 team on one shared scale, a per-player Summit Score built from
@@ -41,6 +42,17 @@ export default async function HomePage() {
           </Link>
         </div>
       </section>
+
+      <div className="card">
+        <h2>What is this, in plain terms?</h2>
+        <p className="subtitle" style={{ marginBottom: 0 }}>
+          Summit TPE takes real women&apos;s college basketball stats and turns them into answers to three simple
+          questions: how good is a team, really, compared to every other team in the country? How good is a
+          player, accounting for her role and how tough her opponents were? And if a player switched schools, what
+          would her stats actually look like at the new place? No spreadsheets, no digging through box scores by
+          hand -- just search for a team or player and get a clear number.
+        </p>
+      </div>
 
       <div className="card-grid">
         <Link href="/tpe">
@@ -96,6 +108,73 @@ export default async function HomePage() {
           ))}
         </div>
       </div>
+
+      <div className="card">
+        <h2>Everything on the site</h2>
+        <p className="section-note">The full rundown, for anyone who wants more than the three highlights above.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
+          {SITE_SECTIONS.map((s) => (
+            <div key={s.href}>
+              <Link href={s.href} style={{ fontWeight: 700, textDecoration: "none" }}>
+                {s.label}
+              </Link>
+              <p className="subtitle" style={{ margin: "2px 0 0" }}>
+                {s.detail}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
+
+const SITE_SECTIONS: { href: string; label: string; detail: string }[] = [
+  {
+    href: "/tpe",
+    label: "TPE Engine",
+    detail:
+      "The core transfer projector -- pick any player and any target school, set her minutes or a role " +
+      "(starter, sixth man, etc.), and see a full projected stat line at the new school, with a confidence read " +
+      "and a real range of outcomes based on comparable real transfers.",
+  },
+  {
+    href: "/team-fits",
+    label: "Team Fits",
+    detail:
+      "The reverse direction -- tell it what a team needs (a stat category, a level, a role to fill) and it " +
+      "ranks the players nationally who'd project best into that exact spot on that roster.",
+  },
+  {
+    href: "/compare",
+    label: "Compare",
+    detail: "Pick any two players and see their current-season stat lines side by side, with the better value in each row called out.",
+  },
+  {
+    href: "/data",
+    label: "Data",
+    detail:
+      "Real leaderboards (not projections) -- top scorers, rebounders, most efficient shooters, conference " +
+      "filters, who performs best against tougher competition, who's trending up as the season goes on, and " +
+      "which Low-Major/Mid-Major players project as standouts at the High-Major level.",
+  },
+  {
+    href: "/players",
+    label: "Players",
+    detail:
+      "Search or browse every rostered D1 player -- sortable by any stat, with a full profile page per player " +
+      "including season-by-season trends and splits against different opponent strengths.",
+  },
+  {
+    href: "/teams",
+    label: "Teams",
+    detail:
+      "Search or browse every D1 team, filterable by tier and conference, with a full team profile -- roster, " +
+      "schedule, and a real Stats Breakdown tab showing how the team compares to its league and its conference.",
+  },
+  {
+    href: "/glossary",
+    label: "Glossary",
+    detail: "Plain-language definitions for every stat and term used across the site -- Summit Score, tiers, SOS, per-40, and more.",
+  },
+];
