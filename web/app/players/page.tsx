@@ -30,7 +30,7 @@ export default async function PlayersPage({
   return (
     <div>
       <h1>Players</h1>
-      <p className="subtitle">Search the current player pool. Sorted by Hoop Score.</p>
+      <p className="subtitle">Search the current player pool. Sorted by Summit Score.</p>
 
       <form className="filter-form" action="/players">
         <div className="field">
@@ -50,6 +50,7 @@ export default async function PlayersPage({
         <p className="empty-state">No players match that search.</p>
       ) : (
         <>
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -60,7 +61,7 @@ export default async function PlayersPage({
                 <th>PPG</th>
                 <th>RPG</th>
                 <th>APG</th>
-                <th>Hoop Score</th>
+                <th>Summit Score</th>
               </tr>
             </thead>
             <tbody>
@@ -80,6 +81,7 @@ export default async function PlayersPage({
               ))}
             </tbody>
           </table>
+          </div>
 
           <div className="pagination">
             {hasPrev && (

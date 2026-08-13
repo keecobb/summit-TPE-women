@@ -22,13 +22,13 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
     <div>
       <h1>{player.name}</h1>
       <p className="subtitle">
-        {player.position} &middot; {player.class_year} &middot; {player.division} &middot;{" "}
-        {player.team_name ?? "--"} ({player.team_tier ?? player.tier}) &middot; {player.season}
+        {player.position} &middot; {player.class_year} &middot; {player.team_name ?? "--"} (
+        {player.team_tier ?? player.tier}) &middot; {player.season}
       </p>
 
       <div className="hero-actions" style={{ marginBottom: 24 }}>
         <Link className="btn btn-primary" href={`/tpe?player_id=${player.player_id}`}>
-          Project this player at another school
+          Project this player to a school
         </Link>
       </div>
 
@@ -57,7 +57,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           <Stat label="Blk/40" value={player.per40_blk} />
           <Stat label="Stl/40" value={player.per40_stl} />
           <Stat label="TO/40" value={player.per40_tov} />
-          <Stat label="Hoop Score" value={player.hoop_score} highlight />
+          <Stat label="Summit Score" value={player.hoop_score} highlight />
         </div>
         {player.in_transfer_portal != null && (
           <p className="section-note">
@@ -72,9 +72,10 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           {trajectory.seasons.length > 1 && (
             <p className="section-note">
               Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
-              {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Hoop Score/season) &middot; {trajectory.trend_note}
+              {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
             </p>
           )}
+          <div className="table-scroll">
           <table>
             <thead>
               <tr>
@@ -86,7 +87,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                 <th>RPG</th>
                 <th>APG</th>
                 <th>TS%</th>
-                <th>Hoop Score</th>
+                <th>Summit Score</th>
               </tr>
             </thead>
             <tbody>
@@ -112,6 +113,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

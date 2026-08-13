@@ -18,7 +18,7 @@ export default async function TeamsPage({
   return (
     <div>
       <h1>Teams</h1>
-      <p className="subtitle">D1 and D2 teams, rated on one shared strength scale.</p>
+      <p className="subtitle">D1 teams, rated on one shared strength scale.</p>
 
       <form className="filter-form" action="/teams">
         <div className="field">
@@ -48,11 +48,11 @@ export default async function TeamsPage({
       {teams.length === 0 ? (
         <p className="empty-state">No teams match that filter.</p>
       ) : (
+        <div className="table-scroll">
         <table>
           <thead>
             <tr>
               <th>Team</th>
-              <th>Division</th>
               <th>Conference</th>
               <th>Tier</th>
               <th>Rating</th>
@@ -65,7 +65,6 @@ export default async function TeamsPage({
                 <td>
                   <Link href={`/teams/${t.team_id}`}>{t.name}</Link>
                 </td>
-                <td>{t.division}</td>
                 <td>{t.conference}</td>
                 <td>
                   <span className="pill">{t.tier}</span>
@@ -76,6 +75,7 @@ export default async function TeamsPage({
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );

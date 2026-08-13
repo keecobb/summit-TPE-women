@@ -187,7 +187,7 @@ export const LEADERBOARD_STATS = [
 ] as const;
 
 export const LEADERBOARD_STAT_LABELS: Record<string, string> = {
-  hoop_score: "Hoop Score",
+  hoop_score: "Summit Score",
   ppg: "Points per game",
   rpg: "Rebounds per game",
   apg: "Assists per game",
@@ -284,3 +284,21 @@ export interface PlayerTrajectory {
 
 export const ROLE_NAMES = ["starter", "sixth_man", "role_player", "depth_piece"] as const;
 export type RoleName = (typeof ROLE_NAMES)[number];
+
+const ROLE_LABELS: Record<string, string> = {
+  starter: "Starter",
+  sixth_man: "Sixth Man",
+  role_player: "Role Player",
+  depth_piece: "Depth Piece",
+};
+
+// Proper-cased display label for a role key, e.g. "sixth_man" -> "Sixth Man".
+// Falls back to a title-cased version of unknown values rather than raw
+// snake_case, so a future role added on the backend still renders cleanly.
+export function roleLabel(role: string): string {
+  if (ROLE_LABELS[role]) return ROLE_LABELS[role];
+  return role
+    .split("_")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}

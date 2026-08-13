@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { Player, Team, ProjectionResult } from "@/lib/types";
-import { ROLE_NAMES } from "@/lib/types";
+import { ROLE_NAMES, roleLabel } from "@/lib/types";
+import Typeahead from "@/components/Typeahead";
 
 interface SP {
   search?: string;
@@ -23,11 +24,7 @@ export default async function TpePage({ searchParams }: { searchParams: Promise<
 
 // ---- Step 1: find a player, either by name or by browsing a roster ----
 async function StartView({ sp }: { sp: SP }) {
-  const [players, teams] = await Promise.all([
-    sp.search ? apiFetch<Player[]>("/players", { params: { search: sp.search, limit: 20 } }) : Promise.resolve([]),
-    apiFetch<Team[]>("/teams", { params: { limit: 500 } }),
-  ]);
-  const byTier = groupBy(teams, (t) => t.tier);
+  const players = sp.search ? await apiFetch<Player[]>("/players", { params: { search: sp.search, limit: 20 } }) : [];
 
   return (
     <div>
@@ -37,75 +34,73 @@ async function StartView({ sp }: { sp: SP }) {
       <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 32 }}>
         <div className="card">
           <h2>Search by name</h2>
-          <form className="filter-form" action="/tpe">
-            <div className="field" style={{ flex: 1 }}>
-              <label htmlFor="search">Player name</label>
-              <input id="search" name="search" defaultValue={sp.search ?? ""} placeholder="e.g. Anguera" autoFocus />
-            </div>
-            <button className="btn btn-primary" type="submit">
-              Search
-            </button>
-          </form>
+          <div className="field">
+            <label htmlFor="tpe-player-search">Player name</label>
+            <Typeahead
+              kind="players"
+              inputId="tpe-player-search"
+              placeholder="e.g. Anguera"
+              mode="navigate"
+              hrefTemplate="/tpe?player_id={id}"
+              defaultValue={sp.search}
+            />
+          </div>
+          <p className="section-note" style={{ marginTop: 10, marginBottom: 0 }}>
+            Start typing a name and pick from the list.
+          </p>
         </div>
 
         <div className="card">
           <h2>Browse by team</h2>
-          <form className="filter-form" action="/tpe">
-            <div className="field" style={{ flex: 1 }}>
-              <label htmlFor="team_id">Team</label>
-              <select id="team_id" name="team_id" required defaultValue="">
-                <option value="" disabled>
-                  Choose a team...
-                </option>
-                {Object.entries(byTier).map(([tier, tteams]) => (
-                  <optgroup key={tier} label={tier}>
-                    {tteams.map((t) => (
-                      <option key={t.team_id} value={t.team_id}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </div>
-            <button className="btn btn-primary" type="submit">
-              View roster
-            </button>
-          </form>
+          <div className="field">
+            <label htmlFor="tpe-team-browse">Team</label>
+            <Typeahead
+              kind="teams"
+              inputId="tpe-team-browse"
+              placeholder="e.g. UConn"
+              mode="navigate"
+              hrefTemplate="/tpe?team_id={id}"
+            />
+          </div>
+          <p className="section-note" style={{ marginTop: 10, marginBottom: 0 }}>
+            Start typing a school and pick from the list to see its roster.
+          </p>
         </div>
       </div>
 
       {sp.search && players.length === 0 && <p className="empty-state">No players match &quot;{sp.search}&quot;.</p>}
 
       {players.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Team</th>
-              <th>Pos</th>
-              <th>PPG</th>
-              <th>Hoop Score</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {players.map((p) => (
-              <tr key={p.player_id}>
-                <td>{p.name}</td>
-                <td>{p.team_name ?? "--"}</td>
-                <td>{p.position}</td>
-                <td>{p.ppg?.toFixed(1)}</td>
-                <td>{p.hoop_score?.toFixed(1)}</td>
-                <td>
-                  <Link className="btn" href={`/tpe?player_id=${p.player_id}`}>
-                    Choose &rarr;
-                  </Link>
-                </td>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Team</th>
+                <th>Pos</th>
+                <th>PPG</th>
+                <th>Summit Score</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {players.map((p) => (
+                <tr key={p.player_id}>
+                  <td>{p.name}</td>
+                  <td>{p.team_name ?? "--"}</td>
+                  <td>{p.position}</td>
+                  <td>{p.ppg?.toFixed(1)}</td>
+                  <td>{p.hoop_score?.toFixed(1)}</td>
+                  <td>
+                    <Link className="btn" href={`/tpe?player_id=${p.player_id}`}>
+                      Choose &rarr;
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -126,38 +121,40 @@ async function RosterPickerView({ sp }: { sp: SP }) {
       {roster.length === 0 ? (
         <p className="empty-state">No players on record for this team.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Pos</th>
-              <th>Class</th>
-              <th>PPG</th>
-              <th>RPG</th>
-              <th>APG</th>
-              <th>Hoop Score</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {roster.map((p) => (
-              <tr key={p.player_id}>
-                <td>{p.name}</td>
-                <td>{p.position}</td>
-                <td>{p.class_year}</td>
-                <td>{p.ppg?.toFixed(1)}</td>
-                <td>{p.rpg?.toFixed(1)}</td>
-                <td>{p.apg?.toFixed(1)}</td>
-                <td>{p.hoop_score?.toFixed(1)}</td>
-                <td>
-                  <Link className="btn" href={`/tpe?player_id=${p.player_id}`}>
-                    Choose &rarr;
-                  </Link>
-                </td>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Pos</th>
+                <th>Class</th>
+                <th>PPG</th>
+                <th>RPG</th>
+                <th>APG</th>
+                <th>Summit Score</th>
+                <th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {roster.map((p) => (
+                <tr key={p.player_id}>
+                  <td>{p.name}</td>
+                  <td>{p.position}</td>
+                  <td>{p.class_year}</td>
+                  <td>{p.ppg?.toFixed(1)}</td>
+                  <td>{p.rpg?.toFixed(1)}</td>
+                  <td>{p.apg?.toFixed(1)}</td>
+                  <td>{p.hoop_score?.toFixed(1)}</td>
+                  <td>
+                    <Link className="btn" href={`/tpe?player_id=${p.player_id}`}>
+                      Choose &rarr;
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <p style={{ marginTop: 20 }}>
@@ -169,19 +166,15 @@ async function RosterPickerView({ sp }: { sp: SP }) {
 
 // ---- Step 2: pick a target school + role/minutes ----
 async function TargetPickerView({ sp }: { sp: SP }) {
-  const [player, teams] = await Promise.all([
-    apiFetch<Player>(`/players/${sp.player_id}`),
-    apiFetch<Team[]>("/teams", { params: { limit: 500 } }),
-  ]);
-
-  const byTier = groupBy(teams, (t) => t.tier);
+  const player = await apiFetch<Player>(`/players/${sp.player_id}`);
 
   return (
     <div>
       <h1>{player.name}</h1>
       <p className="subtitle">
         Currently: {player.position} at {player.team_name ?? "--"} &middot; {player.ppg?.toFixed(1)} PPG,{" "}
-        {player.rpg?.toFixed(1)} RPG, {player.apg?.toFixed(1)} APG &middot; Hoop Score {player.hoop_score?.toFixed(1)}
+        {player.rpg?.toFixed(1)} RPG, {player.apg?.toFixed(1)} APG &middot; Summit Score{" "}
+        {player.hoop_score?.toFixed(1)}
       </p>
 
       <div className="card" style={{ maxWidth: 480 }}>
@@ -191,20 +184,14 @@ async function TargetPickerView({ sp }: { sp: SP }) {
 
           <div className="field">
             <label htmlFor="target_team_id">Target school</label>
-            <select id="target_team_id" name="target_team_id" required defaultValue="">
-              <option value="" disabled>
-                Choose a team...
-              </option>
-              {Object.entries(byTier).map(([tier, tteams]) => (
-                <optgroup key={tier} label={tier}>
-                  {tteams.map((t) => (
-                    <option key={t.team_id} value={t.team_id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+            <Typeahead
+              kind="teams"
+              inputId="target_team_id"
+              placeholder="Start typing a school..."
+              mode="select"
+              hiddenName="target_team_id"
+              required
+            />
           </div>
 
           <div className="field">
@@ -213,7 +200,7 @@ async function TargetPickerView({ sp }: { sp: SP }) {
               <option value="">Auto (based on current minutes)</option>
               {ROLE_NAMES.map((r) => (
                 <option key={r} value={r}>
-                  {r.replace("_", " ")}
+                  {roleLabel(r)}
                 </option>
               ))}
             </select>
@@ -258,8 +245,21 @@ async function ResultView({ sp }: { sp: SP }) {
     throw e;
   }
 
+  const navButtons = (
+    <div className="hero-actions" style={{ marginBottom: 24 }}>
+      <Link className="btn" href={`/tpe?player_id=${sp.player_id}`}>
+        &larr; Try a different school
+      </Link>
+      <Link className="btn" href={`/players/${sp.player_id}`}>
+        Full player page &rarr;
+      </Link>
+    </div>
+  );
+
   return (
     <div>
+      {navButtons}
+
       <h1>
         {result.player.name}: {result.player.current_team} &rarr; {result.target.team}
       </h1>
@@ -277,29 +277,44 @@ async function ResultView({ sp }: { sp: SP }) {
         <h2>Side by side</h2>
         <p className="section-note">
           {result.role_applied
-            ? `Assuming ${result.role_applied.role.replace("_", " ")} minutes at ${result.target.team} (${result.projected.minutes?.toFixed(1)}/game)`
+            ? `Assuming ${roleLabel(result.role_applied.role)} minutes at ${result.target.team} (${result.projected.minutes?.toFixed(1)}/game)`
             : `Projected minutes: ${result.projected.minutes?.toFixed(1)}/game`}
         </p>
-        <table>
-          <thead>
-            <tr>
-              <th></th>
-              <th>{result.player.current_team} (now)</th>
-              <th>{result.target.team} (projected)</th>
-              <th>Range (p25-p75)</th>
-            </tr>
-          </thead>
-          <tbody>
-            <ComparisonRow label="PPG" current={result.current.ppg} projected={result.projected.ppg} range={result.projected_range.ppg} />
-            <ComparisonRow label="RPG" current={result.current.rpg} projected={result.projected.rpg} range={result.projected_range.rpg} />
-            <ComparisonRow label="APG" current={result.current.apg} projected={result.projected.apg} range={result.projected_range.apg} />
-            <ComparisonRow label="SPG" current={result.current.spg} projected={result.projected.spg} range={result.projected_range.spg} />
-            <ComparisonRow label="BPG" current={result.current.bpg} projected={result.projected.bpg} range={result.projected_range.bpg} />
-            <ComparisonRow label="TS%" current={result.current.ts_pct} projected={result.projected.ts_pct} />
-            <ComparisonRow label="Hoop Score" current={result.current.hoop_score} projected={result.projected.hoop_score} range={result.projected_range.hoop_score} highlight />
-          </tbody>
-        </table>
-        {result.projected_range_note && <p className="section-note">{result.projected_range_note}</p>}
+        <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <div>
+            <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.player.current_team} (now)</h3>
+            <table>
+              <tbody>
+                <StatRow label="MPG" value={result.current.avg_minutes} />
+                <StatRow label="PPG" value={result.current.ppg} />
+                <StatRow label="RPG" value={result.current.rpg} />
+                <StatRow label="APG" value={result.current.apg} />
+                <StatRow label="SPG" value={result.current.spg} />
+                <StatRow label="BPG" value={result.current.bpg} />
+                <StatRow label="TS%" value={result.current.ts_pct} />
+                <StatRow label="Summit Score" value={result.current.hoop_score} highlight />
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.target.team} (projected)</h3>
+            <table>
+              <tbody>
+                <StatRow label="MPG" value={result.projected.minutes} />
+                <StatRow label="PPG" value={result.projected.ppg} />
+                <StatRow label="RPG" value={result.projected.rpg} />
+                <StatRow label="APG" value={result.projected.apg} />
+                <StatRow label="SPG" value={result.projected.spg} />
+                <StatRow label="BPG" value={result.projected.bpg} />
+                <StatRow label="TS%" value={result.projected.ts_pct} />
+                <StatRow label="Summit Score" value={result.projected.hoop_score} highlight />
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p className="section-note" style={{ marginTop: 12 }}>
+          {plainLanguageNote(result)}
+        </p>
       </div>
 
       <div className="card">
@@ -318,54 +333,39 @@ async function ResultView({ sp }: { sp: SP }) {
             <div className="label">Class / {result.player.games} GP this season</div>
           </div>
           <div className="stat-tile">
-            <div className="value">{result.minutes_source.replace("_", " ")}</div>
+            <div className="value">{result.minutes_source.replace(/_/g, " ")}</div>
             <div className="label">Minutes source</div>
           </div>
         </div>
       </div>
 
-      <div className="hero-actions">
-        <Link className="btn" href={`/tpe?player_id=${sp.player_id}`}>
-          &larr; Try a different school
-        </Link>
-        <Link className="btn" href={`/players/${sp.player_id}`}>
-          Full player page &rarr;
-        </Link>
-      </div>
+      {navButtons}
     </div>
   );
 }
 
-function ComparisonRow({
-  label,
-  current,
-  projected,
-  range,
-  highlight,
-}: {
-  label: string;
-  current: number | undefined;
-  projected: number | undefined;
-  range?: [number, number] | string;
-  highlight?: boolean;
-}) {
-  const rangeText = Array.isArray(range) ? `${range[0].toFixed(1)} - ${range[1].toFixed(1)}` : "--";
+// Plain-language framing for the confidence/range concept, aimed at a coach
+// or a fan rather than someone who wants the raw statistics terminology
+// (interquartile range, standard deviation, etc.) -- those numbers are
+// still available via the API for anyone who wants them.
+function plainLanguageNote(result: ProjectionResult): string {
+  const conf = result.confidence.toLowerCase();
+  if (conf.includes("high")) {
+    return "This is a close comparison -- the two schools are similar enough in strength that this projection should track pretty closely to reality.";
+  }
+  if (conf.includes("low") || result.extreme_mismatch) {
+    return "This is a bigger jump in competition level, so treat this as a directional estimate rather than an exact forecast -- real outcomes for similar jumps have varied more.";
+  }
+  return "This is a moderate jump in competition level -- a reasonable estimate, with more real-world variation than a same-level comparison would have.";
+}
+
+function StatRow({ label, value, highlight }: { label: string; value: number | undefined; highlight?: boolean }) {
   return (
     <tr>
       <td style={{ fontWeight: 600 }}>{label}</td>
-      <td>{current?.toFixed(1) ?? "--"}</td>
-      <td style={highlight ? { color: "var(--accent)", fontWeight: 700 } : { fontWeight: 600 }}>
-        {projected?.toFixed(1) ?? "--"}
+      <td style={highlight ? { color: "var(--accent)", fontWeight: 700, textAlign: "right" } : { textAlign: "right" }}>
+        {value?.toFixed(1) ?? "--"}
       </td>
-      <td>{rangeText}</td>
     </tr>
   );
-}
-
-function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {
-  return items.reduce<Record<string, T[]>>((acc, item) => {
-    const k = key(item);
-    (acc[k] ??= []).push(item);
-    return acc;
-  }, {});
 }

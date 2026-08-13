@@ -24,7 +24,7 @@ export default async function HomePage() {
       <section className="hero">
         <h1>Summit TPE</h1>
         <p className="subtitle" style={{ maxWidth: 68 + "ch" }}>
-          A team strength rating that puts D1 and D2 on one shared scale, a per-player Hoop Score built from
+          A team strength rating that puts every D1 team on one shared scale, a per-player Summit Score built from
           role- and opponent-adjusted production, and a transfer-portal projector that turns "what would she look
           like at a different school" into an actual number -- grounded in how real transfers have historically
           played out, not a guess.

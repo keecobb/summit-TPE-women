@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { Team, TeamFits } from "@/lib/types";
-import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES } from "@/lib/types";
+import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel } from "@/lib/types";
+import Typeahead from "@/components/Typeahead";
 
 interface SP {
   team_id?: string;
@@ -20,52 +21,27 @@ export default async function TeamFitsPage({ searchParams }: { searchParams: Pro
 }
 
 async function TeamPickerView({ sp }: { sp: SP }) {
-  const teams = await apiFetch<Team[]>("/teams", { params: { search: sp.team_search, limit: 500 } });
-  const byTier = groupBy(teams, (t) => t.tier);
-
   return (
     <div>
       <h1>Team Fits</h1>
       <p className="subtitle">Pick your team, then tell us what you&apos;re looking for.</p>
 
-      <form className="filter-form" action="/team-fits">
+      <div className="card" style={{ maxWidth: 420 }}>
         <div className="field">
-          <label htmlFor="team_search">Filter teams</label>
-          <input id="team_search" name="team_search" defaultValue={sp.team_search ?? ""} placeholder="e.g. Baylor" />
+          <label htmlFor="team-fits-search">Find your team</label>
+          <Typeahead
+            kind="teams"
+            inputId="team-fits-search"
+            placeholder="e.g. Baylor"
+            mode="navigate"
+            hrefTemplate="/team-fits?team_id={id}"
+            defaultValue={sp.team_search}
+          />
         </div>
-        <button className="btn" type="submit">
-          Filter
-        </button>
-      </form>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Team</th>
-            <th>Tier</th>
-            <th>Conference</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {Object.entries(byTier).map(([tier, tteams]) =>
-            tteams.map((t) => (
-              <tr key={t.team_id}>
-                <td>{t.name}</td>
-                <td>
-                  <span className="pill">{tier}</span>
-                </td>
-                <td>{t.conference}</td>
-                <td>
-                  <Link className="btn btn-primary" href={`/team-fits?team_id=${t.team_id}`}>
-                    Choose &rarr;
-                  </Link>
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+        <p className="section-note" style={{ marginTop: 10, marginBottom: 0 }}>
+          Start typing a school and pick from the list.
+        </p>
+      </div>
     </div>
   );
 }
@@ -135,7 +111,7 @@ async function FitsView({ sp }: { sp: SP }) {
                 <option value="">Each candidate&apos;s own auto minutes</option>
                 {ROLE_NAMES.map((r) => (
                   <option key={r} value={r}>
-                    {r.replace("_", " ")}
+                    {roleLabel(r)}
                   </option>
                 ))}
               </select>
@@ -158,7 +134,7 @@ async function FitsView({ sp }: { sp: SP }) {
           <p className="section-note">
             Ranking on:{" "}
             <strong>{fits.stats.map((s) => s.label).join(" + ")}</strong>
-            {fits.role_applied && ` -- assuming ${fits.role_applied.role.replace("_", " ")} minutes (${fits.role_applied.minutes.toFixed(1)}/game)`}
+            {fits.role_applied && ` -- assuming ${roleLabel(fits.role_applied.role)} minutes (${fits.role_applied.minutes.toFixed(1)}/game)`}
             {fits.minutes_applied != null && ` -- assuming ${fits.minutes_applied} minutes/game`} &middot;{" "}
             {fits.candidates_considered} candidates considered.
           </p>
@@ -166,6 +142,7 @@ async function FitsView({ sp }: { sp: SP }) {
           {fits.candidates.length === 0 ? (
             <p className="empty-state">No candidates matched those filters.</p>
           ) : (
+            <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -203,6 +180,7 @@ async function FitsView({ sp }: { sp: SP }) {
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </>
       )}
@@ -212,12 +190,4 @@ async function FitsView({ sp }: { sp: SP }) {
       </p>
     </div>
   );
-}
-
-function groupBy<T>(items: T[], key: (item: T) => string): Record<string, T[]> {
-  return items.reduce<Record<string, T[]>>((acc, item) => {
-    const k = key(item);
-    (acc[k] ??= []).push(item);
-    return acc;
-  }, {});
 }
