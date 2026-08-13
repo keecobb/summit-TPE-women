@@ -11,7 +11,7 @@ const LINKS: { href: string; label: string }[] = [
   { href: "/data", label: "Data" },
   { href: "/players", label: "Players" },
   { href: "/teams", label: "Teams" },
-  { href: "/conferences", label: "Conferences" },
+  // { href: "/conferences", label: "Conferences" }, // hidden for now -- pages still live, just unlinked
   { href: "/glossary", label: "Glossary" },
   { href: "/about", label: "About" },
   { href: "/contact", label: "Contact" },
