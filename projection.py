@@ -1065,11 +1065,11 @@ LEADERBOARD_STATS = {
 }
 
 
-def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5, limit=25):
+def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=None, min_games=5, limit=25):
     """A straightforward public leaderboard: top (or, for turnovers,
     lowest) players by one real season stat, optionally restricted to one
-    tier (level) and/or division (D1/D2). No projection involved -- this
-    is what actually happened this season, not a what-if.
+    tier (level), division (D1/D2), and/or conference. No projection
+    involved -- this is what actually happened this season, not a what-if.
     """
     if stat not in LEADERBOARD_STATS:
         raise ProjectionError(f"stat must be one of {list(LEADERBOARD_STATS)}, got {stat!r}.")
@@ -1090,6 +1090,9 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
     if division is not None:
         clauses.append("p.division = ?")
         params.append(division)
+    if conference is not None:
+        clauses.append("t.conference = ?")
+        params.append(conference)
     where = " AND ".join(clauses)
     order = "ASC" if info["lower_is_better"] else "DESC"
     # For hoop_score specifically, sort by hoop_score_raw (unclamped), not
@@ -1121,7 +1124,7 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, min_games=5,
 
     return dict(
         stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
-        level_filter=level, division_filter=division, min_games=min_games,
+        level_filter=level, division_filter=division, conference_filter=conference, min_games=min_games,
         players=result_rows,
     )
 
@@ -1224,7 +1227,7 @@ OPPONENT_SPLIT_STATS = {
 
 
 def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major", stat="points",
-                                min_games=3, limit=20, season=None):
+                                min_games=3, limit=20, season=None, conference=None, top50_only=False):
     """Real per-game production, filtered to games played against opponents
     at a specific tier -- the "High-Major players who perform best
     specifically against other High-Major opponents" / "Low-Major players
@@ -1235,7 +1238,12 @@ def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major"
     is the minimum number of games AGAINST THAT OPPONENT TIER specifically,
     not season-total games -- a player might have played 30 games this
     season but only 4 against High-Major competition, and it's the 4-game
-    sample this leaderboard is about.
+    sample this leaderboard is about. `conference` restricts to players
+    whose OWN team is in that conference. `top50_only` restricts to games
+    played against one of the 50 highest-current_rating teams WITHIN
+    opponent_level (not top 50 nationally) -- e.g. opponent_level=Low-Major,
+    top50_only=True is "games against the 50 best Low-Major teams", not
+    every Low-Major team including the weakest ones.
     """
     own_level = normalize_tier(own_level)
     opponent_level = normalize_tier(opponent_level)
@@ -1252,6 +1260,15 @@ def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major"
     if own_level is not None:
         clauses.append("own_t.tier = ?")
         params.append(own_level)
+    if conference is not None:
+        clauses.append("own_t.conference = ?")
+        params.append(conference)
+    if top50_only:
+        clauses.append(
+            "g.opponent_team_id IN (SELECT team_id FROM teams WHERE tier = ? "
+            "ORDER BY current_rating DESC LIMIT 50)"
+        )
+        params.append(opponent_level)
     if season is not None:
         clauses.append("g.season = ?")
         params.append(season)
@@ -1296,6 +1313,7 @@ def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major"
     return dict(
         stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
         own_level=own_level, opponent_level=opponent_level, min_games=min_games,
+        conference_filter=conference, top50_only=top50_only,
         players=players,
     )
 
@@ -1357,6 +1375,216 @@ def team_schedule(conn, team_id, season=None):
         games.append(d)
 
     return dict(team_id=team_id, season=season, games=games)
+
+
+def player_splits(conn, player_id, season=None):
+    """Four ways to slice this player's game log for her profile page,
+    beyond a single season-long average: performance against each
+    opponent tier (High-Major/Mid-Major/Low-Major), against the 50
+    highest-current_rating teams in the country regardless of tier, and
+    across just her most recent 10 games. Built from the same real
+    per-game rows as /players/{id}/game-logs and /leaderboards/opponent-
+    splits, just grouped differently -- no projection involved.
+    """
+    player = get_player(conn, player_id)
+    if player is None:
+        raise ProjectionError(f"No player with id {player_id} in the current-season cache.")
+    season = season or _load_meta(conn)["season"]
+
+    def _avg_row(rows):
+        n = len(rows)
+        if n == 0:
+            return None
+
+        def avg(key):
+            return round(sum(r[key] for r in rows) / n, 1)
+
+        return dict(
+            games=n, avg_points=avg("points"), avg_rebounds=avg("rebounds"),
+            avg_assists=avg("assists"), avg_steals=avg("steals"), avg_blocks=avg("blocks"),
+            avg_turnovers=avg("turnovers"), avg_minutes=avg("minutes"),
+        )
+
+    rows = conn.execute(
+        """SELECT g.game_id, g.date, g.opponent_team_id, g.opponent_name, opp_t.tier AS opponent_tier,
+                  opp_t.current_rating AS opponent_rating,
+                  g.minutes, g.points, g.rebounds, g.assists, g.steals, g.blocks, g.turnovers
+           FROM player_game_logs g
+           LEFT JOIN teams opp_t ON g.opponent_team_id = opp_t.team_id
+           WHERE g.player_id = ? AND g.season = ?
+           ORDER BY g.date DESC""",
+        (player_id, season),
+    ).fetchall()
+    all_games = [dict(r) for r in rows]
+
+    by_tier = {tier: _avg_row([g for g in all_games if g["opponent_tier"] == tier]) for tier in VALID_LEVELS}
+
+    top50_ids = {
+        row[0] for row in conn.execute(
+            "SELECT team_id FROM teams WHERE current_rating IS NOT NULL ORDER BY current_rating DESC LIMIT 50"
+        ).fetchall()
+    }
+    top50_games = [g for g in all_games if g["opponent_team_id"] in top50_ids]
+    last10_games = all_games[:10]  # already most-recent-first
+
+    return dict(
+        player_id=player_id, name=player["name"], season=season, total_games=len(all_games),
+        by_opponent_tier=by_tier,
+        vs_top50=_avg_row(top50_games),
+        vs_top50_note="Games against any of the 50 highest-rated teams in the country this season "
+                       "(by current_rating), regardless of tier -- not a top-50-per-tier cut.",
+        last10=_avg_row(last10_games),
+        last10_games=[
+            dict(date=g["date"], opponent_name=g["opponent_name"], opponent_tier=g["opponent_tier"],
+                 points=g["points"], rebounds=g["rebounds"], assists=g["assists"])
+            for g in last10_games
+        ],
+    )
+
+
+def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, season=None):
+    """'Best back half of the season' -- ranks current-season players by
+    how much their scoring changed from the first half of THEIR OWN games
+    played to the second half (split at the midpoint of her own games, not
+    the calendar midpoint of the season, so a player who missed early
+    games due to injury is still compared fairly on her own two halves).
+    A positive ppg_change means she's been trending up; negative means
+    down. No projection involved -- this is real per-game production,
+    just split in two and compared.
+    """
+    level = normalize_tier(level)
+    if level is not None and level not in VALID_LEVELS:
+        raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
+    season = season or _load_meta(conn)["season"]
+
+    clauses = ["g.season = ?"]
+    params = [season]
+    if level is not None:
+        clauses.append("t.tier = ?")
+        params.append(level)
+    where = " AND ".join(clauses)
+
+    rows = conn.execute(
+        f"""SELECT g.player_id, p.name, t.team_id, t.name AS team_name, t.tier, g.date, g.points
+            FROM player_game_logs g
+            JOIN players p ON g.player_id = p.player_id
+            JOIN teams t ON g.team_id = t.team_id
+            WHERE {where}
+            ORDER BY g.player_id, g.date ASC""",
+        params,
+    ).fetchall()
+
+    by_player = defaultdict(list)
+    meta_by_player = {}
+    for r in rows:
+        by_player[r["player_id"]].append(r)
+        meta_by_player[r["player_id"]] = (r["name"], r["team_id"], r["team_name"], r["tier"])
+
+    results = []
+    for pid, glist in by_player.items():
+        n = len(glist)
+        half = n // 2
+        first, second = glist[:half], glist[half:]
+        if len(first) < min_games_per_half or len(second) < min_games_per_half:
+            continue
+        first_ppg = sum(g["points"] for g in first) / len(first)
+        second_ppg = sum(g["points"] for g in second) / len(second)
+        name, team_id, team_name, tier = meta_by_player[pid]
+        results.append(dict(
+            player_id=pid, name=name, team_id=team_id, team_name=team_name, tier=tier,
+            first_half_games=len(first), second_half_games=len(second),
+            first_half_ppg=round(first_ppg, 1), second_half_ppg=round(second_ppg, 1),
+            ppg_change=round(second_ppg - first_ppg, 1),
+        ))
+
+    results.sort(key=lambda r: r["ppg_change"], reverse=True)
+    return dict(
+        level_filter=level, season=season, min_games_per_half=min_games_per_half,
+        note="Each player's own games are split at the midpoint of HER games played this season (not "
+             "the calendar midpoint) -- ranked by points-per-game change from her first half to her "
+             "second half. A missed-games injury early in the year doesn't skew this the way splitting "
+             "by calendar date would.",
+        players=results[:limit],
+    )
+
+
+def conference_standings(conn, conference, season=None):
+    """Win/loss records for every team in one conference this season, both
+    overall and conference-only (using the Games sheet's own
+    conference_game flag), sorted by conference win percentage then wins.
+    """
+    season = season or _load_meta(conn)["season"]
+    teams = conn.execute(
+        "SELECT team_id, name, current_rating FROM teams WHERE conference = ?", (conference,)
+    ).fetchall()
+    if not teams:
+        raise ProjectionError(f"No teams found in conference {conference!r} in the current cache.")
+    team_ids = {t["team_id"] for t in teams}
+    team_name = {t["team_id"]: t["name"] for t in teams}
+    rating = {t["team_id"]: t["current_rating"] for t in teams}
+
+    all_games = conn.execute(
+        "SELECT home_team_id, away_team_id, winner_team_id, conference_game FROM games WHERE season = ?",
+        (season,),
+    ).fetchall()
+
+    record = {tid: dict(wins=0, losses=0, conf_wins=0, conf_losses=0) for tid in team_ids}
+    for g in all_games:
+        home, away, winner, conf_game = g["home_team_id"], g["away_team_id"], g["winner_team_id"], g["conference_game"]
+        if winner is None:
+            continue
+        for tid in (home, away):
+            if tid not in team_ids:
+                continue
+            won = winner == tid
+            record[tid]["wins" if won else "losses"] += 1
+            if conf_game:
+                record[tid]["conf_wins" if won else "conf_losses"] += 1
+
+    standings = []
+    for tid in team_ids:
+        r = record[tid]
+        conf_gp = r["conf_wins"] + r["conf_losses"]
+        standings.append(dict(
+            team_id=tid, name=team_name[tid], current_rating=rating[tid],
+            wins=r["wins"], losses=r["losses"],
+            conference_wins=r["conf_wins"], conference_losses=r["conf_losses"],
+            conference_win_pct=round(r["conf_wins"] / conf_gp, 3) if conf_gp else None,
+        ))
+    standings.sort(key=lambda s: (-(s["conference_win_pct"] if s["conference_win_pct"] is not None else -1),
+                                   -s["wins"]))
+    return dict(conference=conference, season=season, teams=standings)
+
+
+def game_detail(conn, game_id):
+    """Full box score for one game -- both teams' complete per-player
+    lines, plus the game's own metadata (date, score, home/away,
+    overtime/neutral-site flags). Powers a game detail page linked from a
+    team's Schedule tab."""
+    g = conn.execute(
+        """SELECT game_id, season, date, home_team_id, home_team_name, away_team_id, away_team_name,
+                  home_score, away_score, winner_team_id, margin, neutral_site, overtime, conference_game
+           FROM games WHERE game_id = ?""",
+        (game_id,),
+    ).fetchone()
+    if g is None:
+        raise ProjectionError(f"No game with id {game_id} in the current cache.")
+    g = dict(g)
+
+    box_rows = conn.execute(
+        """SELECT gl.player_id, p.name, gl.team_id, gl.started, gl.minutes, gl.points, gl.rebounds,
+                  gl.assists, gl.steals, gl.blocks, gl.turnovers, gl.fouls, gl.fgm, gl.fga, gl.tfgm, gl.tfga,
+                  gl.ftm, gl.fta
+           FROM player_game_logs gl JOIN players p ON gl.player_id = p.player_id
+           WHERE gl.game_id = ?
+           ORDER BY gl.points DESC""",
+        (game_id,),
+    ).fetchall()
+    box_rows = [dict(r) for r in box_rows]
+    home_box = [r for r in box_rows if r["team_id"] == g["home_team_id"]]
+    away_box = [r for r in box_rows if r["team_id"] == g["away_team_id"]]
+
+    return dict(g, home_box_score=home_box, away_box_score=away_box)
 
 
 if __name__ == "__main__":

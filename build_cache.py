@@ -122,6 +122,13 @@ def load(path):
         # Persisted for the team Schedule tab -- every game regardless of
         # whether it had usable scores for the rating computation above.
         winner_id = row[gh["Winner"] - 1] if "Winner" in gh else None
+        # The sheet's own Winner column is blank for a small number of rows
+        # that otherwise have complete scores (28 of 6,102 games checked in
+        # the current-season workbook) -- fall back to deriving it from the
+        # scores directly rather than leaving a real, decided game out of
+        # win/loss records (conference standings, in particular).
+        if winner_id is None and hs is not None and as_ is not None and hs != as_:
+            winner_id = home_id if hs > as_ else away_id
         schedule_rows.append(dict(
             game_id=gid, season=season, date=row[gh["Date"] - 1],
             home_team_id=home_id, home_team_name=row[gh["Home Team"] - 1],
@@ -278,11 +285,29 @@ def compute_season_profiles(data, season, sheet_meta=None):
     rat_values = list(rat.values())
     league_mean_rat = statistics.mean(rat_values) if rat_values else 0.0
     league_std_rat = (statistics.pstdev(rat_values) if len(rat_values) > 1 else 1.0) or 1.0
- 
+
     rows = data["game_rows_by_season"].get(season, [])
     game_lookup = data["game_lookup"]
     per_player_games = defaultdict(list)
     per_player_meta = {}
+
+    # Games each team has REAL BOX-SCORE DATA for this season -- counted
+    # from the same PlayerGameStats rows used to build player totals below,
+    # not from the Games sheet's schedule/score list. The two counts aren't
+    # always equal: 54 of 406 team-seasons in the current workbook have a
+    # final score on the Games sheet for more games than they have box-score
+    # rows for (a real example: Texas A&M-Corpus Christi shows 29 scored
+    # games on its schedule but only 16 games' worth of player box scores).
+    # compute_team_profiles() needs to divide summed roster totals by the
+    # SAME number of games those totals actually cover -- dividing by the
+    # schedule's (larger) game count silently understates every per-game
+    # team rate whenever box-score coverage is incomplete, which is exactly
+    # the bug a user caught by comparing the Stats Breakdown tab to what a
+    # team actually did on the court.
+    team_boxscore_games = defaultdict(set)
+    for r in rows:
+        team_boxscore_games[r["team_id"]].add(r["game_id"])
+    team_boxscore_games = {tid: len(gids) for tid, gids in team_boxscore_games.items()}
  
     for r in rows:
         pid = r["player_id"]
@@ -376,6 +401,14 @@ def compute_season_profiles(data, season, sheet_meta=None):
             avg_minutes=total_min / n_games, ppg=total_pts / n_games, rpg=total_reb / n_games,
             apg=total_ast / n_games, bpg=total_blk / n_games, spg=total_stl / n_games,
             topg=total_tov / n_games, ts_pct=ts_pct, fg_pct=fg_pct,
+            # Raw season totals, kept on the row (not exposed via the API --
+            # players/player_history only insert the named columns below)
+            # purely so compute_team_profiles() can sum real team production
+            # instead of averaging individual per-40 rates. See that
+            # function's docstring for why the distinction matters.
+            _total_pts=total_pts, _total_reb=total_reb, _total_ast=total_ast,
+            _total_blk=total_blk, _total_stl=total_stl, _total_tov=total_tov,
+            _total_fgm=total_fgm, _total_fga=total_fga, _true_shot_attempts=true_shot_attempts,
             per40_pts=total_pts / total_min * 40.0,
             per40_reb=total_reb / total_min * 40.0,
             per40_ast=total_ast / total_min * 40.0,
@@ -425,6 +458,19 @@ def compute_season_profiles(data, season, sheet_meta=None):
     # sheet row. Checked against real data: 3,580 of 8,740 Players-sheet
     # rows are exactly this case -- without this guard, every one of them
     # would incorrectly show up as a "current" 2025-26 roster player.
+    #
+    # A second guard is needed beyond that: even among the players with
+    # zero PlayerSeasons rows ever, some Players-sheet rows are not real
+    # current roster entries at all -- a real example found in the data,
+    # "Sarah Bandoma" (Team ID pointing at VCU) is not actually on VCU's
+    # 2025-26 roster, unlike a real example that IS meant to show up here,
+    # Sydney Fenn (Indiana). The reliable signal that separates them: a
+    # genuine roster-page scrape hit always populated BOTH Height and Class
+    # together (Fenn has both); a stub/erroneous row has BOTH null (Bandoma
+    # has neither). Checked against the full workbook: of 435 players with
+    # zero PlayerSeasons rows, exactly 170 have both fields and 265 have
+    # neither -- no partial cases -- so requiring both is a clean filter,
+    # not a guess.
     if sheet_meta:
         already_seasoned = data.get("players_with_any_season", set())
         for pid, meta in sheet_meta.items():
@@ -433,6 +479,8 @@ def compute_season_profiles(data, season, sheet_meta=None):
             tid = meta.get("team_id")
             if tid not in rat:
                 continue  # not on a team with games this season -- likely a stale/graduated record
+            if not meta.get("class_year") or not data["player_height"].get(pid):
+                continue  # no real roster bio data scraped -- likely a stub/erroneous entry, not a real roster player
             player_rows.append(dict(
                 player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
                 height=data["player_height"].get(pid),
@@ -465,53 +513,76 @@ def compute_season_profiles(data, season, sheet_meta=None):
     return dict(
         team_rows=team_rows, player_rows=player_rows,
         league_mean_rat=league_mean_rat, league_std_rat=league_std_rat,
-        thin_count=thin_count,
+        thin_count=thin_count, team_boxscore_games=team_boxscore_games,
     )
  
  
-def compute_team_profiles(player_rows):
-    """Roster-derived team category rates: each team's players' per-40
-    rates and shooting percentages, weighted by how many minutes each
-    player actually played this season (so a walk-on who saw 4 minutes
-    doesn't move the team's characteristic profile as much as a starter).
-    This is a proxy, not a real team-level box score aggregate (the
-    workbook doesn't have team-level box scores, only player-level) -- it
-    answers "what does this team's roster, weighted by playing time, look
-    like statistically" rather than "what did this team actually total
-    across all its games." Good enough to find a team's relative
-    strengths/weaknesses vs. the rest of the league; not a substitute for
-    real team-game totals if those ever become available."""
-    wsum = defaultdict(float)
+def compute_team_profiles(player_rows, team_boxscore_games):
+    """Real team-level category rates -- each team's roster totals for the
+    season (points/rebounds/assists/blocks/steals/turnovers/makes/attempts),
+    summed across every player, divided by the number of games the team has
+    REAL BOX-SCORE DATA for (team_boxscore_games -- see compute_season_
+    profiles' docstring for why this must be the box-score count, not the
+    schedule's scored-game count: the two differ for any team with partial
+    box-score coverage, and dividing by the larger schedule count would
+    silently understate that team's real per-game rate).
+
+    This used to divide by the sum of individual players' per40 rates
+    weighted by their own minutes, which is a materially different (and
+    wrong) number: a "per-40" rate is meant to extrapolate ONE player's own
+    production to a full 40-minute game. A team fields 5 players
+    simultaneously, so its roster's total minutes played across a season is
+    roughly 5x the team's own game-minutes (200 team-minutes per 40-minute
+    game) -- averaging individual per-40 rates weighted by those roster
+    minutes converges to roughly team-production-divided-by-5, i.e.
+    something close to a single average player's rate, not the team's own
+    output. That's exactly the bug a user reported after comparing the
+    Stats Breakdown tab's numbers to what the team actually did on the
+    court. The fix: sum real totals across the roster, divide by the team's
+    own games played, so per40_pts is a team's actual points production
+    normalized to one 40-minute game -- effectively the team's real PPG
+    (barring OT games, a small effect at this scale).
+
+    ts_pct/fg_pct are likewise now real team shooting splits (total makes /
+    total attempts across every player, weighted naturally by how much each
+    player actually shot) instead of a per-player-average percentage."""
     acc = defaultdict(lambda: defaultdict(float))
-    ts_wsum = defaultdict(float)
-    fg_wsum = defaultdict(float)
     roster_size = defaultdict(int)
- 
+    teams_seen = set()
+
     for p in player_rows:
         tid = p["team_id"]
-        w = p["total_minutes"]
-        if not w:
+        if not p["total_minutes"]:
             continue
+        teams_seen.add(tid)
         roster_size[tid] += 1
-        wsum[tid] += w
-        for stat in TEAM_PROFILE_STATS:
-            acc[tid][stat] += p[stat] * w
-        if p["ts_pct"] is not None:
-            acc[tid]["ts_pct"] += p["ts_pct"] * w
-            ts_wsum[tid] += w
-        if p["fg_pct"] is not None:
-            acc[tid]["fg_pct"] += p["fg_pct"] * w
-            fg_wsum[tid] += w
- 
+        acc[tid]["_total_pts"] += p["_total_pts"]
+        acc[tid]["_total_reb"] += p["_total_reb"]
+        acc[tid]["_total_ast"] += p["_total_ast"]
+        acc[tid]["_total_blk"] += p["_total_blk"]
+        acc[tid]["_total_stl"] += p["_total_stl"]
+        acc[tid]["_total_tov"] += p["_total_tov"]
+        acc[tid]["_total_fgm"] += p["_total_fgm"]
+        acc[tid]["_total_fga"] += p["_total_fga"]
+        acc[tid]["_true_shot_attempts"] += p["_true_shot_attempts"]
+
     rows = []
-    for tid, w in wsum.items():
-        if w <= 0:
-            continue
-        row = dict(team_id=tid, roster_size=roster_size[tid])
-        for stat in TEAM_PROFILE_STATS:
-            row[stat] = acc[tid][stat] / w
-        row["ts_pct"] = (acc[tid]["ts_pct"] / ts_wsum[tid]) if ts_wsum[tid] > 0 else None
-        row["fg_pct"] = (acc[tid]["fg_pct"] / fg_wsum[tid]) if fg_wsum[tid] > 0 else None
+    for tid in teams_seen:
+        games = team_boxscore_games.get(tid, 0)
+        if games <= 0:
+            continue  # can't normalize to a per-game/per-40 rate with no box-score games on record
+        a = acc[tid]
+        row = dict(
+            team_id=tid, roster_size=roster_size[tid],
+            per40_pts=a["_total_pts"] / games,
+            per40_reb=a["_total_reb"] / games,
+            per40_ast=a["_total_ast"] / games,
+            per40_blk=a["_total_blk"] / games,
+            per40_stl=a["_total_stl"] / games,
+            per40_tov=a["_total_tov"] / games,
+            ts_pct=(a["_total_pts"] / (2 * a["_true_shot_attempts"])) if a["_true_shot_attempts"] > 0 else None,
+            fg_pct=(a["_total_fgm"] / a["_total_fga"]) if a["_total_fga"] > 0 else None,
+        )
         rows.append(row)
     return rows
  
@@ -555,7 +626,7 @@ def main():
     print(f"Team ratings: {len(team_rows)} (by tier: {dict(tier_counts)})")
  
     # ---- team category profiles (for /teams/{id}/needs, /teams/{id}/fits) ----
-    team_profile_rows = compute_team_profiles(player_rows)
+    team_profile_rows = compute_team_profiles(player_rows, current["team_boxscore_games"])
     profile_stats = league_profile_stats(team_profile_rows)
     print(f"Team category profiles: {len(team_profile_rows)}")
  

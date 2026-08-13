@@ -1,7 +1,8 @@
 import { Fragment } from "react";
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { PlayerDetail, PlayerTrajectory } from "@/lib/types";
+import type { PlayerDetail, PlayerTrajectory, PlayerSplits, OpponentTierSplit } from "@/lib/types";
+import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 
 export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -15,6 +16,15 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
   } catch (e) {
     // Trajectory 404s if the player has no multi-season history on record --
     // not an error worth showing, the current-season card below still renders.
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  let splits: PlayerSplits | null = null;
+  try {
+    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 60 });
+  } catch (e) {
+    // Same as trajectory above -- a thin_sample player with zero games this
+    // season has nothing to split, not an error worth surfacing.
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
 
@@ -91,6 +101,43 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         )}
       </div>
 
+      {splits && splits.total_games > 0 && (
+        <div className="card">
+          <h2>
+            Performance by Opponent Strength
+            <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
+              ?
+            </span>
+          </h2>
+          <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Split</th>
+                  <th>GP</th>
+                  <th>PPG</th>
+                  <th>RPG</th>
+                  <th>APG</th>
+                  <th>SPG</th>
+                  <th>BPG</th>
+                  <th>TOPG</th>
+                  <th>MPG</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TIERS.map((t) => (
+                  <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
+                ))}
+                <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
+                <SplitRow label="Last 10 games" row={splits.last10} />
+              </tbody>
+            </table>
+          </div>
+          <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
+        </div>
+      )}
+
       {trajectory && trajectory.seasons.length > 0 && (
         <div className="card">
           <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
@@ -164,6 +211,32 @@ function Stat({ label, value, highlight, decimals = 1 }: { label: string; value:
       </div>
       <div className="label">{label}</div>
     </div>
+  );
+}
+
+function SplitRow({ label, row }: { label: string; row: OpponentTierSplit | null }) {
+  if (!row) {
+    return (
+      <tr>
+        <td>{label}</td>
+        <td colSpan={8} className="section-note">
+          No games in this split
+        </td>
+      </tr>
+    );
+  }
+  return (
+    <tr>
+      <td>{label}</td>
+      <td>{row.games}</td>
+      <td>{row.avg_points.toFixed(1)}</td>
+      <td>{row.avg_rebounds.toFixed(1)}</td>
+      <td>{row.avg_assists.toFixed(1)}</td>
+      <td>{row.avg_steals.toFixed(1)}</td>
+      <td>{row.avg_blocks.toFixed(1)}</td>
+      <td>{row.avg_turnovers.toFixed(1)}</td>
+      <td>{row.avg_minutes.toFixed(1)}</td>
+    </tr>
   );
 }
 

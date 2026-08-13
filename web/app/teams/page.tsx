@@ -16,13 +16,24 @@ const SORT_FIELDS: Record<string, keyof Team> = {
 export default async function TeamsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string; tier?: string; conference?: string; sort?: string; dir?: string }>;
+  searchParams: Promise<{ search?: string; tier?: string; conference?: string | string[]; sort?: string; dir?: string }>;
 }) {
   const sp = await searchParams;
+  const selectedConferences = Array.isArray(sp.conference) ? sp.conference : sp.conference ? [sp.conference] : [];
 
-  const teams = await apiFetch<Team[]>("/teams", {
-    params: { search: sp.search, tier: sp.tier, conference: sp.conference, limit: 500 },
-  });
+  const [allTeams, conferences] = await Promise.all([
+    apiFetch<Team[]>("/teams", { params: { search: sp.search, tier: sp.tier, limit: 500 } }),
+    apiFetch<string[]>("/conferences"),
+  ]);
+
+  // Conference is a multiselect, filtered client-side (not pushed down to
+  // the API as a param) -- /teams already returns the whole filtered set in
+  // one call, so there's no correctness reason to round-trip per
+  // conference; a <select multiple> also isn't something the backend's
+  // single exact-match `conference` param supports anyway.
+  const teams = selectedConferences.length === 0
+    ? allTeams
+    : allTeams.filter((t) => selectedConferences.includes(t.conference));
 
   const sortField = sp.sort && SORT_FIELDS[sp.sort];
   if (sortField) {
@@ -58,13 +69,27 @@ export default async function TeamsPage({
           </select>
         </div>
         <div className="field">
-          <label htmlFor="conference">Conference</label>
-          <input id="conference" name="conference" defaultValue={sp.conference ?? ""} placeholder="e.g. Southland" />
+          <label htmlFor="conference">Conference (multi-select)</label>
+          <select id="conference" name="conference" multiple defaultValue={selectedConferences} size={5}>
+            {conferences.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
         </div>
         <button className="btn btn-primary" type="submit">
           Filter
         </button>
       </form>
+      {selectedConferences.length > 0 && (
+        <p className="section-note" style={{ marginTop: -8, marginBottom: 16 }}>
+          Showing: {selectedConferences.join(", ")} &middot;{" "}
+          <Link href={`/teams?${new URLSearchParams({ ...(sp.search ? { search: sp.search } : {}), ...(sp.tier ? { tier: sp.tier } : {}) }).toString()}`}>
+            Clear conference filter
+          </Link>
+        </p>
+      )}
 
       {teams.length === 0 ? (
         <p className="empty-state">No teams match that filter.</p>

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
-import type { PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard } from "@/lib/types";
+import type {
+  PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboard,
+} from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
 const CHARTS_PER_PAGE = 4;
@@ -12,6 +14,7 @@ interface SP {
   stat?: string;
   level?: string;
   min_games?: string;
+  conference?: string;
   chart_page?: string;
   page?: string;
 }
@@ -32,9 +35,12 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const totalChartPages = Math.ceil(chartStats.length / CHARTS_PER_PAGE);
   const pageStats = chartStats.slice(chartPage * CHARTS_PER_PAGE, chartPage * CHARTS_PER_PAGE + CHARTS_PER_PAGE);
 
-  const [leaderboard, lmStandouts, mmStandouts, hmVsHm, lmVsHm, mmVsHm, ...chartData] = await Promise.all([
+  const [
+    leaderboard, lmStandouts, mmStandouts, hmVsHm, lmVsHm, mmVsHm,
+    top50Hm, top50Mm, top50Lm, backHalf, conferences, ...chartData
+  ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
-      params: { stat, level: sp.level, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
+      params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
       params: { level: "Low-Major", target_level: "High-Major", limit: 8 },
@@ -51,6 +57,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
       params: { own_level: "Mid-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
     }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { opponent_level: "High-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+    }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { opponent_level: "Mid-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+    }),
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+    }),
+    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10 } }),
+    apiFetch<string[]>("/conferences"),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
     ),
@@ -81,6 +98,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               {TIERS.map((t) => (
                 <option key={t} value={t}>
                   {t} ({tierAbbrev(t)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="conference">Conference</label>
+            <select id="conference" name="conference" defaultValue={sp.conference ?? ""}>
+              <option value="">Any conference</option>
+              {conferences.map((c) => (
+                <option key={c} value={c}>
+                  {c}
                 </option>
               ))}
             </select>
@@ -218,6 +246,79 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
           </div>
         </div>
       </div>
+
+      <div className="card">
+        <h2>
+          Best Against the Top 50 Teams, by Tier
+          <span className="hint" title="Real per-game scoring against only the 50 highest-current_rating teams WITHIN each tier -- not every team at that tier, including its weakest. High-Major's top 50 is nearly the whole tier; Low-Major's top 50 is a much sharper cut of a much bigger pool.">
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Real production against just the best 50 teams in each tier (by current rating), not every team at
+          that level -- a sharper read than the whole-tier splits above, especially for Mid-Major and Low-Major.
+        </p>
+        <div className="card-grid card-grid-3">
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Top 50 High-Major</h2>
+            <OpponentSplitTable data={top50Hm} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Top 50 Mid-Major</h2>
+            <OpponentSplitTable data={top50Mm} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Top 50 Low-Major</h2>
+            <OpponentSplitTable data={top50Lm} />
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>
+          Best Back Half of the Season
+          <span className="hint" title="Each player's own games are split at the midpoint of HER games played this season (not the calendar midpoint), then compared -- a missed-games stretch early in the year doesn't skew this the way splitting by calendar date would.">
+            ?
+          </span>
+        </h2>
+        <p className="section-note">{backHalf.note}</p>
+        {backHalf.players.length === 0 ? (
+          <p className="empty-state">No qualifying players.</p>
+        ) : (
+          <div className="chart-card" style={{ maxWidth: 640 }}>
+            <div className="chart-sub">
+              PPG change, first half &rarr; second half (min. {backHalf.min_games_per_half} games each half)
+            </div>
+            {(() => {
+              const max = Math.max(...backHalf.players.map((p) => Math.abs(p.ppg_change)), 0.0001);
+              return backHalf.players.map((p) => (
+                <div className="bar-row" key={p.player_id}>
+                  <Link href={`/players/${p.player_id}`} className="bar-name" title={`${p.name} (${p.team_name})`}>
+                    {p.name}
+                  </Link>
+                  <div className="bar-track">
+                    <div
+                      className="bar-fill"
+                      style={{
+                        width: `${(Math.abs(p.ppg_change) / max) * 100}%`,
+                        background: p.ppg_change < 0 ? "var(--text-dim)" : undefined,
+                      }}
+                    />
+                  </div>
+                  <div className="bar-value">
+                    {p.ppg_change > 0 ? "+" : ""}
+                    {p.ppg_change.toFixed(1)}
+                  </div>
+                </div>
+              ));
+            })()}
+            <p className="section-note" style={{ marginTop: 10 }}>
+              1st half {backHalf.players[0]?.first_half_ppg.toFixed(1)} PPG &rarr; 2nd half{" "}
+              {backHalf.players[0]?.second_half_ppg.toFixed(1)} PPG for the top mover.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -321,6 +422,7 @@ function withChartPage(sp: SP, page: number): string {
   const p = new URLSearchParams();
   if (sp.stat) p.set("stat", sp.stat);
   if (sp.level) p.set("level", sp.level);
+  if (sp.conference) p.set("conference", sp.conference);
   if (sp.min_games) p.set("min_games", sp.min_games);
   if (sp.page) p.set("page", sp.page);
   p.set("chart_page", String(page));
@@ -331,6 +433,7 @@ function withLeaderboardPage(sp: SP, page: number): string {
   const p = new URLSearchParams();
   if (sp.stat) p.set("stat", sp.stat);
   if (sp.level) p.set("level", sp.level);
+  if (sp.conference) p.set("conference", sp.conference);
   if (sp.min_games) p.set("min_games", sp.min_games);
   if (sp.chart_page) p.set("chart_page", sp.chart_page);
   p.set("page", String(page));

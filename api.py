@@ -53,8 +53,9 @@ from pydantic import BaseModel
  
 from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
-    find_fits, leaderboard, opponent_split_leaderboard, player_game_logs, player_trajectory, project_batch,
-    project_player, standout_projections, team_needs, team_roles, team_schedule,
+    back_half_leaderboard, conference_standings, find_fits, game_detail, leaderboard, opponent_split_leaderboard,
+    player_game_logs, player_splits, player_trajectory, project_batch, project_player, standout_projections,
+    team_needs, team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
  
@@ -450,19 +451,35 @@ def get_player_leaderboard(
     stat: str = Query("hoop_score", description=f"One of {list(LEADERBOARD_STATS)}."),
     level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
     division: str | None = Query(None, description="D1 or D2 (as recorded on the Teams sheet). Omit for both."),
+    conference: str | None = Query(None, description="Exact conference name match. Omit for all conferences."),
     min_games: int = Query(5, description="Exclude players with a thinner sample than this many games."),
     limit: int = Query(25, le=100),
 ):
     """A real, no-projection leaderboard -- top players this season by one
-    stat (or lowest, for turnovers), optionally restricted to a tier
-    and/or division. This is what actually happened, not a what-if."""
+    stat (or lowest, for turnovers), optionally restricted to a tier,
+    division, and/or conference. This is what actually happened, not a
+    what-if."""
     conn = get_conn()
     try:
-        return leaderboard(conn, stat=stat, level=level, division=division, min_games=min_games, limit=limit)
+        return leaderboard(conn, stat=stat, level=level, division=division, conference=conference,
+                            min_games=min_games, limit=limit)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:
         conn.close()
+
+
+@app.get("/conferences", dependencies=[Depends(require_api_key)])
+def list_conferences():
+    """Every distinct conference name in the current cache, alphabetical --
+    used to populate a conference filter/multiselect dropdown without the
+    frontend having to derive the list itself from a full /teams fetch."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT DISTINCT conference FROM teams WHERE conference IS NOT NULL ORDER BY conference"
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 
 @app.get("/leaderboards/standouts", dependencies=[Depends(require_api_key)])
@@ -496,6 +513,9 @@ def get_opponent_split_leaderboard(
     stat: str = Query("points", description=f"One of {list(OPPONENT_SPLIT_STATS)}."),
     min_games: int = Query(3, description="Minimum games played AGAINST that opponent tier specifically, not season-total games."),
     season: str | None = Query(None, description="Defaults to the cache's current season."),
+    conference: str | None = Query(None, description="Exact conference match on the player's OWN team. Omit for any conference."),
+    top50_only: bool = Query(False, description="Restrict to games against one of the 50 highest-current_rating "
+                                                  "teams WITHIN opponent_level (not top 50 nationally)."),
     limit: int = Query(20, le=100),
 ):
     """Real per-game production filtered to games played against a specific
@@ -505,11 +525,76 @@ def get_opponent_split_leaderboard(
     who perform best against High-Major competition'. Uses each game's real
     tracked opponent (joined via opponent_team_id -> teams.tier), not a
     season-average approximation. ("P5" is still accepted as an alias for
-    High-Major in both level params.)"""
+    High-Major in both level params.) Pass top50_only=true for the "best
+    against the top 50 [tier] teams" leaderboards (vs. every team at that
+    tier, including its weakest)."""
     conn = get_conn()
     try:
         return opponent_split_leaderboard(conn, own_level=own_level, opponent_level=opponent_level,
-                                           stat=stat, min_games=min_games, limit=limit, season=season)
+                                           stat=stat, min_games=min_games, limit=limit, season=season,
+                                           conference=conference, top50_only=top50_only)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/back-half", dependencies=[Depends(require_api_key)])
+def get_back_half_leaderboard(
+    level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
+    min_games_per_half: int = Query(5, description="Minimum games required in EACH half of the season to qualify."),
+    season: str | None = Query(None, description="Defaults to the cache's current season."),
+    limit: int = Query(20, le=100),
+):
+    """'Best back half of the season' -- ranks players by how much their
+    scoring changed from the first half of their own games played to the
+    second half (positive = trending up). See back_half_leaderboard()'s
+    docstring for exactly how the split works."""
+    conn = get_conn()
+    try:
+        return back_half_leaderboard(conn, level=level, min_games_per_half=min_games_per_half,
+                                      limit=limit, season=season)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/players/{player_id}/splits", dependencies=[Depends(require_api_key)])
+def get_player_splits(player_id: int, season: str | None = Query(None)):
+    """This player's game log sliced four ways: by opponent tier (High-
+    Major/Mid-Major/Low-Major), against the nation's top 50 rated teams,
+    and across just her last 10 games -- powers the profile page's
+    opponent-strength breakdown table."""
+    conn = get_conn()
+    try:
+        return player_splits(conn, player_id, season=season)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/conferences/{conference}/standings", dependencies=[Depends(require_api_key)])
+def get_conference_standings(conference: str, season: str | None = Query(None)):
+    """Win/loss records (overall and conference-only) for every team in
+    one conference this season, sorted by conference win percentage."""
+    conn = get_conn()
+    try:
+        return conference_standings(conn, conference, season=season)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/games/{game_id}", dependencies=[Depends(require_api_key)])
+def get_game_detail(game_id: int):
+    """Full box score for one game -- both teams' complete per-player
+    lines, plus game metadata (date, score, home/away, OT/neutral-site)."""
+    conn = get_conn()
+    try:
+        return game_detail(conn, game_id)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:

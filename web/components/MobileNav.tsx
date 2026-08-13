@@ -7,9 +7,12 @@ import ThemeToggle from "./ThemeToggle";
 const LINKS: { href: string; label: string }[] = [
   { href: "/tpe", label: "TPE Engine" },
   { href: "/team-fits", label: "Team Fits" },
+  { href: "/compare", label: "Compare" },
   { href: "/data", label: "Data" },
   { href: "/players", label: "Players" },
   { href: "/teams", label: "Teams" },
+  { href: "/conferences", label: "Conferences" },
+  { href: "/glossary", label: "Glossary" },
   { href: "/about", label: "About" },
   { href: "/contact", label: "Contact" },
 ];

@@ -201,6 +201,7 @@ export interface PlayerLeaderboard {
   lower_is_better: boolean;
   level_filter: string | null;
   division_filter: string | null;
+  conference_filter?: string | null;
   min_games: number;
   players: LeaderboardPlayer[];
 }
@@ -400,7 +401,119 @@ export interface OpponentSplitLeaderboard {
   own_level: string | null;
   opponent_level: string;
   min_games: number;
+  conference_filter?: string | null;
+  top50_only?: boolean;
   players: OpponentSplitPlayer[];
+}
+
+// -------- splits, back-half, conference standings, game detail (Batch 2) --------
+
+export interface OpponentTierSplit {
+  games: number;
+  avg_points: number;
+  avg_rebounds: number;
+  avg_assists: number;
+  avg_steals: number;
+  avg_blocks: number;
+  avg_turnovers: number;
+  avg_minutes: number;
+}
+
+export interface PlayerSplits {
+  player_id: number;
+  name: string;
+  season: string;
+  total_games: number;
+  by_opponent_tier: Record<string, OpponentTierSplit | null>;
+  vs_top50: OpponentTierSplit | null;
+  vs_top50_note: string;
+  last10: OpponentTierSplit | null;
+  last10_games: {
+    date: string;
+    opponent_name: string | null;
+    opponent_tier: string | null;
+    points: number;
+    rebounds: number;
+    assists: number;
+  }[];
+}
+
+export interface BackHalfPlayer {
+  player_id: number;
+  name: string;
+  team_id: number;
+  team_name: string;
+  tier: string;
+  first_half_games: number;
+  second_half_games: number;
+  first_half_ppg: number;
+  second_half_ppg: number;
+  ppg_change: number;
+}
+
+export interface BackHalfLeaderboard {
+  level_filter: string | null;
+  season: string;
+  min_games_per_half: number;
+  note: string;
+  players: BackHalfPlayer[];
+}
+
+export interface ConferenceStandingsTeam {
+  team_id: number;
+  name: string;
+  current_rating: number;
+  wins: number;
+  losses: number;
+  conference_wins: number;
+  conference_losses: number;
+  conference_win_pct: number | null;
+}
+
+export interface ConferenceStandings {
+  conference: string;
+  season: string;
+  teams: ConferenceStandingsTeam[];
+}
+
+export interface GameBoxScoreRow {
+  player_id: number;
+  name: string;
+  team_id: number;
+  started: number;
+  minutes: number;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  turnovers: number;
+  fouls: number;
+  fgm: number;
+  fga: number;
+  tfgm: number;
+  tfga: number;
+  ftm: number;
+  fta: number;
+}
+
+export interface GameDetail {
+  game_id: string;
+  season: string;
+  date: string;
+  home_team_id: number;
+  home_team_name: string;
+  away_team_id: number;
+  away_team_name: string;
+  home_score: number | null;
+  away_score: number | null;
+  winner_team_id: number | null;
+  margin: number | null;
+  neutral_site: number;
+  overtime: number;
+  conference_game: number;
+  home_box_score: GameBoxScoreRow[];
+  away_box_score: GameBoxScoreRow[];
 }
 
 export const ROLE_NAMES = ["starter", "sixth_man", "role_player", "depth_piece"] as const;

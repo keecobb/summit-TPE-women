@@ -37,7 +37,8 @@ export default async function TeamDetailPage({
     <div>
       <h1>{team.name}</h1>
       <p className="subtitle">
-        {team.conference} &middot; <span className="pill">{team.tier}</span>
+        <Link href={`/conferences/${encodeURIComponent(team.conference)}`}>{team.conference}</Link> &middot;{" "}
+        <span className="pill">{team.tier}</span>
       </p>
 
       <div className="tabs">
@@ -228,7 +229,9 @@ async function ScheduleTab({ id }: { id: string }) {
           <tbody>
             {schedule.games.map((g) => (
               <tr key={g.game_id}>
-                <td>{formatGameDate(g.date)}</td>
+                <td>
+                  <Link href={`/games/${g.game_id}`}>{formatGameDate(g.date)}</Link>
+                </td>
                 <td>
                   {g.is_home ? "vs " : "@ "}
                   {g.opponent_name}
