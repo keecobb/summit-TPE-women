@@ -14,13 +14,11 @@ export default async function HomePage() {
   // pulled from the real API so this never drifts out of sync with what
   // the rest of the site shows. Small, cheap calls; safe to run on every
   // home page load with the normal 60s revalidate window.
-  const [topTeams, topScorers, topSummitScores, seasonJump] = await Promise.all([
+  const [topTeams, topScorers, seasonJump] = await Promise.all([
     apiFetch<Team[]>("/teams", { params: { limit: 5 } }),
     apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 5 } }),
-    apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "hoop_score", min_games: 10, limit: 1 } }),
     apiFetch<SeasonJumpLeaderboard>("/leaderboards/season-jump", { params: { min_games: 8, limit: 3 } }),
   ]);
-  const highestLiveSummitScore = topSummitScores.players[0]?.hoop_score ?? null;
 
   return (
     <div>
@@ -43,14 +41,6 @@ export default async function HomePage() {
           <Link href="/data" className="btn">
             Browse the data
           </Link>
-        </div>
-        <div style={{ marginTop: 14, display: "flex", gap: 16 }}>
-          <a href="https://twitter.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="subtitle">
-            @SummitTPE on X
-          </a>
-          <a href="https://instagram.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="subtitle">
-            @SummitTPE on Instagram
-          </a>
         </div>
       </section>
 
@@ -77,23 +67,6 @@ export default async function HomePage() {
           />
           <div style={{ position: "absolute", left: 0, top: 0, fontSize: 12, color: "var(--text-dim)" }}>30 (floor)</div>
           <div style={{ position: "absolute", right: 0, top: 0, fontSize: 12, color: "var(--text-dim)" }}>99 (elite)</div>
-          {highestLiveSummitScore !== null && (
-            <div
-              style={{
-                position: "absolute",
-                left: `${Math.min(100, Math.max(0, ((highestLiveSummitScore - 30) / (99 - 30)) * 100))}%`,
-                top: 22,
-                transform: "translateX(-50%)",
-                fontSize: 12,
-                fontWeight: 700,
-                color: "var(--accent)",
-                whiteSpace: "nowrap",
-              }}
-            >
-              &uarr; {topSummitScores.players[0].name} sits at {highestLiveSummitScore.toFixed(1)} right now, the
-              nation&apos;s highest live Summit Score.
-            </div>
-          )}
         </div>
         <p className="section-note" style={{ marginTop: 24 }}>
           Want the full plain-language breakdown of how the model works? See the About page.

@@ -4,6 +4,11 @@ import type { Team, TeamFits, TeamNeeds, TeamRoles } from "@/lib/types";
 import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"];
 const POSITIONS = ["G", "F", "C"];
 

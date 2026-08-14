@@ -1327,6 +1327,159 @@ def season_jump_leaderboard(conn, season_from=None, season_to=None, min_games=5,
     )
 
 
+def team_efficiency_quadrant(conn, level=None, season=None, min_games=5):
+    """Every qualifying team plotted on two real axes -- points scored per
+    game (offense) and points allowed per game (defense) -- computed live
+    from the `games` table's actual final scores, not a projection and not
+    an adjusted/pace-normalized efficiency metric (this cache doesn't carry
+    opponent-adjusted offense/defense splits the way `current_rating` is
+    itself adjusted; raw points/game is the honest, available substitute).
+    Powers a quadrant scatter chart: teams that score a lot AND allow few
+    points are "elite," score a lot but allow a lot are "offense-first,"
+    allow few but don't score much are "defense-first," and neither is
+    "below average" -- the quadrant split point is this group's own mean
+    points scored/allowed, not a fixed constant, so it's always centered on
+    the actual field being plotted (whole league, or just one level).
+
+    level: optional -- one of VALID_LEVELS. Scopes both which teams are
+    plotted AND what the quadrant-line means (a Low-Major-only plot splits
+    at the Low-Major mean, not the whole-league mean).
+    """
+    level = normalize_tier(level)
+    if level is not None and level not in VALID_LEVELS:
+        raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
+    if season is None:
+        season = _load_meta(conn)["season"]
+
+    clauses = ["g.season = ?", "g.home_score IS NOT NULL", "g.away_score IS NOT NULL"]
+    params = [season]
+    if level is not None:
+        clauses.append("t.tier = ?")
+        params.append(level)
+    where = " AND ".join(clauses)
+
+    rows = conn.execute(
+        f"""SELECT t.team_id, t.name, t.tier, t.conference, t.current_rating,
+                   COUNT(g.game_id) AS games,
+                   AVG(CASE WHEN g.home_team_id = t.team_id THEN g.home_score ELSE g.away_score END) AS ppg,
+                   AVG(CASE WHEN g.home_team_id = t.team_id THEN g.away_score ELSE g.home_score END) AS papg
+            FROM teams t
+            JOIN games g ON (g.home_team_id = t.team_id OR g.away_team_id = t.team_id) AND {where}
+            GROUP BY t.team_id
+            HAVING COUNT(g.game_id) >= ?""",
+        params + [min_games],
+    ).fetchall()
+
+    teams = [dict(r) for r in rows]
+    for t in teams:
+        t["ppg"] = round(t["ppg"], 1)
+        t["papg"] = round(t["papg"], 1)
+
+    if not teams:
+        raise ProjectionError(f"No teams with {min_games}+ scored games on record for {season}"
+                               + (f" at level {level!r}." if level else "."))
+
+    mean_ppg = round(sum(t["ppg"] for t in teams) / len(teams), 1)
+    mean_papg = round(sum(t["papg"] for t in teams) / len(teams), 1)
+    for t in teams:
+        if t["ppg"] >= mean_ppg and t["papg"] <= mean_papg:
+            t["quadrant"] = "Elite"
+        elif t["ppg"] >= mean_ppg:
+            t["quadrant"] = "Offense-First"
+        elif t["papg"] <= mean_papg:
+            t["quadrant"] = "Defense-First"
+        else:
+            t["quadrant"] = "Below Average"
+    teams.sort(key=lambda t: t["current_rating"], reverse=True)
+
+    return dict(
+        level_filter=level, season=season, min_games=min_games,
+        mean_ppg=mean_ppg, mean_papg=mean_papg,
+        note=(f"Points scored and allowed per game, real box scores from {season} (min. {min_games} games) -- "
+              f"not adjusted for pace or opponent strength the way current_rating is. The quadrant split is "
+              f"this group's own average points scored ({mean_ppg}) and allowed ({mean_papg}), so 'Elite' means "
+              f"above-average offense AND above-average (i.e. low) points allowed relative to these teams "
+              f"specifically, not a fixed league-wide bar."),
+        teams=teams,
+    )
+
+
+def player_efficiency_quadrant(conn, level=None, min_games=8, limit=400):
+    """Every qualifying player plotted on two real axes -- points per game
+    (scoring volume) and true shooting % (scoring efficiency) -- both
+    already-computed real season columns on `players` (no live aggregation
+    needed, unlike the team version of this chart). Powers a quadrant
+    scatter chart: high volume AND high efficiency is "Elite," high volume
+    but low efficiency is "Volume Scorer," low volume but high efficiency
+    is "Efficient," and neither is "Below Average." The quadrant split is
+    this group's own mean PPG/TS%, not a fixed constant, matching
+    team_efficiency_quadrant()'s convention.
+
+    level: optional -- one of VALID_LEVELS. Scopes both which players are
+    plotted AND what the quadrant-line means (a Low-Major-only plot splits
+    at the Low-Major mean, not the whole-league mean).
+
+    min_games: real games played this season, same eligibility floor used
+    elsewhere -- keeps this to players with a real, evidenced sample.
+    Thin-sample players are always excluded regardless of min_games, same
+    as every other leaderboard on the site.
+
+    limit: caps how many players are returned (sorted by hoop_score
+    descending, so a limit keeps the highest-profile players when a plot
+    would otherwise be too dense) -- default 400 covers effectively the
+    whole eligible pool at min_games=8, this is a density safety valve,
+    not a top-N ranking.
+    """
+    level = normalize_tier(level)
+    if level is not None and level not in VALID_LEVELS:
+        raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
+
+    clauses = ["p.games >= ?", "(p.thin_sample IS NULL OR p.thin_sample = 0)",
+               "p.ppg IS NOT NULL", "p.ts_pct IS NOT NULL"]
+    params = [min_games]
+    if level is not None:
+        clauses.append("t.tier = ?")
+        params.append(level)
+    where = " AND ".join(clauses)
+
+    rows = conn.execute(
+        f"""SELECT p.player_id, p.name, p.position, p.class_year, p.team_id, t.name AS team_name, t.tier,
+                   p.games, p.ppg, p.ts_pct, p.hoop_score
+            FROM players p JOIN teams t ON p.team_id = t.team_id
+            WHERE {where}
+            ORDER BY p.hoop_score DESC
+            LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+
+    players = [dict(r) for r in rows]
+    if not players:
+        raise ProjectionError(f"No players with {min_games}+ games on record"
+                               + (f" at level {level!r}." if level else "."))
+
+    mean_ppg = round(sum(p["ppg"] for p in players) / len(players), 1)
+    mean_ts = round(sum(p["ts_pct"] for p in players) / len(players), 1)
+    for p in players:
+        if p["ppg"] >= mean_ppg and p["ts_pct"] >= mean_ts:
+            p["quadrant"] = "Elite"
+        elif p["ppg"] >= mean_ppg:
+            p["quadrant"] = "Volume Scorer"
+        elif p["ts_pct"] >= mean_ts:
+            p["quadrant"] = "Efficient"
+        else:
+            p["quadrant"] = "Below Average"
+
+    return dict(
+        level_filter=level, min_games=min_games,
+        mean_ppg=mean_ppg, mean_ts=mean_ts,
+        note=(f"Points per game (scoring volume) vs. true shooting % (scoring efficiency), real season stats "
+              f"(min. {min_games} games, full-profile players only). The quadrant split is this group's own "
+              f"average points ({mean_ppg}) and TS% ({mean_ts}), so 'Elite' means above-average volume AND "
+              f"above-average efficiency relative to these players specifically, not a fixed league-wide bar."),
+        players=players,
+    )
+
+
 def standout_projections(conn, level, target_level="High-Major", min_games=8, limit=20):
     """'Who from a lower level projects best at the top level' -- every
     current player at `level` (e.g. Low-Major or Mid-Major), projected
@@ -1566,6 +1719,73 @@ def player_game_logs(conn, player_id, season=None):
         params,
     ).fetchall()
     return dict(player_id=player_id, season=season, games=[dict(r) for r in rows])
+
+
+BEST_GAME_SORT_FIELDS = {"points", "production_rating"}
+
+
+def best_single_game_performances(conn, season=None, sort="points", level=None, limit=20):
+    """The single best individual game performances this season, site-wide
+    -- real box scores from `player_game_logs`, not a projection or a
+    season average. `sort` picks which single-game number ranks the list:
+    `points` (a real point total) or `production_rating` (points + rebounds
+    + assists + steals + blocks - turnovers for that one game -- the same
+    metric the player profile page's Game-by-Game Production Rating chart
+    uses, computed live here rather than stored, so both stay in sync with
+    one definition). Every row also carries the full box score for that
+    game regardless of `sort`, so a caller isn't locked into one column.
+
+    level: optional -- one of VALID_LEVELS, scopes to games played by
+    players whose own team is at that level (the OPPONENT's level isn't
+    considered here -- see /leaderboards/opponent-splits for that cut).
+    """
+    if sort not in BEST_GAME_SORT_FIELDS:
+        raise ProjectionError(f"sort must be one of {BEST_GAME_SORT_FIELDS}, got {sort!r}.")
+    if season is None:
+        season = _load_meta(conn)["season"]
+    level = normalize_tier(level)
+    if level is not None and level not in VALID_LEVELS:
+        raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
+
+    clauses = ["g.season = ?", "g.minutes > 0"]
+    params = [season]
+    if level is not None:
+        clauses.append("t.tier = ?")
+        params.append(level)
+    where = " AND ".join(clauses)
+
+    order_col = "g.points" if sort == "points" else \
+        "(g.points + g.rebounds + g.assists + g.steals + g.blocks - g.turnovers)"
+
+    rows = conn.execute(
+        f"""SELECT g.player_id, p.name, g.team_id, t.name AS team_name, t.tier,
+                   g.date, g.opponent_name, opp_t.tier AS opponent_tier, g.minutes,
+                   g.points, g.rebounds, g.assists, g.steals, g.blocks, g.turnovers, g.fouls,
+                   g.fgm, g.fga, g.tfgm, g.tfga, g.ftm, g.fta
+            FROM player_game_logs g
+            JOIN players p ON p.player_id = g.player_id
+            JOIN teams t ON t.team_id = g.team_id
+            LEFT JOIN teams opp_t ON g.opponent_team_id = opp_t.team_id
+            WHERE {where}
+            ORDER BY {order_col} DESC
+            LIMIT ?""",
+        params + [limit],
+    ).fetchall()
+
+    games = []
+    for r in rows:
+        d = dict(r)
+        d["production_rating"] = d["points"] + d["rebounds"] + d["assists"] + d["steals"] + d["blocks"] - d["turnovers"]
+        games.append(d)
+
+    return dict(
+        season=season, sort=sort, level_filter=level,
+        note=("The best individual single-game performances this season, real box scores -- not a season "
+              "average or a projection. `production_rating` = points + rebounds + assists + steals + blocks "
+              "- turnovers for that one game, shown on every row regardless of `sort` (the same metric used "
+              "on player profile pages' Game-by-Game Production Rating chart)."),
+        games=games,
+    )
 
 
 def team_schedule(conn, team_id, season=None):

@@ -53,9 +53,10 @@ from pydantic import BaseModel
  
 from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
-    back_half_leaderboard, conference_standings, find_fits, game_detail, leaderboard, leap_candidates,
-    opponent_split_leaderboard, player_game_logs, player_splits, player_trajectory, project_batch,
-    project_player, season_jump_leaderboard, standout_projections, team_needs, team_roles, team_schedule,
+    back_half_leaderboard, best_single_game_performances, conference_standings, find_fits, game_detail,
+    leaderboard, leap_candidates, opponent_split_leaderboard, player_efficiency_quadrant, player_game_logs,
+    player_splits, player_trajectory, project_batch, project_player, season_jump_leaderboard,
+    standout_projections, team_efficiency_quadrant, team_needs, team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
  
@@ -651,6 +652,77 @@ def get_season_jump_leaderboard(
     try:
         return season_jump_leaderboard(conn, season_from=season_from, season_to=season_to,
                                         min_games=min_games, limit=limit)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/team-efficiency", dependencies=[Depends(require_api_key)])
+def get_team_efficiency_quadrant(
+    level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
+    season: str | None = Query(None, description="Defaults to the cache's current season."),
+    min_games: int = Query(5, description="Minimum scored games this season to qualify."),
+):
+    """Every qualifying team plotted on two real axes: points scored per
+    game (offense) and points allowed per game (defense), computed live
+    from actual final scores in the `games` table -- not a projection, and
+    not pace/opponent-adjusted the way `current_rating` itself is (this
+    cache doesn't carry separate adjusted offense/defense components).
+    Powers the Data page's team efficiency quadrant chart. Each team is
+    tagged `quadrant`: Elite (above-average offense AND defense), Offense-
+    First, Defense-First, or Below Average -- split at THIS GROUP's own
+    mean points scored/allowed (`mean_ppg`/`mean_papg` in the response),
+    not a fixed constant, so `level=Low-Major` splits at the Low-Major
+    mean, not the whole-league mean."""
+    conn = get_conn()
+    try:
+        return team_efficiency_quadrant(conn, level=level, season=season, min_games=min_games)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/player-efficiency", dependencies=[Depends(require_api_key)])
+def get_player_efficiency_quadrant(
+    level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
+    min_games: int = Query(8, description="Minimum games played this season to qualify."),
+    limit: int = Query(400, le=1000, description="Caps how many players are returned, sorted by Summit Score descending."),
+):
+    """Every qualifying player plotted on two real axes: points per game
+    (scoring volume) and true shooting % (scoring efficiency) -- both
+    already-computed real season columns, not a projection. Powers the
+    Data page's player efficiency quadrant chart, the player-level
+    counterpart to /leaderboards/team-efficiency. Each player is tagged
+    `quadrant`: Elite (above-average volume AND efficiency), Volume
+    Scorer, Efficient, or Below Average -- split at THIS GROUP's own mean
+    PPG/TS% (`mean_ppg`/`mean_ts` in the response), not a fixed constant."""
+    conn = get_conn()
+    try:
+        return player_efficiency_quadrant(conn, level=level, min_games=min_games, limit=limit)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/best-games", dependencies=[Depends(require_api_key)])
+def get_best_single_game_performances(
+    season: str | None = Query(None, description="Defaults to the cache's current season."),
+    sort: str = Query("points", description="points or production_rating -- which single-game number ranks the list."),
+    level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Scopes to players whose own team is at that level. Omit for the whole league."),
+    limit: int = Query(20, le=100),
+):
+    """The best individual single-game performances this season, site-wide
+    -- real box scores, not a season average or a projection.
+    `production_rating` = points + rebounds + assists + steals + blocks -
+    turnovers for that one game (the same metric used on player profile
+    pages' Game-by-Game Production Rating chart), computed live and shown
+    on every row regardless of `sort`."""
+    conn = get_conn()
+    try:
+        return best_single_game_performances(conn, season=season, sort=sort, level=level, limit=limit)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:

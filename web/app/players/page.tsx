@@ -3,6 +3,11 @@ import { apiFetch } from "@/lib/api";
 import type { Player } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 const PAGE_SIZE = 25;
 const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"];
 const POSITIONS = ["G", "F", "C"];

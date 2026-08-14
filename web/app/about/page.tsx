@@ -39,7 +39,7 @@ export default function AboutPage() {
         </p>
       </div>
 
-      <div className="card">
+      <div className="card card-prose">
         <h2>Everything on the site</h2>
         <p className="section-note">The full rundown of every section, in one place.</p>
         <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>

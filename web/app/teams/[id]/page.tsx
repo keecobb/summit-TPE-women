@@ -5,6 +5,11 @@ import type { Team, TeamRoles, TeamNeeds, TeamNeedCategory, Player, TeamSchedule
 import { roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 const TABS = [
   { key: "overview", label: "Overview" },
   { key: "roster", label: "Roster" },

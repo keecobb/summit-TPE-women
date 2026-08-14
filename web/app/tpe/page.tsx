@@ -4,6 +4,11 @@ import type { Player, Team, ProjectionResult } from "@/lib/types";
 import { ROLE_NAMES, roleLabel } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 interface SP {
   search?: string;
   team_id?: string;

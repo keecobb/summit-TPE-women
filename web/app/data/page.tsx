@@ -2,12 +2,15 @@ import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type {
   PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboardAll, BackHalfPlayer,
-  SeasonJumpLeaderboard,
+  SeasonJumpLeaderboard, TeamEfficiencyQuadrant, PlayerEfficiencyQuadrant, BestGamesLeaderboard,
 } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
-const CHARTS_PER_PAGE = 4;
-const CHART_TOP_N = 5;
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 const LEADERBOARD_PAGE_SIZE = 10;
 const LEADERBOARD_MAX = 50;
 
@@ -16,8 +19,10 @@ interface SP {
   level?: string;
   min_games?: string;
   conference?: string;
-  chart_page?: string;
   page?: string;
+  eff_level?: string;
+  peff_level?: string;
+  games_sort?: string;
 }
 
 export default async function DataPage({ searchParams }: { searchParams: Promise<SP> }) {
@@ -31,14 +36,9 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     Math.max(0, Number(sp.page ?? 0) || 0)
   );
 
-  const chartPage = Math.max(0, Number(sp.chart_page ?? 0) || 0);
-  const chartStats = LEADERBOARD_STATS.filter((s) => s !== "hoop_score");
-  const totalChartPages = Math.ceil(chartStats.length / CHARTS_PER_PAGE);
-  const pageStats = chartStats.slice(chartPage * CHARTS_PER_PAGE, chartPage * CHARTS_PER_PAGE + CHARTS_PER_PAGE);
-
   const [
     leaderboard, lmStandouts, mmStandouts, hmVsHm, mmVsHm, lmVsHm,
-    top50Hm, top50Mm, top50Lm, backHalfAll, seasonJump, conferences, ...chartData
+    top50Hm, top50Mm, top50Lm, backHalfAll, seasonJump, efficiency, playerEfficiency, bestGames, conferences,
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
@@ -93,10 +93,22 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     apiFetch<SeasonJumpLeaderboard>("/leaderboards/season-jump", {
       params: { min_games: 8, limit: 15 },
     }),
+    // Real points scored/allowed per game (not a projection, not pace-
+    // adjusted) -- powers the quadrant scatter chart below.
+    apiFetch<TeamEfficiencyQuadrant>("/leaderboards/team-efficiency", {
+      params: { level: sp.eff_level, min_games: 5 },
+    }),
+    // Real PPG (volume) vs. TS% (efficiency) -- the player-level
+    // counterpart to the team quadrant chart above.
+    apiFetch<PlayerEfficiencyQuadrant>("/leaderboards/player-efficiency", {
+      params: { level: sp.peff_level, min_games: 8 },
+    }),
+    // Real single-game box scores, not a season average -- the best
+    // individual performances this season, site-wide.
+    apiFetch<BestGamesLeaderboard>("/leaderboards/best-games", {
+      params: { sort: sp.games_sort ?? "points", limit: 10 },
+    }),
     apiFetch<string[]>("/conferences"),
-    ...pageStats.map((s) =>
-      apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
-    ),
   ]);
 
   return (
@@ -109,6 +121,99 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         real season-over-season split, respectively; each section says which kind it is. Use the Leaderboard
         filters to slice by stat, level, conference, or minimum games played.
       </p>
+
+      <div className="card">
+        <h2>
+          Team Efficiency: Offense vs. Defense
+          <span className="hint" title={efficiency.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Every {efficiency.level_filter ?? "D1"} team, plotted by real points scored per game (offense) against
+          real points allowed per game (defense) -- {efficiency.season}, min. {efficiency.min_games} games. This
+          is raw per-game scoring, not adjusted for pace or opponent strength the way Rating is -- a fast, weak
+          team and a slow, elite team can land in the same spot on the offense axis for very different reasons.
+          The quadrant lines split at this group&apos;s own average ({efficiency.mean_ppg} scored,{" "}
+          {efficiency.mean_papg} allowed), not a fixed number, so a Low-Major-only view splits at the Low-Major
+          average, not the whole-league one.
+        </p>
+        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="eff_level">Level</label>
+            <select id="eff_level" name="eff_level" defaultValue={sp.eff_level ?? ""}>
+              <option value="">Whole league</option>
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t} ({tierAbbrev(t)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </form>
+        <TeamQuadrantChart data={efficiency} />
+      </div>
+
+      <div className="card">
+        <h2>
+          Player Efficiency: Volume vs. Scoring Efficiency
+          <span className="hint" title={playerEfficiency.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Every {playerEfficiency.level_filter ?? "D1"} player with real minutes, plotted by points per game
+          (scoring volume) against true shooting % (scoring efficiency) this season -- real season stats, not a
+          projection. The quadrant lines split at this group&apos;s own average ({playerEfficiency.mean_ppg} PPG,{" "}
+          {(playerEfficiency.mean_ts * 100).toFixed(1)}% TS), not a fixed number.
+        </p>
+        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="peff_level">Level</label>
+            <select id="peff_level" name="peff_level" defaultValue={sp.peff_level ?? ""}>
+              <option value="">Whole league</option>
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t} ({tierAbbrev(t)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </form>
+        <PlayerQuadrantChart data={playerEfficiency} />
+      </div>
+
+      <div className="card">
+        <h2>
+          Best Single-Game Performances
+          <span className="hint" title={bestGames.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          The best individual games this season, site-wide -- real box scores, not season averages.{" "}
+          {bestGames.season}.
+        </p>
+        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="games_sort">Ranked by</label>
+            <select id="games_sort" name="games_sort" defaultValue={sp.games_sort ?? "points"}>
+              <option value="points">Points</option>
+              <option value="production_rating">Production Rating</option>
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </form>
+        <BestGamesTable data={bestGames} />
+      </div>
 
       <div className="card">
         <h2>Leaderboard</h2>
@@ -207,34 +312,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               </Link>
             )}
         </div>
-        <p className="section-note" style={{ marginTop: 12 }}>
-          Want to see how these stats stack up visually? Scroll down to Category Leaderboards below.
-        </p>
       </div>
 
       <div className="card">
-        <h2>Category Leaderboards</h2>
-        <p className="section-note">
-          A quick visual scan across categories -- top {CHART_TOP_N} in each, min. 8 games played. Page{" "}
-          {chartPage + 1} of {totalChartPages}.
-        </p>
-        <div className="chart-grid">
-          {pageStats.map((s, i) => (
-            <ChartCard key={s} stat={s} data={chartData[i]} />
-          ))}
-        </div>
-        <div className="pagination">
-          {chartPage > 0 && (
-            <Link className="btn" href={`/data?${withChartPage(sp, chartPage - 1)}`}>
-              &larr; Previous
-            </Link>
-          )}
-          {chartPage < totalChartPages - 1 && (
-            <Link className="btn" href={`/data?${withChartPage(sp, chartPage + 1)}`}>
-              Next &rarr;
-            </Link>
-          )}
-        </div>
+        <h2>
+          Biggest Summit Score Jump: {seasonJump.season_from} &rarr; {seasonJump.season_to}
+          <span className="hint" title={seasonJump.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">{seasonJump.note}</p>
+        <SeasonJumpTable data={seasonJump} />
       </div>
 
       <div className="card">
@@ -391,44 +479,6 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         )}
       </div>
 
-      <div className="card">
-        <h2>
-          Biggest Summit Score Jump: {seasonJump.season_from} &rarr; {seasonJump.season_to}
-          <span className="hint" title={seasonJump.note}>
-            ?
-          </span>
-        </h2>
-        <p className="section-note">{seasonJump.note}</p>
-        <SeasonJumpTable data={seasonJump} />
-      </div>
-    </div>
-  );
-}
-
-function ChartCard({ stat, data }: { stat: string; data: PlayerLeaderboard }) {
-  const max = Math.max(...data.players.map((p) => p.stat_value), 0.0001);
-  const decimals = stat === "ts_pct" || stat === "fg_pct" ? 1 : 1;
-  return (
-    <div className="chart-card">
-      <h3>{LEADERBOARD_STAT_LABELS[stat]}</h3>
-      <div className="chart-sub">Top {data.players.length}, min. 8 GP</div>
-      {data.players.length === 0 ? (
-        <p className="empty-state" style={{ padding: "12px 0" }}>
-          No qualifying players.
-        </p>
-      ) : (
-        data.players.map((p) => (
-          <div className="bar-row" key={p.player_id}>
-            <Link href={`/players/${p.player_id}`} className="bar-name" title={`${p.name} (${p.team_name})`}>
-              {p.name}
-            </Link>
-            <div className="bar-track">
-              <div className="bar-fill" style={{ width: `${(p.stat_value / max) * 100}%` }} />
-            </div>
-            <div className="bar-value">{p.stat_value.toFixed(decimals)}</div>
-          </div>
-        ))
-      )}
     </div>
   );
 }
@@ -503,6 +553,233 @@ function OpponentSplitTable({ data }: { data: OpponentSplitLeaderboard }) {
               <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.avg_points.toFixed(1)}</td>
               <td>{p.avg_rebounds.toFixed(1)}</td>
               <td>{p.avg_assists.toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const TIER_COLOR: Record<string, string> = {
+  "High-Major": "var(--accent)",
+  "Mid-Major": "var(--good)",
+  "Low-Major": "var(--text-dim)",
+};
+
+// Scatter/quadrant chart -- every qualifying team plotted by real points
+// scored (x) vs. real points allowed (y, inverted so "up" = fewer points
+// allowed = better defense). Quadrant divider lines sit at the group's own
+// mean, not a fixed constant, matching what the backend note says. Colored
+// by level rather than a single hue since with 300+ points on one plot,
+// level is the one grouping a coach actually wants to visually separate at
+// a glance; a small legend below explains the colors. Hover-only (native
+// <title>) rather than click-through, consistent with this site's other
+// dense scatter/bar charts (GameByGameChart, SeasonTrendChart).
+function TeamQuadrantChart({ data }: { data: TeamEfficiencyQuadrant }) {
+  const width = 720;
+  const height = 480;
+  const padLeft = 54;
+  const padRight = 20;
+  const padTop = 20;
+  const padBottom = 44;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+
+  const ppgVals = data.teams.map((t) => t.ppg);
+  const papgVals = data.teams.map((t) => t.papg);
+  const minPpg = Math.min(...ppgVals) - 2;
+  const maxPpg = Math.max(...ppgVals) + 2;
+  const minPapg = Math.min(...papgVals) - 2;
+  const maxPapg = Math.max(...papgVals) + 2;
+
+  const x = (ppg: number) => padLeft + ((ppg - minPpg) / (maxPpg - minPpg)) * plotW;
+  // Inverted: low points-allowed (good defense) plots near the TOP.
+  const y = (papg: number) => padTop + ((papg - minPapg) / (maxPapg - minPapg)) * plotH;
+
+  const midX = x(data.mean_ppg);
+  const midY = y(data.mean_papg);
+
+  return (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Team offense vs defense quadrant chart" style={{ minWidth: 560 }}>
+          {/* Quadrant divider lines */}
+          <line x1={midX} x2={midX} y1={padTop} y2={height - padBottom} stroke="var(--border)" strokeDasharray="4,4" />
+          <line x1={padLeft} x2={width - padRight} y1={midY} y2={midY} stroke="var(--border)" strokeDasharray="4,4" />
+
+          {/* Quadrant labels */}
+          <text x={width - padRight - 6} y={padTop + 16} fontSize={12} textAnchor="end" fill="var(--text-dim)">Elite</text>
+          <text x={width - padRight - 6} y={height - padBottom - 8} fontSize={12} textAnchor="end" fill="var(--text-dim)">Offense-First</text>
+          <text x={padLeft + 6} y={padTop + 16} fontSize={12} textAnchor="start" fill="var(--text-dim)">Defense-First</text>
+          <text x={padLeft + 6} y={height - padBottom - 8} fontSize={12} textAnchor="start" fill="var(--text-dim)">Below Average</text>
+
+          {/* Axis labels */}
+          <text x={padLeft + plotW / 2} y={height - 8} fontSize={12} textAnchor="middle" fill="var(--text-dim)">
+            Points scored per game (offense) &rarr;
+          </text>
+          <text
+            x={-(padTop + plotH / 2)}
+            y={14}
+            fontSize={12}
+            textAnchor="middle"
+            fill="var(--text-dim)"
+            transform="rotate(-90)"
+          >
+            &uarr; Points allowed per game (better defense)
+          </text>
+
+          {data.teams.map((t) => (
+            <circle
+              key={t.team_id}
+              cx={x(t.ppg)}
+              cy={y(t.papg)}
+              r={3.5}
+              fill={TIER_COLOR[t.tier] ?? "var(--accent)"}
+              fillOpacity={0.75}
+            >
+              <title>{`${t.name} (${t.tier}) -- ${t.ppg} PPG scored, ${t.papg} PPG allowed, ${t.quadrant} (${t.games} GP)`}</title>
+            </circle>
+          ))}
+        </svg>
+      </div>
+      <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+        {TIERS.map((t) => (
+          <div key={t} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: TIER_COLOR[t], display: "inline-block" }} />
+            {t}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Player-level counterpart to TeamQuadrantChart -- PPG (x) vs. TS% (y), no
+// axis inversion needed since higher TS% is already "up is good," unlike
+// the team chart's points-allowed axis. ts_pct arrives as a 0-1 fraction
+// (matching every other ts_pct field in this API) so it's scaled to a
+// percentage at render time here.
+function PlayerQuadrantChart({ data }: { data: PlayerEfficiencyQuadrant }) {
+  const width = 720;
+  const height = 480;
+  const padLeft = 54;
+  const padRight = 20;
+  const padTop = 20;
+  const padBottom = 44;
+  const plotW = width - padLeft - padRight;
+  const plotH = height - padTop - padBottom;
+
+  const ppgVals = data.players.map((p) => p.ppg);
+  const tsVals = data.players.map((p) => p.ts_pct * 100);
+  const minPpg = Math.max(0, Math.min(...ppgVals) - 2);
+  const maxPpg = Math.max(...ppgVals) + 2;
+  const minTs = Math.max(0, Math.min(...tsVals) - 5);
+  const maxTs = Math.max(...tsVals) + 5;
+
+  const x = (ppg: number) => padLeft + ((ppg - minPpg) / (maxPpg - minPpg)) * plotW;
+  const y = (ts: number) => padTop + plotH - ((ts - minTs) / (maxTs - minTs)) * plotH;
+
+  const midX = x(data.mean_ppg);
+  const midY = y(data.mean_ts * 100);
+
+  return (
+    <div>
+      <div style={{ overflowX: "auto" }}>
+        <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Player scoring volume vs efficiency quadrant chart" style={{ minWidth: 560 }}>
+          <line x1={midX} x2={midX} y1={padTop} y2={height - padBottom} stroke="var(--border)" strokeDasharray="4,4" />
+          <line x1={padLeft} x2={width - padRight} y1={midY} y2={midY} stroke="var(--border)" strokeDasharray="4,4" />
+
+          <text x={width - padRight - 6} y={padTop + 16} fontSize={12} textAnchor="end" fill="var(--text-dim)">Elite</text>
+          <text x={width - padRight - 6} y={height - padBottom - 8} fontSize={12} textAnchor="end" fill="var(--text-dim)">Volume Scorer</text>
+          <text x={padLeft + 6} y={padTop + 16} fontSize={12} textAnchor="start" fill="var(--text-dim)">Efficient</text>
+          <text x={padLeft + 6} y={height - padBottom - 8} fontSize={12} textAnchor="start" fill="var(--text-dim)">Below Average</text>
+
+          <text x={padLeft + plotW / 2} y={height - 8} fontSize={12} textAnchor="middle" fill="var(--text-dim)">
+            Points per game (volume) &rarr;
+          </text>
+          <text
+            x={-(padTop + plotH / 2)}
+            y={14}
+            fontSize={12}
+            textAnchor="middle"
+            fill="var(--text-dim)"
+            transform="rotate(-90)"
+          >
+            &uarr; True shooting % (efficiency)
+          </text>
+
+          {data.players.map((p) => (
+            <circle
+              key={p.player_id}
+              cx={x(p.ppg)}
+              cy={y(p.ts_pct * 100)}
+              r={3.5}
+              fill={TIER_COLOR[p.tier] ?? "var(--accent)"}
+              fillOpacity={0.75}
+            >
+              <title>{`${p.name} (${p.team_name}, ${p.tier}) -- ${p.ppg.toFixed(1)} PPG, ${(p.ts_pct * 100).toFixed(1)}% TS, ${p.quadrant}`}</title>
+            </circle>
+          ))}
+        </svg>
+      </div>
+      <div style={{ display: "flex", gap: 16, marginTop: 8, flexWrap: "wrap" }}>
+        {TIERS.map((t) => (
+          <div key={t} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: TIER_COLOR[t], display: "inline-block" }} />
+            {t}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatGameDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function BestGamesTable({ data }: { data: BestGamesLeaderboard }) {
+  if (data.games.length === 0) return <p className="empty-state">No qualifying games.</p>;
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Date</th>
+            <th>Opponent</th>
+            <th>PTS</th>
+            <th>REB</th>
+            <th>AST</th>
+            <th>
+              Production
+              <span className="hint" title="Points + rebounds + assists + steals + blocks - turnovers for that one game.">
+                ?
+              </span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.games.map((g, i) => (
+            <tr key={`${g.player_id}-${g.date}-${i}`}>
+              <td>
+                <Link href={`/players/${g.player_id}`}>{g.name}</Link>
+                <div className="label" style={{ marginTop: 2 }}>
+                  {g.team_name}
+                </div>
+              </td>
+              <td>{formatGameDate(g.date)}</td>
+              <td>{g.opponent_name ?? "--"}</td>
+              <td style={data.sort === "points" ? { color: "var(--accent)", fontWeight: 700 } : undefined}>
+                {g.points}
+              </td>
+              <td>{g.rebounds}</td>
+              <td>{g.assists}</td>
+              <td style={data.sort === "production_rating" ? { color: "var(--accent)", fontWeight: 700 } : undefined}>
+                {g.production_rating}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -609,24 +886,12 @@ function BackHalfChangeChart({
   );
 }
 
-function withChartPage(sp: SP, page: number): string {
-  const p = new URLSearchParams();
-  if (sp.stat) p.set("stat", sp.stat);
-  if (sp.level) p.set("level", sp.level);
-  if (sp.conference) p.set("conference", sp.conference);
-  if (sp.min_games) p.set("min_games", sp.min_games);
-  if (sp.page) p.set("page", sp.page);
-  p.set("chart_page", String(page));
-  return p.toString();
-}
-
 function withLeaderboardPage(sp: SP, page: number): string {
   const p = new URLSearchParams();
   if (sp.stat) p.set("stat", sp.stat);
   if (sp.level) p.set("level", sp.level);
   if (sp.conference) p.set("conference", sp.conference);
   if (sp.min_games) p.set("min_games", sp.min_games);
-  if (sp.chart_page) p.set("chart_page", sp.chart_page);
   p.set("page", String(page));
   return p.toString();
 }

@@ -3,6 +3,14 @@ import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { ConferenceStandings } from "@/lib/types";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static -- this page has no
+// searchParams usage at all, making it one of the routes most likely to
+// occasionally serve a stale cached snapshot under Next's default
+// `dynamic: "auto"` behavior. See ARCHITECTURE_HOSTING_PLAN.md's
+// caching-fix notes for the full writeup.
+export const dynamic = "force-dynamic";
+
 export default async function ConferenceStandingsPage({ params }: { params: Promise<{ conference: string }> }) {
   const { conference } = await params;
   const name = decodeURIComponent(conference);

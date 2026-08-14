@@ -8,6 +8,16 @@ import type {
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static -- this page in
+// particular has no searchParams usage at all (unlike most other pages
+// here), so under Next's default `dynamic: "auto"` behavior it was the
+// single most likely page on the site to occasionally serve a stale/
+// out-of-sync cached snapshot until the next revalidation, matching the
+// "sometimes some data doesn't show until I refresh" report. See
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup.
+export const dynamic = "force-dynamic";
+
 export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 

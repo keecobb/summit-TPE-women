@@ -4,6 +4,11 @@ import type { Team } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 // Column key -> Team field, for the client-side sort below. Client-side
 // (not an API param) because /teams already returns the whole filtered set
 // in one call (limit 500 covers every D1 team) rather than paginating, so

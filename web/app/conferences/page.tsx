@@ -1,6 +1,11 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 
+// Forces a fresh fetch on every request instead of risking Next's Data
+// Cache/Full Route Cache treating this route as static (see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+export const dynamic = "force-dynamic";
+
 export default async function ConferencesIndexPage() {
   const conferences = await apiFetch<string[]>("/conferences");
 

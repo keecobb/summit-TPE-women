@@ -533,6 +533,86 @@ export interface SeasonJumpLeaderboard {
   players: SeasonJumpPlayer[];
 }
 
+export interface TeamEfficiencyPoint {
+  team_id: number;
+  name: string;
+  tier: string;
+  conference: string;
+  current_rating: number;
+  games: number;
+  ppg: number;
+  papg: number;
+  quadrant: "Elite" | "Offense-First" | "Defense-First" | "Below Average";
+}
+
+export interface TeamEfficiencyQuadrant {
+  level_filter: string | null;
+  season: string;
+  min_games: number;
+  mean_ppg: number;
+  mean_papg: number;
+  note: string;
+  teams: TeamEfficiencyPoint[];
+}
+
+export interface PlayerEfficiencyPoint {
+  player_id: number;
+  name: string;
+  position: string;
+  class_year: string;
+  team_id: number;
+  team_name: string;
+  tier: string;
+  games: number;
+  ppg: number;
+  ts_pct: number;
+  hoop_score: number;
+  quadrant: "Elite" | "Volume Scorer" | "Efficient" | "Below Average";
+}
+
+export interface PlayerEfficiencyQuadrant {
+  level_filter: string | null;
+  min_games: number;
+  mean_ppg: number;
+  mean_ts: number;
+  note: string;
+  players: PlayerEfficiencyPoint[];
+}
+
+export interface BestGamePerformance {
+  player_id: number;
+  name: string;
+  team_id: number;
+  team_name: string;
+  tier: string;
+  date: string;
+  opponent_name: string | null;
+  opponent_tier: string | null;
+  minutes: number;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  turnovers: number;
+  fouls: number;
+  fgm: number;
+  fga: number;
+  tfgm: number;
+  tfga: number;
+  ftm: number;
+  fta: number;
+  production_rating: number;
+}
+
+export interface BestGamesLeaderboard {
+  season: string;
+  sort: "points" | "production_rating";
+  level_filter: string | null;
+  note: string;
+  games: BestGamePerformance[];
+}
+
 export interface ConferenceStandingsTeam {
   team_id: number;
   name: string;
