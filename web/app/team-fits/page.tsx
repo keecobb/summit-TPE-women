@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamFits, TeamNeeds, TeamRoles, FitCandidate } from "@/lib/types";
+import type { Team, TeamFits, TeamNeeds, TeamNeedCategory, TeamRoles, FitCandidate } from "@/lib/types";
 import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 import SortableTh from "@/components/SortableTh";
 import FilterForm from "@/components/FilterForm";
+import RoleStat from "@/components/RoleStat";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -180,6 +181,40 @@ async function FitsView({ sp }: { sp: SP }) {
       </div>
 
       <div className="card">
+        <h2>Current Rotation</h2>
+        <p className="section-note">
+          Real minutes-based roles computed from {team.name}&apos;s own current roster -- what &quot;Starter&quot;
+          or &quot;Role Player&quot; actually means here, before you pick one below in the Role to fill dropdown.
+        </p>
+        <div className="stat-grid">
+          <RoleStat label={roleLabel("starter")} role={roles.starter} />
+          <RoleStat label={roleLabel("sixth_man")} role={roles.sixth_man} />
+          <RoleStat label={roleLabel("role_player")} role={roles.role_player} />
+          <RoleStat label={roleLabel("depth_piece")} role={roles.depth_piece} />
+        </div>
+      </div>
+
+      {needs && needs.full_profile.length > 0 && (
+        <div className="card">
+          <h2>
+            Full Team Profile: Strengths &amp; Weaknesses
+            <span
+              className="hint"
+              title={`Every tracked category vs. ${needs.comparison_group}, worst to best -- the same comparison Biggest Needs above pulls its top 3 from, just the whole picture instead of only the weak end.`}
+            >
+              ?
+            </span>
+          </h2>
+          <p className="section-note">
+            All {needs.full_profile.length} tracked categories vs. {needs.comparison_group}, worst to best. Bars
+            left of center (gold) are below-peer-average, right of center (green) are above -- hover a row for{" "}
+            {team.name}&apos;s actual value alongside the peer and conference averages.
+          </p>
+          <TeamProfileBars profile={needs.full_profile} />
+        </div>
+      )}
+
+      <div className="card">
         <FilterForm action="/team-fits">
           <input type="hidden" name="team_id" value={sp.team_id} />
 
@@ -324,6 +359,55 @@ async function FitsView({ sp }: { sp: SP }) {
       <p style={{ marginTop: 20 }}>
         <Link href="/team-fits">&larr; Choose a different team</Link>
       </p>
+    </div>
+  );
+}
+
+// Diverging (center-anchored) bar per category -- z is naturally
+// positive-or-negative around 0, so unlike the site's usual left-anchored
+// .bar-fill (see ProjectionCompareChart in app/tpe/page.tsx), each row's
+// fill grows from the middle toward whichever side the number actually
+// falls on. Clamped at |z|=3 for the bar's width scale only (a category
+// that's +5z still just draws as "all the way right") -- the exact z value
+// is always shown as text regardless, so nothing is hidden, just the bar
+// itself doesn't get proportionally more full past a fairly extreme point.
+const PROFILE_BAR_CLAMP = 3;
+
+function TeamProfileBars({ profile }: { profile: TeamNeedCategory[] }) {
+  return (
+    <div>
+      {profile.map((c) => {
+        const clamped = Math.max(-PROFILE_BAR_CLAMP, Math.min(PROFILE_BAR_CLAMP, c.z));
+        const pct = (Math.abs(clamped) / PROFILE_BAR_CLAMP) * 50;
+        const positive = c.z >= 0;
+        // team_value/league_mean/conference_mean already arrive pre-scaled
+        // from the API (ts_pct/fg_pct are *100'd server-side, see
+        // team_needs() in projection.py) -- one decimal reads fine uniformly.
+        const tooltip =
+          `${c.label}: ${c.team_value.toFixed(1)} (this team) vs. ${c.league_mean.toFixed(1)} (peer average)` +
+          (c.conference_mean != null ? `, ${c.conference_mean.toFixed(1)} (conference average)` : "") +
+          ` -- ${c.z >= 0 ? "+" : ""}${c.z.toFixed(2)}z`;
+        return (
+          <div key={c.stat} className="bar-row" style={{ gridTemplateColumns: "128px 1fr 52px" }} title={tooltip}>
+            <div className="bar-name">{c.label}</div>
+            <div className="diverge-track">
+              <div className="diverge-center" />
+              <div
+                className="diverge-fill"
+                style={{
+                  left: positive ? "50%" : `${50 - pct}%`,
+                  width: `${pct}%`,
+                  background: positive ? "var(--good)" : "var(--warn)",
+                }}
+              />
+            </div>
+            <div className="bar-value" style={{ color: positive ? "var(--good)" : "var(--warn)" }}>
+              {c.z >= 0 ? "+" : ""}
+              {c.z.toFixed(2)}z
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

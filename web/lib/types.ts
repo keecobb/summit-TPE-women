@@ -89,10 +89,15 @@ export interface TeamRoles {
   roster_size: number;
   roster_avg_summit_score: number | null;
   roster_avg_summit_score_count: number;
-  starter: { minutes: number; player_count: number } | null;
-  sixth_man: { minutes: number } | null;
-  role_player: { minutes: number; range: [number, number]; note?: string } | null;
-  depth_piece: { minutes: number; player_count: number } | null;
+  starter: { minutes: number | null; player_count: number };
+  sixth_man: { minutes: number | null };
+  // role_player/depth_piece are real averages of actual rank-7-and-later
+  // bench players, split by whether they still average 20+ minutes/game --
+  // not a formula, and not capped at a fixed rank (see projection.py's
+  // team_roles()). minutes/range are null when zero players qualify for
+  // that bucket (e.g. a team with no bench player over the 20 MPG line).
+  role_player: { minutes: number | null; range: [number, number] | null; player_count: number; note: string };
+  depth_piece: { minutes: number | null; player_count: number; note: string };
 }
 
 export interface TeamNeedCategory {

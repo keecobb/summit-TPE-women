@@ -4,6 +4,7 @@ import { apiFetch, ApiError } from "@/lib/api";
 import type { Team, TeamRoles, TeamNeeds, TeamNeedCategory, Player, TeamSchedule } from "@/lib/types";
 import { roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
+import RoleStat from "@/components/RoleStat";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -398,14 +399,3 @@ function Stat({
   );
 }
 
-function RoleStat({ label, role }: { label: string; role: { minutes: number } | null }) {
-  return (
-    <div className="stat-tile">
-      <div className="value">{role ? `${role.minutes.toFixed(1)}` : "--"}</div>
-      <div className="label">
-        {label}
-        {role ? " min" : ""}
-      </div>
-    </div>
-  );
-}

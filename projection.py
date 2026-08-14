@@ -206,10 +206,15 @@ def _interp_spread(gap_std):
 # and always takes priority over a role.
 ROLE_STARTER_COUNT = 5
 ROLE_SIXTH_MAN_RANK = 6
-ROLE_DEPTH_RANK_START = 7
-ROLE_DEPTH_RANK_END = 10
-ROLE_PLAYER_FRACTION_LOW = 0.60
-ROLE_PLAYER_FRACTION_HIGH = 0.80
+# Rank 7 through the end of the roster (no fixed cutoff -- a deep bench and
+# a thin one both just run to whatever their own last eligible player is)
+# splits into role_player vs. depth_piece by an actual minutes threshold,
+# not by rank position: anyone still averaging real rotation minutes is a
+# role player regardless of where she ranks on the bench, and anyone below
+# that bar is a depth piece. Matches how a coach actually thinks about a
+# bench -- rank alone doesn't tell you if the 8th player is playing 22
+# minutes a night or 4.
+ROLE_PLAYER_MIN_MINUTES = 20.0
 ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
  
 # |strength_gap| / std beyond which a projection is flagged as an extreme
@@ -316,22 +321,32 @@ def team_roles(conn, team_id):
 
     starters = roster[:ROLE_STARTER_COUNT]
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
- 
+
     sixth_man_minutes = None
     if len(roster) >= ROLE_SIXTH_MAN_RANK:
         sixth_man_minutes = round(roster[ROLE_SIXTH_MAN_RANK - 1]["avg_minutes"], 1)
- 
-    depth = roster[ROLE_DEPTH_RANK_START - 1:ROLE_DEPTH_RANK_END]
-    depth_minutes = round(sum(p["avg_minutes"] for p in depth) / len(depth), 1) if depth else None
- 
+
+    # Rank 7 through the end of the roster, split by an actual minutes
+    # threshold rather than a fixed rank window -- see ROLE_PLAYER_MIN_MINUTES
+    # above. role_player is real rotation players who still play meaningful
+    # minutes off the bench; depth_piece is genuine end-of-bench spot minutes.
+    # Both are now averages of REAL players (not a formula derived from the
+    # starter average, which role_player used to be).
+    bench = roster[ROLE_SIXTH_MAN_RANK:]
+    role_players = [p for p in bench if p["avg_minutes"] >= ROLE_PLAYER_MIN_MINUTES]
+    depth_players = [p for p in bench if p["avg_minutes"] < ROLE_PLAYER_MIN_MINUTES]
+
     role_player_minutes = None
     role_player_range = None
-    if starter_minutes is not None:
-        lo = round(starter_minutes * ROLE_PLAYER_FRACTION_LOW, 1)
-        hi = round(starter_minutes * ROLE_PLAYER_FRACTION_HIGH, 1)
-        role_player_minutes = round((lo + hi) / 2.0, 1)
-        role_player_range = [lo, hi]
- 
+    if role_players:
+        role_player_minutes = round(sum(p["avg_minutes"] for p in role_players) / len(role_players), 1)
+        role_player_range = [round(min(p["avg_minutes"] for p in role_players), 1),
+                              round(max(p["avg_minutes"] for p in role_players), 1)]
+
+    depth_minutes = None
+    if depth_players:
+        depth_minutes = round(sum(p["avg_minutes"] for p in depth_players) / len(depth_players), 1)
+
     return dict(
         team_id=team_id,
         roster_size=len(roster),
@@ -339,11 +354,14 @@ def team_roles(conn, team_id):
         roster_avg_summit_score_count=len(real_scores),
         starter=dict(minutes=starter_minutes, player_count=len(starters)),
         sixth_man=dict(minutes=sixth_man_minutes),
-        role_player=dict(minutes=role_player_minutes, range=role_player_range,
-                          note="60-80% of the starter average -- the player 'setting the role' by minutes, "
-                               "not a specific roster rank"),
-        depth_piece=dict(minutes=depth_minutes, player_count=len(depth),
-                          note="average of the team's #7-#10 rotation players by minutes"),
+        role_player=dict(minutes=role_player_minutes, range=role_player_range, player_count=len(role_players),
+                          note=f"real average of rank #{ROLE_SIXTH_MAN_RANK + 1}-and-later bench players who still "
+                               f"average {ROLE_PLAYER_MIN_MINUTES:.0f}+ minutes/game -- not a formula, and not tied "
+                               f"to a fixed rank window."),
+        depth_piece=dict(minutes=depth_minutes, player_count=len(depth_players),
+                          note=f"real average of every rank #{ROLE_SIXTH_MAN_RANK + 1}-and-later bench player under "
+                               f"{ROLE_PLAYER_MIN_MINUTES:.0f} minutes/game -- runs to the end of the roster, not "
+                               f"capped at a fixed rank."),
     )
  
  

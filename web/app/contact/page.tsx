@@ -7,7 +7,7 @@ export default function ContactPage() {
       <div className="card card-prose">
         <h2>Get in touch</h2>
         <p style={{ marginBottom: 4 }}>
-          <a href="mailto:womens@estrellaworks.com">womens@estrellaworks.com</a>
+          <a href="mailto:support@estrellaworks.com">support@estrellaworks.com</a>
         </p>
         <p className="section-note" style={{ marginTop: 12, marginBottom: 0 }}>
           Bug reports, a stat that looks off, a feature you wish existed, or interest in bringing this to your

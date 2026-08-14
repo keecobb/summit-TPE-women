@@ -291,10 +291,6 @@ async function ResultView({ sp }: { sp: SP }) {
         {result.player.current_tier} to {result.target.tier} &middot; Confidence: <strong>{result.confidence}</strong>
       </p>
 
-      {result.extreme_mismatch && result.extreme_mismatch_note && (
-        <div className="error-box">{result.extreme_mismatch_note}</div>
-      )}
-
       <div className="card">
         <h2>Side by side</h2>
         <p className="section-note">
@@ -396,6 +392,10 @@ async function ResultView({ sp }: { sp: SP }) {
           </div>
         </div>
       </div>
+
+      {result.extreme_mismatch && result.extreme_mismatch_note && (
+        <div className="info-box">{result.extreme_mismatch_note}</div>
+      )}
     </div>
   );
 }

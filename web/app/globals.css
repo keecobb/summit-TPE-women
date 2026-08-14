@@ -778,6 +778,34 @@ tbody tr td:first-child a:hover {
   color: var(--text);
 }
 
+/* Diverging (center-anchored) bar -- for values that are naturally
+   positive-or-negative around a midpoint (a z-score), unlike .bar-fill
+   above which always starts at the left edge. Used by Team Fits' full
+   strengths/weaknesses profile. */
+.diverge-track {
+  position: relative;
+  background: var(--bg-panel-2);
+  border-radius: 4px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.diverge-center {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+.diverge-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+}
+
 /* ---------------- Responsive ---------------- */
 
 @media (max-width: 720px) {

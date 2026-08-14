@@ -10,13 +10,22 @@ import FilterForm from "@/components/FilterForm";
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 export const dynamic = "force-dynamic";
 
-// Column key -> Team field, for the client-side sort below. Client-side
-// (not an API param) because /teams already returns the whole filtered set
-// in one call (limit 500 covers every D1 team) rather than paginating, so
+type TeamWithRank = Team & { net_rank: number | null };
+
+// Column key -> accessor, for the client-side sort below. Client-side (not
+// an API param) because /teams already returns the whole filtered set in
+// one call (limit 500 covers every D1 team) rather than paginating, so
 // there's no correctness reason to push this down to the API the way
-// /players' true pagination requires.
-const SORT_FIELDS: Record<string, keyof Team> = {
-  name: "name", conference: "conference", tier: "tier", current_rating: "current_rating", sos: "sos",
+// /players' true pagination requires. net_rank isn't a real Team field (see
+// below), so it gets its own accessor rather than living in a plain
+// keyof-Team map.
+const SORT_FIELDS: Record<string, (t: TeamWithRank) => string | number | null> = {
+  name: (t) => t.name,
+  conference: (t) => t.conference,
+  tier: (t) => t.tier,
+  net_rank: (t) => t.net_rank,
+  current_rating: (t) => t.current_rating,
+  sos: (t) => t.sos,
 };
 
 export default async function TeamsPage({
@@ -30,16 +39,37 @@ export default async function TeamsPage({
   // /teams' `conference` param is already an exact match on one conference,
   // so there's no need to fetch the whole league and filter client-side the
   // way the earlier multiselect version did.
-  const [teams, conferences] = await Promise.all([
+  //
+  // allTeams (no filters) is fetched alongside the possibly-filtered `teams`
+  // list specifically to compute Net Rank -- a national rank position needs
+  // to be assigned across the WHOLE league first, then looked up for
+  // whichever (possibly filtered) subset is on screen. Ranking only the
+  // filtered rows would silently relabel e.g. the #1 Low-Major team as
+  // "Net Rank 1" instead of wherever she actually sits nationally.
+  const [teams, allTeams, conferences] = await Promise.all([
     apiFetch<Team[]>("/teams", { params: { search: sp.search, tier: sp.tier, conference: sp.conference, limit: 500 } }),
+    apiFetch<Team[]>("/teams", { params: { limit: 500 }, revalidate: 60 }),
     apiFetch<string[]>("/conferences"),
   ]);
+
+  // Not the NCAA's own official NET ranking -- there's no NET-specific data
+  // in this pipeline. This is this site's own national rank position by
+  // Current Rating (the same strength-model number the Rating column
+  // already shows), computed here rather than a stored field since it just
+  // has to reflect wherever a team's Current Rating currently sorts.
+  const rankByTeamId = new Map<number, number>();
+  [...allTeams]
+    .filter((t) => t.current_rating != null)
+    .sort((a, b) => b.current_rating - a.current_rating)
+    .forEach((t, i) => rankByTeamId.set(t.team_id, i + 1));
+
+  const rankedTeams: TeamWithRank[] = teams.map((t) => ({ ...t, net_rank: rankByTeamId.get(t.team_id) ?? null }));
 
   const sortField = sp.sort && SORT_FIELDS[sp.sort];
   if (sortField) {
     const dir = sp.dir === "asc" ? 1 : -1;
-    teams.sort((a, b) => {
-      const av = a[sortField], bv = b[sortField];
+    rankedTeams.sort((a, b) => {
+      const av = sortField(a), bv = sortField(b);
       if (av == null) return 1;
       if (bv == null) return -1;
       if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
@@ -53,9 +83,11 @@ export default async function TeamsPage({
       <p className="subtitle">D1 teams, rated on one shared strength scale.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
         Rating is each team&apos;s Current Rating from the strength model -- higher is stronger, roughly
-        centered on 0 across all of Division I. Filter by name, Level (High-Major/Mid-Major/Low-Major), or a
-        single conference, then click any column header to sort. Click a team name to open its full profile
-        -- roster, schedule, and a Stats Breakdown tab comparing it to its league and conference.
+        centered on 0 across all of Division I. Net Rank is that same Rating&apos;s national rank position
+        (#1 = highest-rated team in the country) -- this site&apos;s own ranking, not the NCAA&apos;s official
+        NET ranking. Filter by name, Level (High-Major/Mid-Major/Low-Major), or a single conference, then click
+        any column header to sort. Click a team name to open its full profile -- roster, schedule, and a Stats
+        Breakdown tab comparing it to its league and conference.
       </p>
 
       <FilterForm className="filter-form" action="/teams">
@@ -98,7 +130,7 @@ export default async function TeamsPage({
         </p>
       )}
 
-      {teams.length === 0 ? (
+      {rankedTeams.length === 0 ? (
         <p className="empty-state">No teams match that filter.</p>
       ) : (
         <div className="table-scroll">
@@ -108,12 +140,13 @@ export default async function TeamsPage({
               <SortableTh column="name" label="Team" defaultDir="asc" />
               <SortableTh column="conference" label="Conference" defaultDir="asc" />
               <SortableTh column="tier" label="Level" defaultDir="asc" />
+              <SortableTh column="net_rank" label="Net Rank" defaultDir="asc" />
               <SortableTh column="current_rating" label="Rating" />
               <SortableTh column="sos" label="SOS" />
             </tr>
           </thead>
           <tbody>
-            {teams.map((t) => (
+            {rankedTeams.map((t) => (
               <tr key={t.team_id}>
                 <td>
                   <Link href={`/teams/${t.team_id}`}>{t.name}</Link>
@@ -121,6 +154,11 @@ export default async function TeamsPage({
                 <td>{t.conference}</td>
                 <td>
                   <span className="pill" title={t.tier}>{tierAbbrev(t.tier)}</span>
+                </td>
+                <td
+                  title="This site's own national rank by Current Rating (the Rating column) -- not the NCAA's official NET ranking, which this pipeline doesn't compute."
+                >
+                  {t.net_rank ?? "--"}
                 </td>
                 <td>{t.current_rating?.toFixed(2)}</td>
                 <td>{t.sos?.toFixed(2)}</td>
