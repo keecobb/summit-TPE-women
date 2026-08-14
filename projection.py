@@ -740,18 +740,26 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
     a coach who wants rebounding AND shot-blocking, not just one) -- when
     given, it wins over `stat`.
 
-    Multi-stat ranking method: each candidate's projected value in every
-    requested category is converted to a z-score against the whole
-    league's mean/std for that category (same numbers team_needs() uses
-    for its own whole-league comparison), sign-flipped for categories
-    where lower is better (turnovers), then averaged into one composite
-    fit_score. Ranking by fit_score for a SINGLE category produces the
-    exact same order as the original raw-value sort (z-scoring a single
-    category is a monotonic transform), so single-stat callers see
-    unchanged behavior; multi-stat is a genuinely new capability. This is
-    an average of standardized scores -- a common but still simplified way
-    to combine categories that weren't chosen with any particular
-    weighting in mind, not a fitted or learned combination.
+    Multi-stat ranking method: each candidate's projected per-game value in
+    every requested category is converted to a z-score against THIS
+    CANDIDATE POOL'S OWN mean/std for that category's projected value
+    (computed live from every candidate considered, not a fixed constant --
+    same "compare against the returned group's own spread" convention the
+    quadrant charts use for their mean_ppg/mean_ts), sign-flipped for
+    categories where lower is better (turnovers), then averaged into one
+    composite fit_score. Deliberately NOT scored against meta's
+    league_mean_per40_*/league_std_per40_* constants -- those are team-level
+    per-40-minute rates (a team's own points-per-40 average is ~66, nothing
+    like an individual player's projected ppg), an early version of this
+    function used them and it silently produced a meaningless, uniformly
+    very-negative fit_score for every candidate. Ranking by fit_score for a
+    SINGLE category produces the exact same order as the original raw-value
+    sort (z-scoring a single category against any fixed mean/std is a
+    monotonic transform), so single-stat callers see unchanged ranking
+    order; multi-stat weighting is a genuinely new capability. This is an
+    average of standardized scores -- a common but still simplified way to
+    combine categories that weren't chosen with any particular weighting in
+    mind, not a fitted or learned combination.
 
     role / minutes: same semantics as project_player() -- `minutes` (an
     exact 0-40 number) always wins if given; otherwise `role` (one of
@@ -862,7 +870,28 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
         params.append(position)
     candidates = [dict(zip(cols, row)) for row in conn.execute(query, params).fetchall()]
 
-    ranked = []
+    # Pass 1: project every candidate and collect each requested stat's
+    # *projected per-game* values across the whole candidate pool. fit_score
+    # needs to z-score each candidate against the natural spread of that
+    # same per-game number -- e.g. projected ppg (typically single digits to
+    # low 20s) -- not against meta's league_mean_per40_*/league_std_per40_*,
+    # which are team-level per-40-minute scoring/rebounding/etc rates (team
+    # points per 40 minutes averages ~66, nothing like an individual
+    # player's ppg). Reusing those team-scale constants here was a real bug
+    # -- it silently produced a large, uniformly negative fit_score for
+    # every candidate (individual ppg will always read as many standard
+    # deviations below a *team's* scoring rate). It never affected a
+    # single-stat search's ranking ORDER (z-scoring one category against any
+    # fixed mean/std is a monotonic transform), but it did distort how
+    # multiple categories get weighted against each other in a multi-stat
+    # search, and it made the fit_score number itself meaningless once
+    # exposed directly (as opposed to only used internally to sort).
+    # Computing mean/std from THIS candidate pool's own projected values
+    # instead -- same "compare against the returned group's own spread, not
+    # a fixed constant" convention already used by the quadrant charts'
+    # mean_ppg/mean_papg/mean_ts.
+    projected_by_player = {}
+    pool_values = {info["proj_field"]: [] for info in stat_infos}
     for player in candidates:
         current_team = teams_by_id.get(player["team_id"])
         if current_team is None:
@@ -874,7 +903,6 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
             continue
 
         projected_stats = {}
-        z_scores = []
         missing = False
         for info in stat_infos:
             value = result["projected"].get(info["proj_field"])
@@ -882,14 +910,38 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
                 missing = True
                 break
             projected_stats[info["proj_field"]] = value
-            mean_key, std_key = f"league_mean_{info['stat']}", f"league_std_{info['stat']}"
-            mean, std = meta.get(mean_key), meta.get(std_key)
-            z = (value - mean) / std if (mean is not None and std) else 0.0
+        if missing:
+            continue
+
+        for field, value in projected_stats.items():
+            pool_values[field].append(value)
+        projected_by_player[player["player_id"]] = dict(
+            player=player, current_team=current_team, result=result, projected_stats=projected_stats,
+        )
+
+    pool_stats = {}
+    for field, values in pool_values.items():
+        if len(values) >= 2:
+            pool_stats[field] = dict(mean=statistics.mean(values), std=statistics.pstdev(values) or 1.0)
+        elif values:
+            pool_stats[field] = dict(mean=values[0], std=1.0)
+
+    # Pass 2: z-score each candidate's projected values against the pool
+    # stats just computed, and assemble the final ranked list.
+    ranked = []
+    for entry in projected_by_player.values():
+        player, current_team, result, projected_stats = (
+            entry["player"], entry["current_team"], entry["result"], entry["projected_stats"]
+        )
+        z_scores = []
+        for info in stat_infos:
+            value = projected_stats[info["proj_field"]]
+            stats_for_field = pool_stats.get(info["proj_field"])
+            mean, std = (stats_for_field["mean"], stats_for_field["std"]) if stats_for_field else (value, 1.0)
+            z = (value - mean) / std if std else 0.0
             if info["lower_is_better"]:
                 z = -z
             z_scores.append(z)
-        if missing or not z_scores:
-            continue
         fit_score = sum(z_scores) / len(z_scores)
 
         ranked.append(dict(

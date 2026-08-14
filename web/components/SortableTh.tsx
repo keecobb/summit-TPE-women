@@ -37,7 +37,9 @@ export default function SortableTh({
     params.set("sort", column);
     params.set("dir", nextDir);
     params.delete("offset");
-    router.push(`${pathname}?${params.toString()}`);
+    // scroll: false -- re-sorting a table shouldn't jump the viewport back
+    // to the top of the page, same reasoning as FilterForm's submit handler.
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
   }
 
   return (

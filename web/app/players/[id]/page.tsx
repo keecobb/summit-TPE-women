@@ -46,8 +46,8 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
   // same real per-game rows /players/{id}/game-logs already exposes (no new
   // backend endpoint needed). Same "zero games -> nothing to show" case as
   // splits above, not an error. The full chronological list (oldest first)
-  // is also kept for the Game-by-Game Scoring chart below -- the API
-  // returns most-recent-first, so it's reversed once here for both uses.
+  // is also kept for the Game-by-Game Production Rating chart below -- the
+  // API returns most-recent-first, so it's reversed once here for both uses.
   let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
   let gamesChronological: PlayerGameLogRow[] = [];
   try {
@@ -197,35 +197,16 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
       {gamesChronological.length > 1 && (
         <div className="card">
           <h2>
-            Game-by-Game Scoring
-            <span className="hint" title="Points scored in every game this season, in date order (earliest to most recent) -- hover a bar for the date, opponent, and exact total.">
-              ?
-            </span>
-          </h2>
-          <p className="section-note">
-            {player.season} season, one bar per game -- how consistent or streaky her scoring has actually been,
-            not just the season average.
-          </p>
-          <GameByGameChart
-            games={gamesChronological}
-            getValue={(g) => g.points}
-            color="var(--accent)"
-            label="Points scored by game this season"
-            getTooltip={(g) => `${formatShortDate(g.date)} vs ${g.opponent_name ?? "--"}: ${g.points} pts`}
-          />
-
-          <h2 style={{ marginTop: 24 }}>
             Game-by-Game Production Rating
             <span className="hint" title="Production Rating = Points + Rebounds + Assists + Steals + Blocks - Turnovers, computed for each individual game. It's a rough single-number stand-in for a full box score -- not a substitute for Summit Score (which also accounts for shooting efficiency, minutes, and opponent strength), but a quick, game-by-game gut check on total two-way contribution.">
               ?
             </span>
           </h2>
           <p className="section-note">
-            One combined number per game -- points, rebounds, assists, steals, and blocks added up, turnovers
-            subtracted -- so a quiet scoring night that was still a big all-around game (or a big scoring night
-            undone by turnovers) shows up here even when the points chart alone wouldn&apos;t tell the full story.
-            Bars that dip below the line are games with a negative production rating (more turnovers than total
-            production).
+            {player.season} season, one bar per game -- points, rebounds, assists, steals, and blocks added up,
+            turnovers subtracted, so a quiet scoring night that was still a big all-around game (or a big scoring
+            night undone by turnovers) still shows up as a strong or weak game here. Bars that dip below the line
+            are games with a negative production rating (more turnovers than total production).
           </p>
           <GameByGameChart
             games={gamesChronological}

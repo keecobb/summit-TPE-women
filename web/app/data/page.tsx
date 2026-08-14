@@ -5,6 +5,7 @@ import type {
   SeasonJumpLeaderboard, TeamEfficiencyQuadrant, PlayerEfficiencyQuadrant, BestGamesLeaderboard,
 } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
+import FilterForm from "@/components/FilterForm";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -123,101 +124,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
       </p>
 
       <div className="card">
-        <h2>
-          Team Efficiency: Offense vs. Defense
-          <span className="hint" title={efficiency.note}>
-            ?
-          </span>
-        </h2>
-        <p className="section-note">
-          Every {efficiency.level_filter ?? "D1"} team, plotted by real points scored per game (offense) against
-          real points allowed per game (defense) -- {efficiency.season}, min. {efficiency.min_games} games. This
-          is raw per-game scoring, not adjusted for pace or opponent strength the way Rating is -- a fast, weak
-          team and a slow, elite team can land in the same spot on the offense axis for very different reasons.
-          The quadrant lines split at this group&apos;s own average ({efficiency.mean_ppg} scored,{" "}
-          {efficiency.mean_papg} allowed), not a fixed number, so a Low-Major-only view splits at the Low-Major
-          average, not the whole-league one.
-        </p>
-        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
-          <div className="field">
-            <label htmlFor="eff_level">Level</label>
-            <select id="eff_level" name="eff_level" defaultValue={sp.eff_level ?? ""}>
-              <option value="">Whole league</option>
-              {TIERS.map((t) => (
-                <option key={t} value={t}>
-                  {t} ({tierAbbrev(t)})
-                </option>
-              ))}
-            </select>
-          </div>
-          <button className="btn btn-primary" type="submit">
-            Update
-          </button>
-        </form>
-        <TeamQuadrantChart data={efficiency} />
-      </div>
-
-      <div className="card">
-        <h2>
-          Player Efficiency: Volume vs. Scoring Efficiency
-          <span className="hint" title={playerEfficiency.note}>
-            ?
-          </span>
-        </h2>
-        <p className="section-note">
-          Every {playerEfficiency.level_filter ?? "D1"} player with real minutes, plotted by points per game
-          (scoring volume) against true shooting % (scoring efficiency) this season -- real season stats, not a
-          projection. The quadrant lines split at this group&apos;s own average ({playerEfficiency.mean_ppg} PPG,{" "}
-          {(playerEfficiency.mean_ts * 100).toFixed(1)}% TS), not a fixed number.
-        </p>
-        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
-          <div className="field">
-            <label htmlFor="peff_level">Level</label>
-            <select id="peff_level" name="peff_level" defaultValue={sp.peff_level ?? ""}>
-              <option value="">Whole league</option>
-              {TIERS.map((t) => (
-                <option key={t} value={t}>
-                  {t} ({tierAbbrev(t)})
-                </option>
-              ))}
-            </select>
-          </div>
-          <button className="btn btn-primary" type="submit">
-            Update
-          </button>
-        </form>
-        <PlayerQuadrantChart data={playerEfficiency} />
-      </div>
-
-      <div className="card">
-        <h2>
-          Best Single-Game Performances
-          <span className="hint" title={bestGames.note}>
-            ?
-          </span>
-        </h2>
-        <p className="section-note">
-          The best individual games this season, site-wide -- real box scores, not season averages.{" "}
-          {bestGames.season}.
-        </p>
-        <form className="filter-form" action="/data" style={{ marginBottom: 0 }}>
-          <div className="field">
-            <label htmlFor="games_sort">Ranked by</label>
-            <select id="games_sort" name="games_sort" defaultValue={sp.games_sort ?? "points"}>
-              <option value="points">Points</option>
-              <option value="production_rating">Production Rating</option>
-            </select>
-          </div>
-          <button className="btn btn-primary" type="submit">
-            Update
-          </button>
-        </form>
-        <BestGamesTable data={bestGames} />
-      </div>
-
-      <div className="card">
         <h2>Leaderboard</h2>
-        <form className="filter-form" action="/data">
+        <FilterForm className="filter-form" action="/data">
           <div className="field">
             <label htmlFor="stat">Stat</label>
             <select id="stat" name="stat" defaultValue={stat}>
@@ -257,7 +165,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
           <button className="btn btn-primary" type="submit">
             Update
           </button>
-        </form>
+        </FilterForm>
 
         <div className="table-scroll">
           <table>
@@ -312,6 +220,99 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               </Link>
             )}
         </div>
+      </div>
+
+      <div className="card">
+        <h2>
+          Team Efficiency: Offense vs. Defense
+          <span className="hint" title={efficiency.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Every {efficiency.level_filter ?? "D1"} team, plotted by real points scored per game (offense) against
+          real points allowed per game (defense) -- {efficiency.season}, min. {efficiency.min_games} games. This
+          is raw per-game scoring, not adjusted for pace or opponent strength the way Rating is -- a fast, weak
+          team and a slow, elite team can land in the same spot on the offense axis for very different reasons.
+          The quadrant lines split at this group&apos;s own average ({efficiency.mean_ppg} scored,{" "}
+          {efficiency.mean_papg} allowed), not a fixed number, so a Low-Major-only view splits at the Low-Major
+          average, not the whole-league one.
+        </p>
+        <FilterForm className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="eff_level">Level</label>
+            <select id="eff_level" name="eff_level" defaultValue={sp.eff_level ?? ""}>
+              <option value="">Whole league</option>
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t} ({tierAbbrev(t)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </FilterForm>
+        <TeamQuadrantChart data={efficiency} />
+      </div>
+
+      <div className="card">
+        <h2>
+          Player Efficiency: Volume vs. Scoring Efficiency
+          <span className="hint" title={playerEfficiency.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          Every {playerEfficiency.level_filter ?? "D1"} player with real minutes, plotted by points per game
+          (scoring volume) against true shooting % (scoring efficiency) this season -- real season stats, not a
+          projection. The quadrant lines split at this group&apos;s own average ({playerEfficiency.mean_ppg} PPG,{" "}
+          {(playerEfficiency.mean_ts * 100).toFixed(1)}% TS), not a fixed number.
+        </p>
+        <FilterForm className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="peff_level">Level</label>
+            <select id="peff_level" name="peff_level" defaultValue={sp.peff_level ?? ""}>
+              <option value="">Whole league</option>
+              {TIERS.map((t) => (
+                <option key={t} value={t}>
+                  {t} ({tierAbbrev(t)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </FilterForm>
+        <PlayerQuadrantChart data={playerEfficiency} />
+      </div>
+
+      <div className="card">
+        <h2>
+          Best Single-Game Performances
+          <span className="hint" title={bestGames.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          The best individual games this season, site-wide -- real box scores, not season averages.{" "}
+          {bestGames.season}.
+        </p>
+        <FilterForm className="filter-form" action="/data" style={{ marginBottom: 0 }}>
+          <div className="field">
+            <label htmlFor="games_sort">Ranked by</label>
+            <select id="games_sort" name="games_sort" defaultValue={sp.games_sort ?? "points"}>
+              <option value="points">Points</option>
+              <option value="production_rating">Production Rating</option>
+            </select>
+          </div>
+          <button className="btn btn-primary" type="submit">
+            Update
+          </button>
+        </FilterForm>
+        <BestGamesTable data={bestGames} />
       </div>
 
       <div className="card">

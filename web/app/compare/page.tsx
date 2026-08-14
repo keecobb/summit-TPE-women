@@ -3,6 +3,8 @@ import { apiFetch, ApiError } from "@/lib/api";
 import type { PlayerDetail, Team, TeamNeeds, TeamRoles } from "@/lib/types";
 import { tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
+import FilterForm from "@/components/FilterForm";
+import FlowSteps from "@/components/FlowSteps";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -180,8 +182,10 @@ async function PickerView({ sp }: { sp: SP }) {
         the other way around).
       </p>
 
+      <FlowSteps steps={["Pick Player 1", "Pick Player 2", "See them side by side"]} />
+
       <div className="card card-prose" style={{ maxWidth: 480 }}>
-        <form action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <FilterForm action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="field">
             <label htmlFor="player1-search">Player 1</label>
             <Typeahead
@@ -209,7 +213,7 @@ async function PickerView({ sp }: { sp: SP }) {
           <button className="btn btn-primary" type="submit" style={{ marginTop: 4 }}>
             Compare
           </button>
-        </form>
+        </FilterForm>
       </div>
     </div>
   );
@@ -377,8 +381,10 @@ async function TeamPickerView({ sp }: { sp: SP }) {
         only, read that row the other way around).
       </p>
 
+      <FlowSteps steps={["Pick Team 1", "Pick Team 2", "See them side by side"]} />
+
       <div className="card card-prose" style={{ maxWidth: 480 }}>
-        <form action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <FilterForm action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <input type="hidden" name="mode" value="teams" />
           <div className="field">
             <label htmlFor="team1-search">Team 1</label>
@@ -407,7 +413,7 @@ async function TeamPickerView({ sp }: { sp: SP }) {
           <button className="btn btn-primary" type="submit" style={{ marginTop: 4 }}>
             Compare
           </button>
-        </form>
+        </FilterForm>
       </div>
     </div>
   );

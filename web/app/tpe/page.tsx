@@ -3,6 +3,8 @@ import { apiFetch, ApiError } from "@/lib/api";
 import type { Player, Team, ProjectionResult } from "@/lib/types";
 import { ROLE_NAMES, roleLabel } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
+import FilterForm from "@/components/FilterForm";
+import FlowSteps from "@/components/FlowSteps";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -42,6 +44,8 @@ async function StartView({ sp }: { sp: SP }) {
         played out, not a hand-picked formula -- every result includes a confidence read and a real range,
         not just one number.
       </p>
+
+      <FlowSteps steps={["Find a player", "Pick her target school", "See the projection"]} />
 
       <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 32 }}>
         <div className="card">
@@ -191,7 +195,7 @@ async function TargetPickerView({ sp }: { sp: SP }) {
 
       <div className="card" style={{ maxWidth: 480 }}>
         <h2>Project to...</h2>
-        <form className="filter-form" action="/tpe" style={{ flexDirection: "column", alignItems: "stretch" }}>
+        <FilterForm className="filter-form" action="/tpe" style={{ flexDirection: "column", alignItems: "stretch" }}>
           <input type="hidden" name="player_id" value={player.player_id} />
 
           <div className="field">
@@ -227,7 +231,7 @@ async function TargetPickerView({ sp }: { sp: SP }) {
           <button className="btn btn-primary" type="submit" style={{ marginTop: 8 }}>
             Run projection
           </button>
-        </form>
+        </FilterForm>
       </div>
 
       <Link href="/tpe">&larr; Search a different player</Link>

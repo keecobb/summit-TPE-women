@@ -3,6 +3,7 @@ import { apiFetch } from "@/lib/api";
 import type { Team } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
+import FilterForm from "@/components/FilterForm";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -57,7 +58,7 @@ export default async function TeamsPage({
         -- roster, schedule, and a Stats Breakdown tab comparing it to its league and conference.
       </p>
 
-      <form className="filter-form" action="/teams">
+      <FilterForm className="filter-form" action="/teams">
         <div className="field">
           <label htmlFor="search">Name</label>
           <input id="search" name="search" defaultValue={sp.search ?? ""} placeholder="e.g. Baylor" />
@@ -87,7 +88,7 @@ export default async function TeamsPage({
         <button className="btn btn-primary" type="submit">
           Filter
         </button>
-      </form>
+      </FilterForm>
       {sp.conference && (
         <p className="section-note" style={{ marginTop: -8, marginBottom: 16 }}>
           Showing: {sp.conference} &middot;{" "}

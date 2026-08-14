@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamFits, TeamNeeds, TeamRoles } from "@/lib/types";
+import type { Team, TeamFits, TeamNeeds, TeamRoles, FitCandidate } from "@/lib/types";
 import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
+import SortableTh from "@/components/SortableTh";
+import FilterForm from "@/components/FilterForm";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -22,6 +24,30 @@ interface SP {
   minutes?: string;
   class_year?: string;
   position?: string;
+  sort?: string;
+  dir?: string;
+}
+
+// Confidence isn't a number in the API response -- rank it Low/Medium/High
+// so clicking that column sorts meaningfully instead of alphabetically
+// (which would read "High, Low, Medium").
+const CONFIDENCE_RANK: Record<string, number> = { Low: 0, Medium: 1, High: 2 };
+
+// Column key -> accessor into a fit candidate, for the client-side sort
+// below. Client-side (not an API param) because /teams/{id}/fits already
+// returns its whole ranked candidate pool in one call (limit 20) rather
+// than paginating -- same reasoning as /teams' own sortable columns.
+function fitsSortValue(c: FitCandidate & { fit_score: number }, column: string): string | number {
+  switch (column) {
+    case "name": return c.name;
+    case "current_team": return c.current_team;
+    case "level": return c.level;
+    case "class_year": return c.class_year;
+    case "fit_score": return c.fit_score;
+    case "hoop_score": return c.hoop_score;
+    case "confidence": return CONFIDENCE_RANK[c.confidence] ?? -1;
+    default: return "";
+  }
 }
 
 export default async function TeamFitsPage({ searchParams }: { searchParams: Promise<SP> }) {
@@ -93,6 +119,18 @@ async function FitsView({ sp }: { sp: SP }) {
     else throw e;
   }
 
+  // Comes back from the API already ranked by fit_score descending -- only
+  // re-sort client-side when the coach has actually clicked a column,
+  // so the default view is unchanged from before sortable columns existed.
+  if (fits && sp.sort) {
+    const dir = sp.dir === "asc" ? 1 : -1;
+    fits.candidates = [...fits.candidates].sort((a, b) => {
+      const av = fitsSortValue(a, sp.sort!), bv = fitsSortValue(b, sp.sort!);
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  }
+
   return (
     <div>
       <h1>{team.name}: Team Fits</h1>
@@ -142,7 +180,7 @@ async function FitsView({ sp }: { sp: SP }) {
       </div>
 
       <div className="card">
-        <form action="/team-fits">
+        <FilterForm action="/team-fits">
           <input type="hidden" name="team_id" value={sp.team_id} />
 
           <div style={{ marginBottom: 16 }}>
@@ -216,7 +254,7 @@ async function FitsView({ sp }: { sp: SP }) {
               Search
             </button>
           </div>
-        </form>
+        </FilterForm>
       </div>
 
       {error && <div className="error-box">{error}</div>}
@@ -239,12 +277,14 @@ async function FitsView({ sp }: { sp: SP }) {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>Player</th>
-                  <th>Current team</th>
-                  <th>Level</th>
-                  <th>Class</th>
+                  <SortableTh column="name" label="Player" defaultDir="asc" />
+                  <SortableTh column="current_team" label="Current team" defaultDir="asc" />
+                  <SortableTh column="level" label="Level" defaultDir="asc" />
+                  <SortableTh column="class_year" label="Class" defaultDir="asc" />
                   <th>Projected</th>
-                  <th>Confidence</th>
+                  <SortableTh column="hoop_score" label="Proj. Summit Score" />
+                  <SortableTh column="fit_score" label="Fit Score" />
+                  <SortableTh column="confidence" label="Confidence" />
                 </tr>
               </thead>
               <tbody>
@@ -264,6 +304,10 @@ async function FitsView({ sp }: { sp: SP }) {
                         .filter(([k]) => k !== "minutes")
                         .map(([k, v]) => `${k.replace("per40_", "")}: ${typeof v === "number" ? v.toFixed(1) : v}`)
                         .join(", ")}
+                    </td>
+                    <td>{c.hoop_score?.toFixed(1) ?? "--"}</td>
+                    <td title="Average of standardized (z-score) values across every stat you searched on -- how this candidate ranks relative to the whole candidate pool, not a raw stat.">
+                      {c.fit_score.toFixed(2)}
                     </td>
                     <td>
                       <span className={c.extreme_mismatch ? "pill pill-warn" : "pill pill-good"}>{c.confidence}</span>

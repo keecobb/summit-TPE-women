@@ -2,6 +2,7 @@ import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type { Player } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
+import FilterForm from "@/components/FilterForm";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -71,7 +72,7 @@ export default async function PlayersPage({ searchParams }: { searchParams: Prom
         (once she has enough games on record) her best games of the year.
       </p>
 
-      <form className="filter-form" action="/players">
+      <FilterForm className="filter-form" action="/players">
         <div className="field">
           <label htmlFor="search">Name</label>
           <input id="search" name="search" defaultValue={sp.search ?? ""} placeholder="e.g. Anguera" />
@@ -123,7 +124,7 @@ export default async function PlayersPage({ searchParams }: { searchParams: Prom
         <button className="btn btn-primary" type="submit">
           Search
         </button>
-      </form>
+      </FilterForm>
 
       {players.length === 0 ? (
         <p className="empty-state">No players match that search.</p>
