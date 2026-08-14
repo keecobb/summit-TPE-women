@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type {
-  PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboard, BackHalfPlayer,
+  PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboardAll, BackHalfPlayer,
 } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
@@ -37,7 +37,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
   const [
     leaderboard, lmStandouts, mmStandouts, hmVsHm, mmVsHm, lmVsHm,
-    top50Hm, top50Mm, top50Lm, backHalfPpg, backHalfRpg, backHalfApg, backHalfTs, conferences, ...chartData
+    top50Hm, top50Mm, top50Lm, backHalfAll, conferences, ...chartData
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
@@ -73,14 +73,15 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
       params: { own_level: "Low-Major", opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
     }),
-    // Fetched once per stat (not once total) so each of the 4 charts below
-    // shows its OWN top movers -- a single PPG-ranked fetch reused for all
-    // 4 charts was the "same girls in every section" bug reported against
-    // this page; each of these is an independently-ranked list.
-    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "ppg" } }),
-    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "rpg" } }),
-    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "apg" } }),
-    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "ts" } }),
+    // One call, sort=all -- the backend computes all 4 rankings (PPG/RPG/
+    // APG/TS%) from a single full-season scan/aggregation instead of
+    // redoing that scan once per stat. An earlier version of this made 4
+    // separate back-half calls (one per stat) to fix the "same girls in
+    // every section" bug -- correct in isolation, but it roughly doubled
+    // this page's slowest, most expensive backend call and was enough
+    // added latency to time the whole page out in production. sort=all
+    // keeps the 4-genuinely-distinct-lists fix at the original 1-call cost.
+    apiFetch<BackHalfLeaderboardAll>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "all" } }),
     apiFetch<string[]>("/conferences"),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
@@ -308,17 +309,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
           calendar date would. Each chart below is ranked by its own stat&apos;s change -- these are four
           distinct lists of top movers, not the same players re-labeled.
         </p>
-        {backHalfPpg.players.length === 0 &&
-        backHalfRpg.players.length === 0 &&
-        backHalfApg.players.length === 0 &&
-        backHalfTs.players.length === 0 ? (
+        {backHalfAll.by_sort.ppg.length === 0 &&
+        backHalfAll.by_sort.rpg.length === 0 &&
+        backHalfAll.by_sort.apg.length === 0 &&
+        backHalfAll.by_sort.ts.length === 0 ? (
           <p className="empty-state">No qualifying players.</p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
             <BackHalfChangeChart
               title="PPG change"
-              sub={`Top movers -- first half → second half (min. ${backHalfPpg.min_games_per_half} games each half)`}
-              players={backHalfPpg.players}
+              sub={`Top movers -- first half → second half (min. ${backHalfAll.min_games_per_half} games each half)`}
+              players={backHalfAll.by_sort.ppg}
               getChange={(p) => p.ppg_change}
               getFirst={(p) => p.first_half_ppg}
               getSecond={(p) => p.second_half_ppg}
@@ -327,7 +328,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <BackHalfChangeChart
               title="RPG change"
               sub="Top movers, rebounds per game"
-              players={backHalfRpg.players}
+              players={backHalfAll.by_sort.rpg}
               getChange={(p) => p.rpg_change}
               getFirst={(p) => p.first_half_rpg}
               getSecond={(p) => p.second_half_rpg}
@@ -336,7 +337,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <BackHalfChangeChart
               title="APG change"
               sub="Top movers, assists per game"
-              players={backHalfApg.players}
+              players={backHalfAll.by_sort.apg}
               getChange={(p) => p.apg_change}
               getFirst={(p) => p.first_half_apg}
               getSecond={(p) => p.second_half_apg}
@@ -345,7 +346,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <BackHalfChangeChart
               title="TS% change"
               sub="Top movers, true shooting % (needs 8+ true-shot attempts in a half to compute)"
-              players={backHalfTs.players}
+              players={backHalfAll.by_sort.ts}
               getChange={(p) => p.ts_pct_change as number}
               getFirst={(p) => p.first_half_ts_pct as number}
               getSecond={(p) => p.second_half_ts_pct as number}

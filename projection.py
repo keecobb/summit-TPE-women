@@ -510,10 +510,20 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
         extreme_mismatch=extreme_mismatch,
     )
     if extreme_mismatch:
+        # Reworded (phase 9) to stay honest about the gap being unusually
+        # large without undermining trust in the projection itself -- the
+        # old copy ("Extreme mismatch... projection may be conservative...
+        # not a precise forecast") led with an alarming label, a vague
+        # hedge, and a line that reads as "don't trust this number," none
+        # of which is the intended message. This says the same true thing
+        # (bigger gap than usual, so expect more spread) without the jargon
+        # (no raw standard-deviation figure -- gap_std is still on the
+        # response for anyone who wants it) or the trust-undermining tone.
         result["extreme_mismatch_note"] = (
-            "Extreme mismatch — projection may be conservative. This target represents an unusually "
-            "large strength gap for this player (%.1f standard deviations); treat the exact numbers as "
-            "a reasoned estimate, not a precise forecast." % gap_std
+            "This is one of the bigger jumps in competition level this tool projects. The estimate is "
+            "still built the same way as every other projection here -- from real comparable transfers "
+            "-- so trust the direction of the projection, but expect more game-to-game variation than "
+            "usual for a jump this large."
         )
     if role is not None:
         result["role_applied"] = dict(role=role, **role_info)
@@ -1584,18 +1594,24 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
     split in two and compared.
 
     `sort` picks which stat's change ranks the returned list -- "ppg"
-    (default), "rpg", "apg", or "ts" (true shooting %). Each call returns
-    ONE ranking; a caller that wants "top movers in PPG" AND "top movers
-    in RPG" as two genuinely distinct lists (not the same players re-
-    labeled) needs to call this twice with different `sort` values -- the
-    four `first_half_*`/`second_half_*`/`*_change` fields are always all
-    present on every row regardless of which one is driving the sort.
+    (default), "rpg", "apg", "ts" (true shooting %), or "all". Pass "all"
+    to get all 4 rankings in ONE call (see `by_sort` on the return value)
+    -- this re-sorts the same already-computed per-player rows 4 ways in
+    plain Python, so it costs one DB scan/aggregation instead of 4. A
+    caller that used to call this endpoint once per stat (4 round trips)
+    should switch to one `sort=all` call instead -- 4 separate calls each
+    re-run the same expensive full-season `player_game_logs` scan and
+    per-player aggregation from scratch, which is what made the Data
+    page's back-half section slow enough to time out in production after
+    that 4-calls-per-page-load pattern shipped. The four `first_half_*`/
+    `second_half_*`/`*_change` fields are always all present on every row
+    regardless of which stat is driving a given ranking.
     """
     level = normalize_tier(level)
     if level is not None and level not in VALID_LEVELS:
         raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
-    if sort not in BACK_HALF_SORT_FIELDS:
-        raise ProjectionError(f"sort must be one of {list(BACK_HALF_SORT_FIELDS)}, got {sort!r}.")
+    if sort != "all" and sort not in BACK_HALF_SORT_FIELDS:
+        raise ProjectionError(f"sort must be one of {list(BACK_HALF_SORT_FIELDS) + ['all']}, got {sort!r}.")
     season = season or _load_meta(conn)["season"]
 
     clauses = ["g.season = ?"]
@@ -1664,25 +1680,37 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
             ts_pct_change=round((ss["ts_pct"] - fs["ts_pct"]) * 100, 1) if both_ts else None,
         ))
 
-    sort_field = BACK_HALF_SORT_FIELDS[sort]
-    if sort == "ts":
-        # ts_pct_change is null for players who didn't clear the
-        # attempt floor in both halves -- exclude them from THIS
-        # ranking rather than letting None sort arbitrarily.
-        results = [r for r in results if r[sort_field] is not None]
-    results.sort(key=lambda r: r[sort_field], reverse=True)
+    common_note = (
+        "Each player's own games are split at the midpoint of HER games played this season (not the "
+        "calendar midpoint). A missed-games injury early in the year doesn't skew this the way splitting "
+        "by calendar date would. First/second-half PPG, RPG, APG, and TS% are all shown on every row for "
+        f"context regardless of which stat is driving a given ranking. TS% needs at least "
+        f"{HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise, and those "
+        f"players are excluded when ranking by TS% change specifically."
+    )
+
+    def _ranked(sort_key):
+        field = BACK_HALF_SORT_FIELDS[sort_key]
+        rows = results
+        if sort_key == "ts":
+            rows = [r for r in rows if r[field] is not None]
+        return sorted(rows, key=lambda r: r[field], reverse=True)[:limit]
+
+    if sort == "all":
+        return dict(
+            level_filter=level, season=season, min_games_per_half=min_games_per_half, sort="all",
+            note=f"{common_note} This response has one independently-ranked list per stat (`by_sort.ppg`, "
+                 f".rpg, .apg, .ts) -- each is a genuinely distinct ranking, not the same players relabeled.",
+            by_sort=dict(
+                ppg=_ranked("ppg"), rpg=_ranked("rpg"), apg=_ranked("apg"), ts=_ranked("ts"),
+            ),
+        )
 
     stat_label = {"ppg": "points", "rpg": "rebounds", "apg": "assists", "ts": "true shooting %"}[sort]
     return dict(
         level_filter=level, season=season, min_games_per_half=min_games_per_half, sort=sort,
-        note=f"Each player's own games are split at the midpoint of HER games played this season (not "
-             f"the calendar midpoint) -- this list is ranked by {stat_label} change from her first half "
-             f"to her second half. A missed-games injury early in the year doesn't skew this the way "
-             f"splitting by calendar date would. First/second-half PPG, RPG, APG, and TS% are all shown "
-             f"on every row for context regardless of which stat is driving the ranking. TS% needs at "
-             f"least {HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise, "
-             f"and those players are excluded when ranking by TS% change specifically.",
-        players=results[:limit],
+        note=f"{common_note} This list is ranked by {stat_label} change from her first half to her second half.",
+        players=_ranked(sort),
     )
 
 

@@ -74,8 +74,8 @@ const TERMS: { term: string; body: string }[] = [
     term: "Extreme Mismatch",
     body:
       "Flagged on a projection when the target school represents an unusually large strength gap for that " +
-      "player (about 2+ standard deviations) -- treat the projected numbers as a reasoned estimate, not a " +
-      "precise forecast, in these cases.",
+      "player (about 2+ standard deviations) -- the projection is still built the same way as any other, " +
+      "just expect more game-to-game variation than usual for a jump this large.",
   },
   {
     term: "Z-score",

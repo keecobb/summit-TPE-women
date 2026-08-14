@@ -472,6 +472,23 @@ export interface BackHalfLeaderboard {
   players: BackHalfPlayer[];
 }
 
+// sort=all response shape -- all 4 rankings from one call/one DB scan,
+// instead of 4 separate BackHalfLeaderboard fetches (see lib note on the
+// Data page for why that mattered in production).
+export interface BackHalfLeaderboardAll {
+  level_filter: string | null;
+  season: string;
+  min_games_per_half: number;
+  sort: "all";
+  note: string;
+  by_sort: {
+    ppg: BackHalfPlayer[];
+    rpg: BackHalfPlayer[];
+    apg: BackHalfPlayer[];
+    ts: BackHalfPlayer[];
+  };
+}
+
 export interface ConferenceStandingsTeam {
   team_id: number;
   name: string;

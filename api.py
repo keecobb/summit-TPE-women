@@ -590,14 +590,18 @@ def get_back_half_leaderboard(
     min_games_per_half: int = Query(5, description="Minimum games required in EACH half of the season to qualify."),
     season: str | None = Query(None, description="Defaults to the cache's current season."),
     limit: int = Query(20, le=100),
-    sort: str = Query("ppg", description="Which stat's change ranks the list: ppg, rpg, apg, or ts."),
+    sort: str = Query("ppg", description="Which stat's change ranks the list: ppg, rpg, apg, ts, or all."),
 ):
     """'Best back half of the season' -- ranks players by how much a given
     stat changed from the first half of their own games played to the
-    second half (positive = trending up). `sort` picks ppg/rpg/apg/ts --
-    call this once per stat to get 4 genuinely distinct rankings rather
-    than one PPG-driven list relabeled 4 ways. See back_half_leaderboard()'s
-    docstring for exactly how the split works."""
+    second half (positive = trending up). `sort` picks ppg/rpg/apg/ts for a
+    single ranked list, or "all" to get all 4 rankings in one response
+    (`by_sort.ppg`/`.rpg`/`.apg`/`.ts`) from a single DB scan/aggregation --
+    prefer "all" over 4 separate calls when a caller wants all 4 lists, since
+    the underlying full-season scan is the expensive part and running it 4x
+    is what made this section slow enough to time out under real production
+    load. See back_half_leaderboard()'s docstring for exactly how the split
+    works."""
     conn = get_conn()
     try:
         return back_half_leaderboard(conn, level=level, min_games_per_half=min_games_per_half,

@@ -263,6 +263,14 @@ async function ResultView({ sp }: { sp: SP }) {
     </div>
   );
 
+  // The API returns the TARGET team's rating and the strength_gap between
+  // the two teams, but not the current team's rating as its own field --
+  // it's recoverable algebraically (strength_gap = target - current) so no
+  // backend change is needed to show both teams' ratings side by side, which
+  // is what makes a lone "target team rating" number mean anything -- shown
+  // on its own (the previous layout) it had no reference point.
+  const currentTeamRating = result.target.current_rating - result.strength_gap;
+
   return (
     <div>
       {navButtons}
@@ -271,9 +279,7 @@ async function ResultView({ sp }: { sp: SP }) {
         {result.player.name}: {result.player.current_team} &rarr; {result.target.team}
       </h1>
       <p className="subtitle">
-        {result.player.current_tier} to {result.target.tier} &middot; strength gap {result.strength_gap.toFixed(1)}{" "}
-        ({result.gap_std >= 0 ? "+" : ""}
-        {result.gap_std.toFixed(2)} SD) &middot; confidence: <strong>{result.confidence}</strong>
+        {result.player.current_tier} to {result.target.tier} &middot; Confidence: <strong>{result.confidence}</strong>
       </p>
 
       {result.extreme_mismatch && result.extreme_mismatch_note && (
@@ -319,21 +325,44 @@ async function ResultView({ sp }: { sp: SP }) {
             </table>
           </div>
         </div>
-        <p className="section-note" style={{ marginTop: 12 }}>
-          {plainLanguageNote(result)}
-        </p>
+        {!result.extreme_mismatch && (
+          <p className="section-note" style={{ marginTop: 12 }}>
+            {plainLanguageNote(result)}
+          </p>
+        )}
       </div>
 
       <div className="card">
         <h2>Background</h2>
+        <p className="section-note">
+          Team Rating is each school&apos;s overall strength on one shared scale (see the Glossary for how
+          it&apos;s built) -- shown for both schools here so the Rating Difference below actually means
+          something on its own, instead of one team&apos;s number with nothing to compare it to.
+        </p>
         <div className="stat-grid">
           <div className="stat-tile">
-            <div className="value">{result.player.current_team}</div>
-            <div className="label">Current team ({result.player.current_tier})</div>
+            <div className="value">{currentTeamRating.toFixed(1)}</div>
+            <div className="label">
+              {result.player.current_team} rating ({result.player.current_tier})
+            </div>
           </div>
           <div className="stat-tile">
             <div className="value">{result.target.current_rating.toFixed(1)}</div>
-            <div className="label">{result.target.team} rating</div>
+            <div className="label">
+              {result.target.team} rating ({result.target.tier})
+            </div>
+          </div>
+          <div className="stat-tile">
+            <div className="value" style={{ color: result.strength_gap >= 0 ? "var(--good)" : "var(--warn)" }}>
+              {result.strength_gap >= 0 ? "+" : ""}
+              {result.strength_gap.toFixed(1)}
+            </div>
+            <div className="label">
+              Rating difference
+              <span className="hint" title="How much stronger (positive) or weaker (negative) the target team is than the current team, on the same rating scale shown above. This is what actually drives the projection -- a bigger gap means a bigger change in expected production.">
+                ?
+              </span>
+            </div>
           </div>
           <div className="stat-tile">
             <div className="value">{result.player.class_year}</div>
@@ -363,16 +392,20 @@ function formatMinutesSource(source: string): string {
 // Plain-language framing for the confidence/range concept, aimed at a coach
 // or a fan rather than someone who wants the raw statistics terminology
 // (interquartile range, standard deviation, etc.) -- those numbers are
-// still available via the API for anyone who wants them.
+// still available via the API for anyone who wants them. Keyed purely off
+// `confidence` (not `extreme_mismatch` too, as an earlier version did) so
+// this doesn't double up with the separate extreme_mismatch_note callout
+// above -- a page showing two different "this might be off" disclaimers
+// back to back reads as less trustworthy, not more transparent.
 function plainLanguageNote(result: ProjectionResult): string {
   const conf = result.confidence.toLowerCase();
   if (conf.includes("high")) {
     return "This is a close comparison -- the two schools are similar enough in strength that this projection should track pretty closely to reality.";
   }
-  if (conf.includes("low") || result.extreme_mismatch) {
-    return "This is a bigger jump in competition level, so treat this as a directional estimate rather than an exact forecast -- real outcomes for similar jumps have varied more.";
+  if (conf.includes("low")) {
+    return "This is a bigger jump in competition level, so think of this as a strong directional read on what to expect rather than an exact stat line -- it's built the same way as every projection on this site, using real comparable transfers.";
   }
-  return "This is a moderate jump in competition level -- a reasonable estimate, with more real-world variation than a same-level comparison would have.";
+  return "This is a moderate jump in competition level -- a solid estimate, with a bit more natural variation than a same-level comparison would have.";
 }
 
 function StatRow({ label, value, highlight }: { label: string; value: number | undefined; highlight?: boolean }) {
