@@ -333,6 +333,19 @@ async function ResultView({ sp }: { sp: SP }) {
       </div>
 
       <div className="card">
+        <h2>
+          Comparison Chart
+          <span className="hint" title="Same numbers as the Side by Side table above, laid out as bars so the size of the change is easier to see at a glance.">
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          {result.player.current_team} (now) vs. {result.target.team} (projected), bar for bar.
+        </p>
+        <ProjectionCompareChart result={result} />
+      </div>
+
+      <div className="card">
         <h2>Background</h2>
         <p className="section-note">
           Team Rating is each school&apos;s overall strength on one shared scale (see the Glossary for how
@@ -416,5 +429,54 @@ function StatRow({ label, value, highlight }: { label: string; value: number | u
         {value?.toFixed(1) ?? "--"}
       </td>
     </tr>
+  );
+}
+
+// Paired current-vs-projected bars, one pair per stat, reusing the same
+// bar-row/bar-track/bar-fill visual language as the Data page's charts --
+// each row is scaled to its OWN max (current vs projected for that one
+// stat), not a shared scale, since PPG/TS%/Summit Score all live on very
+// different numeric ranges and a single shared scale would flatten most
+// rows to nothing.
+function ProjectionCompareChart({ result }: { result: ProjectionResult }) {
+  const rows: { key: string; label: string; current: number | undefined; projected: number | undefined }[] = [
+    { key: "ppg", label: "PPG", current: result.current.ppg, projected: result.projected.ppg },
+    { key: "rpg", label: "RPG", current: result.current.rpg, projected: result.projected.rpg },
+    { key: "apg", label: "APG", current: result.current.apg, projected: result.projected.apg },
+    { key: "spg", label: "SPG", current: result.current.spg, projected: result.projected.spg },
+    { key: "bpg", label: "BPG", current: result.current.bpg, projected: result.projected.bpg },
+    { key: "ts_pct", label: "TS%", current: result.current.ts_pct, projected: result.projected.ts_pct },
+    { key: "hoop_score", label: "Summit Score", current: result.current.hoop_score, projected: result.projected.hoop_score },
+  ];
+  return (
+    <div>
+      {rows.map((r) => {
+        const max = Math.max(r.current ?? 0, r.projected ?? 0, 0.0001);
+        return (
+          <div key={r.key} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: 4, fontWeight: 600 }}>
+              {r.label}
+            </div>
+            <div className="bar-row">
+              <div className="bar-name">{result.player.current_team}</div>
+              <div className="bar-track">
+                <div
+                  className="bar-fill"
+                  style={{ width: `${((r.current ?? 0) / max) * 100}%`, background: "var(--text-dim)" }}
+                />
+              </div>
+              <div className="bar-value">{r.current?.toFixed(1) ?? "--"}</div>
+            </div>
+            <div className="bar-row">
+              <div className="bar-name">{result.target.team}</div>
+              <div className="bar-track">
+                <div className="bar-fill" style={{ width: `${((r.projected ?? 0) / max) * 100}%` }} />
+              </div>
+              <div className="bar-value">{r.projected?.toFixed(1) ?? "--"}</div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }

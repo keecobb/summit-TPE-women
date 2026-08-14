@@ -207,6 +207,15 @@ h2 {
   padding: 48px 0 32px;
 }
 
+/* Bigger, bolder hero headline on the home page only -- part of a light
+   visual refresh (inspired by other stats-site look-and-feel research)
+   toward bolder big numbers/headlines while keeping every existing color
+   token and the rest of the site's layout untouched. */
+.hero h1 {
+  font-size: 3rem;
+  letter-spacing: -0.03em;
+}
+
 /* Small callout banner (e.g. the "free during preview" notice above the
    hero) -- uses the gold-soft/gold pairing so it reads as an announcement,
    not an error or warning, and adapts automatically in dark mode since
@@ -469,8 +478,9 @@ tbody tr td:first-child a:hover {
 }
 
 .stat-tile .value {
-  font-size: 1.4rem;
+  font-size: 1.6rem;
   font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .stat-tile .label {
@@ -733,6 +743,10 @@ tbody tr td:first-child a:hover {
 
   .hero {
     padding: 24px 0 16px;
+  }
+
+  .hero h1 {
+    font-size: 2rem;
   }
 
   .card {

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { PlayerDetail, Team, TeamNeeds } from "@/lib/types";
+import type { PlayerDetail, Team, TeamNeeds, TeamRoles } from "@/lib/types";
 import { tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 
@@ -211,13 +211,15 @@ async function PickerView({ sp }: { sp: SP }) {
 }
 
 async function TeamResultView({ sp }: { sp: SP }) {
-  let t1: Team, t2: Team, needs1: TeamNeeds, needs2: TeamNeeds;
+  let t1: Team, t2: Team, needs1: TeamNeeds, needs2: TeamNeeds, roles1: TeamRoles, roles2: TeamRoles;
   try {
-    [t1, t2, needs1, needs2] = await Promise.all([
+    [t1, t2, needs1, needs2, roles1, roles2] = await Promise.all([
       apiFetch<Team>(`/teams/${sp.team1}`, { revalidate: 60 }),
       apiFetch<Team>(`/teams/${sp.team2}`, { revalidate: 60 }),
       apiFetch<TeamNeeds>(`/teams/${sp.team1}/needs`, { params: { top_n: 8 }, revalidate: 60 }),
       apiFetch<TeamNeeds>(`/teams/${sp.team2}/needs`, { params: { top_n: 8 }, revalidate: 60 }),
+      apiFetch<TeamRoles>(`/teams/${sp.team1}/roles`, { revalidate: 60 }),
+      apiFetch<TeamRoles>(`/teams/${sp.team2}/roles`, { revalidate: 60 }),
     ]);
   } catch (e) {
     if (e instanceof ApiError) {
@@ -293,9 +295,26 @@ async function TeamResultView({ sp }: { sp: SP }) {
                 <td>{t2.sos?.toFixed(2) ?? "--"}</td>
               </tr>
               <tr>
-                <td>Roster Size</td>
-                <td>{needs1.roster_size}</td>
-                <td>{needs2.roster_size}</td>
+                <td>
+                  Roster Avg Summit Score
+                  <span className="hint" title="The average Summit Score across every player on the roster with a real (non-limited-sample) profile -- a quick read on overall roster quality/depth, not just the best player or the team's own Rating.">
+                    ?
+                  </span>
+                </td>
+                <td style={
+                  roles1.roster_avg_summit_score != null && roles2.roster_avg_summit_score != null &&
+                  roles1.roster_avg_summit_score > roles2.roster_avg_summit_score
+                    ? { fontWeight: 700, color: "var(--accent)" } : undefined
+                }>
+                  {roles1.roster_avg_summit_score?.toFixed(1) ?? "--"}
+                </td>
+                <td style={
+                  roles1.roster_avg_summit_score != null && roles2.roster_avg_summit_score != null &&
+                  roles2.roster_avg_summit_score > roles1.roster_avg_summit_score
+                    ? { fontWeight: 700, color: "var(--accent)" } : undefined
+                }>
+                  {roles2.roster_avg_summit_score?.toFixed(1) ?? "--"}
+                </td>
               </tr>
               {TEAM_STAT_ORDER.map((stat) => {
                 const c1 = cats1[stat];

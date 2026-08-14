@@ -55,7 +55,7 @@ from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
     back_half_leaderboard, conference_standings, find_fits, game_detail, leaderboard, leap_candidates,
     opponent_split_leaderboard, player_game_logs, player_splits, player_trajectory, project_batch,
-    project_player, standout_projections, team_needs, team_roles, team_schedule,
+    project_player, season_jump_leaderboard, standout_projections, team_needs, team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
  
@@ -625,6 +625,32 @@ def get_back_half_leaderboard(
         return back_half_leaderboard(conn, level=level, min_games_per_half=min_games_per_half,
                                       min_games=min_games, min_mpg=min_mpg,
                                       limit=limit, season=season, sort=sort)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.get("/leaderboards/season-jump", dependencies=[Depends(require_api_key)])
+def get_season_jump_leaderboard(
+    season_from: str | None = Query(None, description="Earlier season, e.g. 2024-25. Defaults to the second-most-recent season on record."),
+    season_to: str | None = Query(None, description="Later season, e.g. 2025-26. Defaults to the most recent season on record."),
+    min_games: int = Query(5, description="Minimum games played required in BOTH seasons to qualify."),
+    limit: int = Query(20, le=100),
+):
+    """Players with the biggest Summit Score jump from one season to the
+    next (e.g. 2024-25 to 2025-26) -- a real season-over-season comparison
+    using each player's actual `player_history` profile in both years, not
+    a projection. `season_from`/`season_to` default to the two most recent
+    seasons on record so this keeps working correctly as new seasons are
+    added to the cache. Only players with a full (non-limited-sample)
+    profile clearing `min_games` in both seasons are eligible. Ranked by
+    `hoop_score_change`, biggest improvement first; `transferred` flags a
+    player whose team changed between the two seasons."""
+    conn = get_conn()
+    try:
+        return season_jump_leaderboard(conn, season_from=season_from, season_to=season_to,
+                                        min_games=min_games, limit=limit)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:

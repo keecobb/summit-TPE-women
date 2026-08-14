@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamFits } from "@/lib/types";
+import type { Team, TeamFits, TeamNeeds, TeamRoles } from "@/lib/types";
 import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 
@@ -52,7 +52,20 @@ async function TeamPickerView({ sp }: { sp: SP }) {
 }
 
 async function FitsView({ sp }: { sp: SP }) {
-  const team = await apiFetch<Team>(`/teams/${sp.team_id}`);
+  const [team, roles] = await Promise.all([
+    apiFetch<Team>(`/teams/${sp.team_id}`),
+    apiFetch<TeamRoles>(`/teams/${sp.team_id}/roles`, { revalidate: 60 }),
+  ]);
+  // Needs is fetched separately (and tolerantly) since it can 404 for a
+  // too-thin roster even when the team and its roles both load fine --
+  // this section is a nice-to-have "here's why you're looking at this"
+  // callout, not a hard dependency for the fits search itself.
+  let needs: TeamNeeds | null = null;
+  try {
+    needs = await apiFetch<TeamNeeds>(`/teams/${sp.team_id}/needs`, { params: { top_n: 3, level: team.tier }, revalidate: 60 });
+  } catch (e) {
+    if (!(e instanceof ApiError)) throw e;
+  }
   const selectedStats = Array.isArray(sp.stats) ? sp.stats : sp.stats ? [sp.stats] : [];
 
   let fits: TeamFits | null = null;
@@ -85,6 +98,43 @@ async function FitsView({ sp }: { sp: SP }) {
         the same math as Transfer Projection -- this just runs it over the whole player pool at once and ranks
         the results.
       </p>
+
+      <div className="card">
+        <h2>{team.name} Snapshot</h2>
+        <div className="stat-grid">
+          <div className="stat-tile">
+            <div className="value">{team.current_rating.toFixed(1)}</div>
+            <div className="label">Current Rating ({team.tier})</div>
+          </div>
+          <div className="stat-tile">
+            <div className="value">{roles.roster_avg_summit_score?.toFixed(1) ?? "--"}</div>
+            <div className="label">Roster Avg Summit Score</div>
+          </div>
+          {needs && needs.weaknesses.slice(0, 2).map((w) => (
+            <div className="stat-tile" key={w.stat}>
+              <div className="value" style={{ color: "var(--warn)" }}>{w.z.toFixed(2)}z</div>
+              <div className="label">Weakest: {w.label}</div>
+            </div>
+          ))}
+        </div>
+        {needs && needs.weaknesses.length > 0 && (
+          <p className="section-note" style={{ marginTop: 12 }}>
+            Biggest needs vs. {team.tier} peers, worst first:{" "}
+            {needs.weaknesses.map((w, i) => (
+              <span key={w.stat}>
+                {i > 0 && ", "}
+                {FIT_STATS.includes(w.stat as (typeof FIT_STATS)[number]) ? (
+                  <Link href={`/team-fits?team_id=${sp.team_id}&stats=${w.stat}`}>{w.label}</Link>
+                ) : (
+                  w.label
+                )}
+              </span>
+            ))}
+            {" "}-- click one to search for players who&apos;d fill it. (Leaving the stat filter blank below does
+            the same thing automatically, targeting the single biggest weakness.)
+          </p>
+        )}
+      </div>
 
       <div className="card">
         <form action="/team-fits">

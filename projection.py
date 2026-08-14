@@ -303,10 +303,17 @@ def team_roles(conn, team_id):
     rather than guessing.
     """
     rows = conn.execute(
-        "SELECT name, avg_minutes FROM players WHERE team_id = ? ORDER BY avg_minutes DESC", (team_id,)
+        "SELECT name, avg_minutes, hoop_score, thin_sample FROM players WHERE team_id = ? ORDER BY avg_minutes DESC", (team_id,)
     ).fetchall()
     roster = [dict(name=r[0], avg_minutes=r[1]) for r in rows]
- 
+
+    # Roster-wide Summit Score average -- only real (non-thin-sample) profiles
+    # count, so a handful of zero-game placeholder rows (see /players's
+    # inclusion-floor note) don't drag the average down with nothing real
+    # behind it. None if the team has no qualifying players at all.
+    real_scores = [r["hoop_score"] for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
+    roster_avg_summit_score = round(sum(real_scores) / len(real_scores), 1) if real_scores else None
+
     starters = roster[:ROLE_STARTER_COUNT]
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
  
@@ -328,6 +335,8 @@ def team_roles(conn, team_id):
     return dict(
         team_id=team_id,
         roster_size=len(roster),
+        roster_avg_summit_score=roster_avg_summit_score,
+        roster_avg_summit_score_count=len(real_scores),
         starter=dict(minutes=starter_minutes, player_count=len(starters)),
         sixth_man=dict(minutes=sixth_man_minutes),
         role_player=dict(minutes=role_player_minutes, range=role_player_range,
@@ -1252,6 +1261,69 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=N
         stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
         level_filter=level, division_filter=division, conference_filter=conference, min_games=min_games,
         players=result_rows,
+    )
+
+
+def season_jump_leaderboard(conn, season_from=None, season_to=None, min_games=5, limit=20):
+    """Who improved the most (or fell off the most) from one season to the
+    next, by Summit Score -- e.g. "biggest jump from 2024-25 to 2025-26."
+    Compares each player's REAL season profile in `player_history` across
+    the two seasons -- no projection involved, this is what actually
+    happened both years. Defaults to the two most recent seasons on record
+    in the cache when not given explicitly, so this doesn't need a code
+    change every year as new seasons are added. Only players with a real
+    (non-thin-sample) profile clearing `min_games` in BOTH seasons are
+    eligible -- comparing a partial season to a partial season would be
+    misleading either direction. Uses `hoop_score` (the same 30-99 clamped
+    value shown everywhere else on the site, not the unclamped
+    `hoop_score_raw`), for consistency with what a coach sees on that
+    player's own profile page.
+    """
+    if season_from is None or season_to is None:
+        seasons = [r[0] for r in conn.execute(
+            "SELECT DISTINCT season FROM player_history ORDER BY season DESC LIMIT 2"
+        ).fetchall()]
+        if len(seasons) < 2:
+            raise ProjectionError("Not enough seasons on record to compute a season-over-season jump.")
+        season_to = season_to or seasons[0]
+        season_from = season_from or seasons[1]
+    if season_from == season_to:
+        raise ProjectionError("season_from and season_to must be different seasons.")
+
+    rows = conn.execute(
+        """SELECT a.player_id, a.name, a.position, a.class_year,
+                  b.team_id AS from_team_id, b.team_name AS from_team_name,
+                  a.team_id AS to_team_id, a.team_name AS to_team_name, t.tier AS to_tier,
+                  b.games AS from_games, b.hoop_score AS from_hoop_score, b.ppg AS from_ppg,
+                  a.games AS to_games, a.hoop_score AS to_hoop_score, a.ppg AS to_ppg
+           FROM player_history a
+           JOIN player_history b ON a.player_id = b.player_id
+           LEFT JOIN teams t ON a.team_id = t.team_id
+           WHERE a.season = ? AND b.season = ?
+             AND (a.thin_sample IS NULL OR a.thin_sample = 0) AND (b.thin_sample IS NULL OR b.thin_sample = 0)
+             AND a.games >= ? AND b.games >= ?
+             AND a.hoop_score IS NOT NULL AND b.hoop_score IS NOT NULL""",
+        (season_to, season_from, min_games, min_games),
+    ).fetchall()
+
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["hoop_score_change"] = round(d["to_hoop_score"] - d["from_hoop_score"], 1)
+        d["ppg_change"] = round(d["to_ppg"] - d["from_ppg"], 1) if d["to_ppg"] is not None and d["from_ppg"] is not None else None
+        d["transferred"] = d["from_team_id"] != d["to_team_id"]
+        results.append(d)
+    results.sort(key=lambda r: r["hoop_score_change"], reverse=True)
+    results = results[:limit]
+
+    return dict(
+        season_from=season_from, season_to=season_to, min_games=min_games,
+        note=(f"Compares each player's real {season_from} season to her real {season_to} season (both must "
+              f"clear {min_games} games and a full, non-limited-sample profile) -- ranked by the change in "
+              f"Summit Score, biggest jump first. `transferred` flags a player whose team changed between "
+              f"the two seasons (the jump could be a real transfer, or just a big year-over-year improvement "
+              f"at the same school)."),
+        players=results,
     )
 
 

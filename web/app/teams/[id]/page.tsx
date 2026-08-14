@@ -85,9 +85,9 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
           hint="Strength of schedule -- the average Rating of this team's opponents this season. Higher means a tougher schedule."
         />
         <Stat
-          label="Roster"
-          value={roles.roster_size}
-          hint="Number of players on this team's current-season roster with enough recorded games/minutes to be included in the site's stats."
+          label="Roster Avg Summit Score"
+          value={roles.roster_avg_summit_score}
+          hint={`Average Summit Score across every player on the roster with a real profile (not a limited-sample placeholder) -- a read on overall roster quality/depth, not just the best player.${roles.roster_avg_summit_score != null ? ` Averaged over ${roles.roster_avg_summit_score_count} player${roles.roster_avg_summit_score_count === 1 ? "" : "s"}.` : ""}`}
         />
       </div>
 

@@ -196,7 +196,37 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
             {player.season} season, one bar per game -- how consistent or streaky her scoring has actually been,
             not just the season average.
           </p>
-          <GameByGameChart games={gamesChronological} />
+          <GameByGameChart
+            games={gamesChronological}
+            getValue={(g) => g.points}
+            color="var(--accent)"
+            label="Points scored by game this season"
+            getTooltip={(g) => `${formatShortDate(g.date)} vs ${g.opponent_name ?? "--"}: ${g.points} pts`}
+          />
+
+          <h2 style={{ marginTop: 24 }}>
+            Game-by-Game Production Rating
+            <span className="hint" title="Production Rating = Points + Rebounds + Assists + Steals + Blocks - Turnovers, computed for each individual game. It's a rough single-number stand-in for a full box score -- not a substitute for Summit Score (which also accounts for shooting efficiency, minutes, and opponent strength), but a quick, game-by-game gut check on total two-way contribution.">
+              ?
+            </span>
+          </h2>
+          <p className="section-note">
+            One combined number per game -- points, rebounds, assists, steals, and blocks added up, turnovers
+            subtracted -- so a quiet scoring night that was still a big all-around game (or a big scoring night
+            undone by turnovers) shows up here even when the points chart alone wouldn&apos;t tell the full story.
+            Bars that dip below the line are games with a negative production rating (more turnovers than total
+            production).
+          </p>
+          <GameByGameChart
+            games={gamesChronological}
+            getValue={productionRating}
+            color="var(--good)"
+            label="Production rating by game this season"
+            getTooltip={(g) =>
+              `${formatShortDate(g.date)} vs ${g.opponent_name ?? "--"}: ${productionRating(g)} production rating ` +
+              `(${g.points} pts, ${g.rebounds} reb, ${g.assists} ast, ${g.steals} stl, ${g.blocks} blk, ${g.turnovers} TO)`
+            }
+          />
         </div>
       )}
 
@@ -399,29 +429,62 @@ function SeasonTrendChart({ seasons }: { seasons: PlayerTrajectorySeason[] }) {
   );
 }
 
-// Simple SVG bar chart, points scored per game across a season in chronological
-// order -- a single magnitude series (one hue, var(--accent)), horizontally
-// scrollable since a full season can be 25-35+ games. A native <title> per bar
-// gives the date/opponent/total on hover.
-function GameByGameChart({ games }: { games: PlayerGameLogRow[] }) {
+// A single game's overall two-way production in one number: everything she
+// contributed (points/rebounds/assists/steals/blocks) minus what she gave
+// back (turnovers) -- a rougher, wider-range "how good was this game as a
+// whole" read than points alone, closer to a box-score gestalt than a single
+// counting stat.
+function productionRating(g: PlayerGameLogRow): number {
+  return g.points + g.rebounds + g.assists + g.steals + g.blocks - g.turnovers;
+}
+
+// Simple SVG bar chart, one magnitude series per game across a season in
+// chronological order -- a single hue, horizontally scrollable since a full
+// season can be 25-35+ games. A native <title> per bar gives the date/
+// opponent/full box-score line on hover. Shared by the points chart and the
+// production-rating chart below (same visual language, different accessor/
+// color/tooltip).
+function GameByGameChart({
+  games, getValue, getTooltip, color, label,
+}: {
+  games: PlayerGameLogRow[];
+  getValue: (g: PlayerGameLogRow) => number;
+  getTooltip: (g: PlayerGameLogRow) => string;
+  color: string;
+  label: string;
+}) {
   const perGame = 20;
   const width = Math.max(360, games.length * perGame);
   const height = 130;
   const padTop = 10;
   const padBottom = 20;
-  const max = Math.max(...games.map((g) => g.points), 1);
+  const values = games.map(getValue);
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = Math.max(max - Math.min(min, 0), 1);
   const barWidth = Math.min(14, perGame - 5);
   return (
     <div style={{ overflowX: "auto" }}>
-      <svg width={width} height={height} role="img" aria-label="Points scored by game this season">
+      <svg width={width} height={height} role="img" aria-label={label}>
+        {min < 0 && (
+          <line
+            x1={0} x2={width}
+            y1={height - padBottom - (Math.max(0, -min) / range) * (height - padTop - padBottom)}
+            y2={height - padBottom - (Math.max(0, -min) / range) * (height - padTop - padBottom)}
+            stroke="var(--border)"
+            strokeDasharray="3,3"
+          />
+        )}
         {games.map((g, i) => {
+          const v = getValue(g);
+          const baseline = height - padBottom - (Math.max(0, -min) / range) * (height - padTop - padBottom);
+          const h = (Math.abs(v) / range) * (height - padTop - padBottom);
           const x = i * perGame + 3;
-          const h = (g.points / max) * (height - padTop - padBottom);
-          const y = height - padBottom - h;
+          const y = v >= 0 ? baseline - h : baseline;
           return (
             <g key={`${g.date}-${i}`}>
-              <rect x={x} y={y} width={barWidth} height={Math.max(h, 1)} rx={2} fill="var(--accent)" />
-              <title>{`${formatShortDate(g.date)} vs ${g.opponent_name ?? "--"}: ${g.points} pts`}</title>
+              <rect x={x} y={y} width={barWidth} height={Math.max(h, 1)} rx={2} fill={color} />
+              <title>{getTooltip(g)}</title>
             </g>
           );
         })}

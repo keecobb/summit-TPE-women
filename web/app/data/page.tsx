@@ -2,6 +2,7 @@ import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type {
   PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboardAll, BackHalfPlayer,
+  SeasonJumpLeaderboard,
 } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
@@ -37,7 +38,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
   const [
     leaderboard, lmStandouts, mmStandouts, hmVsHm, mmVsHm, lmVsHm,
-    top50Hm, top50Mm, top50Lm, backHalfAll, conferences, ...chartData
+    top50Hm, top50Mm, top50Lm, backHalfAll, seasonJump, conferences, ...chartData
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
@@ -86,6 +87,11 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     // small-sample noise from someone who barely played.
     apiFetch<BackHalfLeaderboardAll>("/leaderboards/back-half", {
       params: { min_games_per_half: 5, min_games: 15, min_mpg: 10, limit: 10, sort: "all" },
+    }),
+    // Real season-over-season comparison (player_history), not a
+    // projection -- defaults to the two most recent seasons on record.
+    apiFetch<SeasonJumpLeaderboard>("/leaderboards/season-jump", {
+      params: { min_games: 8, limit: 15 },
     }),
     apiFetch<string[]>("/conferences"),
     ...pageStats.map((s) =>
@@ -384,6 +390,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
           </div>
         )}
       </div>
+
+      <div className="card">
+        <h2>
+          Biggest Summit Score Jump: {seasonJump.season_from} &rarr; {seasonJump.season_to}
+          <span className="hint" title={seasonJump.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">{seasonJump.note}</p>
+        <SeasonJumpTable data={seasonJump} />
+      </div>
     </div>
   );
 }
@@ -486,6 +503,42 @@ function OpponentSplitTable({ data }: { data: OpponentSplitLeaderboard }) {
               <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.avg_points.toFixed(1)}</td>
               <td>{p.avg_rebounds.toFixed(1)}</td>
               <td>{p.avg_assists.toFixed(1)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function SeasonJumpTable({ data }: { data: SeasonJumpLeaderboard }) {
+  if (data.players.length === 0) return <p className="empty-state">No qualifying players.</p>;
+  return (
+    <div className="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>{data.season_from}</th>
+            <th>{data.season_to}</th>
+            <th>Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.players.map((p) => (
+            <tr key={p.player_id}>
+              <td>
+                <Link href={`/players/${p.player_id}`}>{p.name}</Link>
+                <div className="label" style={{ marginTop: 2 }}>
+                  {p.transferred ? `${p.from_team_name} → ${p.to_team_name}` : p.to_team_name}
+                </div>
+              </td>
+              <td>{p.from_hoop_score.toFixed(1)}</td>
+              <td>{p.to_hoop_score.toFixed(1)}</td>
+              <td style={{ color: p.hoop_score_change >= 0 ? "var(--good)" : "var(--warn)", fontWeight: 700 }}>
+                {p.hoop_score_change >= 0 ? "+" : ""}
+                {p.hoop_score_change.toFixed(1)}
+              </td>
             </tr>
           ))}
         </tbody>

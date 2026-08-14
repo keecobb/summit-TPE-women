@@ -87,6 +87,8 @@ export interface TeamRoles {
   team_id: number;
   team_name: string;
   roster_size: number;
+  roster_avg_summit_score: number | null;
+  roster_avg_summit_score_count: number;
   starter: { minutes: number; player_count: number } | null;
   sixth_man: { minutes: number } | null;
   role_player: { minutes: number; range: [number, number]; note?: string } | null;
@@ -500,6 +502,35 @@ export interface BackHalfLeaderboardAll {
     mpg: BackHalfPlayer[];
     topg: BackHalfPlayer[];
   };
+}
+
+export interface SeasonJumpPlayer {
+  player_id: number;
+  name: string;
+  position: string | null;
+  class_year: string | null;
+  from_team_id: number;
+  from_team_name: string;
+  to_team_id: number;
+  to_team_name: string;
+  to_tier: string | null;
+  from_games: number;
+  from_hoop_score: number;
+  from_ppg: number | null;
+  to_games: number;
+  to_hoop_score: number;
+  to_ppg: number | null;
+  hoop_score_change: number;
+  ppg_change: number | null;
+  transferred: boolean;
+}
+
+export interface SeasonJumpLeaderboard {
+  season_from: string;
+  season_to: string;
+  min_games: number;
+  note: string;
+  players: SeasonJumpPlayer[];
 }
 
 export interface ConferenceStandingsTeam {

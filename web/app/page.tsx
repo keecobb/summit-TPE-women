@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
-import type { Team, LeaderboardPlayer, PlayerLeaderboard } from "@/lib/types";
+import type { Team, LeaderboardPlayer, PlayerLeaderboard, SeasonJumpLeaderboard } from "@/lib/types";
 
 // Renders per-request instead of being statically prerendered at build
 // time -- this page fetches live data, and a build shouldn't hard-fail
@@ -14,10 +14,13 @@ export default async function HomePage() {
   // pulled from the real API so this never drifts out of sync with what
   // the rest of the site shows. Small, cheap calls; safe to run on every
   // home page load with the normal 60s revalidate window.
-  const [topTeams, topScorers] = await Promise.all([
+  const [topTeams, topScorers, topSummitScores, seasonJump] = await Promise.all([
     apiFetch<Team[]>("/teams", { params: { limit: 5 } }),
     apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 5 } }),
+    apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "hoop_score", min_games: 10, limit: 1 } }),
+    apiFetch<SeasonJumpLeaderboard>("/leaderboards/season-jump", { params: { min_games: 8, limit: 3 } }),
   ]);
+  const highestLiveSummitScore = topSummitScores.players[0]?.hoop_score ?? null;
 
   return (
     <div>
@@ -25,14 +28,10 @@ export default async function HomePage() {
         <div className="notice-banner">All features are free and fully open during this preview period.</div>
         <h1>Summit TPE</h1>
         <p className="subtitle" style={{ maxWidth: 68 + "ch" }}>
-          Summit TPE puts every Division I women&apos;s basketball team and player on one shared, easy-to-compare
-          scale. Each team gets a Rating for how strong it really is this season, and each player gets a Summit
-          Score -- one number for how good her season has been, adjusted for her role and how tough her
-          opponents were. Wondering how a player would look at a different school? Transfer Projection gives you
-          a real estimate based on how actual transfers have played out in the past, not a guess. New here? Try
-          Transfer Projection with a single player, or Team Fits to work the other way -- start from a team&apos;s
-          needs and see who fits best. Every page on the site has a short explanation up top of what it shows and
-          how to read it.
+          Your home for advanced women&apos;s college basketball team and player statistics, analytics, and
+          transfer projections -- covering all of D1 women&apos;s hoops, with men&apos;s coverage coming soon.
+          Start with <Link href="/tpe">Transfer Projection</Link>: pick a player, pick a target school, and see a
+          real projected stat line based on how actual transfers have played out, not a guess.
         </p>
         <div className="hero-actions">
           <Link href="/tpe" className="btn btn-primary">
@@ -45,28 +44,88 @@ export default async function HomePage() {
             Browse the data
           </Link>
         </div>
+        <div style={{ marginTop: 14, display: "flex", gap: 16 }}>
+          <a href="https://twitter.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="subtitle">
+            @SummitTPE on X
+          </a>
+          <a href="https://instagram.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="subtitle">
+            @SummitTPE on Instagram
+          </a>
+        </div>
       </section>
 
       <div className="card">
-        <h2>Top 5 teams by Current Rating</h2>
+        <h2>
+          How Summit Scores Work
+          <span className="hint" title="A single 30-99 number summarizing a player's overall production this season -- position-weighted, opponent-strength-adjusted per-40 output, converted to a z-score against the season's full player pool, then mapped onto a 30-99 scale that saturates smoothly near the top instead of hard-clamping.">
+            ?
+          </span>
+        </h2>
         <p className="section-note">
-          A quick look at the strength model in action -- see the full board on the Teams page. (For the
-          plain-language explanation of how this all works, see the About page.)
+          Every player on the site gets one number, 30-99, for how good her season has actually been -- adjusted
+          for role and opponent strength, so a star on a weak schedule and a star on a brutal one are genuinely
+          comparable. Higher is better; 99 is reserved for the very best few players in the country, not handed
+          out to dozens of players.
         </p>
-        {topTeams.map((t) => (
-          <div className="bar-row" key={t.team_id}>
-            <Link href={`/teams/${t.team_id}`} className="bar-name" title={`${t.name} (${t.tier})`}>
-              {t.name}
-            </Link>
-            <div className="bar-track">
-              <div
-                className="bar-fill"
-                style={{ width: `${(t.current_rating / Math.max(...topTeams.map((x) => x.current_rating), 0.0001)) * 100}%` }}
-              />
+        <div style={{ margin: "16px 0 4px", position: "relative", height: 34 }}>
+          <div
+            style={{
+              position: "absolute", left: 0, right: 0, top: 12, height: 10, borderRadius: 6,
+              background: "linear-gradient(90deg, var(--bg-panel-2), var(--accent))",
+              border: "1px solid var(--border)",
+            }}
+          />
+          <div style={{ position: "absolute", left: 0, top: 0, fontSize: 12, color: "var(--text-dim)" }}>30 (floor)</div>
+          <div style={{ position: "absolute", right: 0, top: 0, fontSize: 12, color: "var(--text-dim)" }}>99 (elite)</div>
+          {highestLiveSummitScore !== null && (
+            <div
+              style={{
+                position: "absolute",
+                left: `${Math.min(100, Math.max(0, ((highestLiveSummitScore - 30) / (99 - 30)) * 100))}%`,
+                top: 22,
+                transform: "translateX(-50%)",
+                fontSize: 12,
+                fontWeight: 700,
+                color: "var(--accent)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              &uarr; {topSummitScores.players[0].name} sits at {highestLiveSummitScore.toFixed(1)} right now, the
+              nation&apos;s highest live Summit Score.
             </div>
-            <div className="bar-value">{t.current_rating.toFixed(1)}</div>
-          </div>
-        ))}
+          )}
+        </div>
+        <p className="section-note" style={{ marginTop: 24 }}>
+          Want the full plain-language breakdown of how the model works? See the About page.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>
+          Biggest Summit Score Jumps, {seasonJump.season_from} &rarr; {seasonJump.season_to}
+          <span className="hint" title={seasonJump.note}>
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          A real season-over-season comparison, not a projection -- the players whose Summit Score improved the
+          most from last season to this one. See the full list, and the standard Top 5 Teams board, on the{" "}
+          <Link href="/data">Data page</Link>.
+        </p>
+        <div className="stat-grid">
+          {seasonJump.players.slice(0, 3).map((p) => (
+            <Link href={`/players/${p.player_id}`} key={p.player_id} style={{ textDecoration: "none" }}>
+              <div className="stat-tile">
+                <div className="value" style={{ color: "var(--good)" }}>
+                  +{p.hoop_score_change.toFixed(1)}
+                </div>
+                <div className="label">
+                  {p.name} ({p.to_team_name}) -- {p.from_hoop_score.toFixed(1)} &rarr; {p.to_hoop_score.toFixed(1)}
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
       </div>
 
       <div className="card-grid">
@@ -125,71 +184,25 @@ export default async function HomePage() {
       </div>
 
       <div className="card">
-        <h2>Everything on the site</h2>
-        <p className="section-note">The full rundown, for anyone who wants more than the three highlights above.</p>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
-          {SITE_SECTIONS.map((s) => (
-            <div key={s.href}>
-              <Link href={s.href} style={{ fontWeight: 700, textDecoration: "none" }}>
-                {s.label}
-              </Link>
-              <p className="subtitle" style={{ margin: "2px 0 0" }}>
-                {s.detail}
-              </p>
-            </div>
-          ))}
+        <h2>Follow Summit TPE</h2>
+        <p className="section-note">
+          Live highlights, leaderboard updates, and transfer buzz -- follow along on X and Instagram.
+          (An embedded live feed isn&apos;t available yet since that requires the account&apos;s own API access;
+          for now this links straight out to the profiles.)
+        </p>
+        <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+          <a href="https://twitter.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="btn">
+            @SummitTPE on X
+          </a>
+          <a href="https://instagram.com/SummitTPE" target="_blank" rel="noopener noreferrer" className="btn">
+            @SummitTPE on Instagram
+          </a>
         </div>
       </div>
+
+      <p className="section-note" style={{ marginTop: 4 }}>
+        Want the full rundown of everything on the site? See the <Link href="/about">About page</Link>.
+      </p>
     </div>
   );
 }
-
-const SITE_SECTIONS: { href: string; label: string; detail: string }[] = [
-  {
-    href: "/tpe",
-    label: "Transfer Projection",
-    detail:
-      "The core transfer projector -- pick any player and any target school, set her minutes or a role " +
-      "(starter, sixth man, etc.), and see a full projected stat line at the new school, with a confidence read " +
-      "and a real range of outcomes based on comparable real transfers.",
-  },
-  {
-    href: "/team-fits",
-    label: "Team Fits",
-    detail:
-      "The reverse direction -- tell it what a team needs (a stat category, a level, a role to fill) and it " +
-      "ranks the players nationally who'd project best into that exact spot on that roster.",
-  },
-  {
-    href: "/compare",
-    label: "Compare",
-    detail: "Pick any two players, or any two teams, and see their current-season stats side by side, with the better value in each row called out.",
-  },
-  {
-    href: "/data",
-    label: "Data",
-    detail:
-      "Real leaderboards (not projections) -- top scorers, rebounders, most efficient shooters, conference " +
-      "filters, who performs best against tougher competition, who's trending up as the season goes on, and " +
-      "which Low-Major/Mid-Major players project as standouts at the High-Major level.",
-  },
-  {
-    href: "/players",
-    label: "Players",
-    detail:
-      "Search or browse every rostered D1 player -- sortable by any stat, with a full profile page per player " +
-      "including season-by-season trends and splits against different opponent strengths.",
-  },
-  {
-    href: "/teams",
-    label: "Teams",
-    detail:
-      "Search or browse every D1 team, filterable by level and conference, with a full team profile -- roster, " +
-      "schedule, and a real Stats Breakdown tab showing how the team compares to its league and its conference.",
-  },
-  {
-    href: "/glossary",
-    label: "Glossary",
-    detail: "Plain-language definitions for every stat and term used across the site -- Summit Score, levels, SOS, per-40, and more.",
-  },
-];
