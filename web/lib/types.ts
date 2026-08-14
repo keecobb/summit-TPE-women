@@ -402,10 +402,11 @@ export interface OpponentSplitLeaderboard {
   stat_label: string;
   lower_is_better: boolean;
   own_level: string | null;
-  opponent_level: string;
+  opponent_level: string | null;
   min_games: number;
   conference_filter?: string | null;
   top50_only?: boolean;
+  top50_national?: boolean;
   players: OpponentSplitPlayer[];
 }
 
@@ -461,24 +462,34 @@ export interface BackHalfPlayer {
   first_half_ts_pct: number | null;
   second_half_ts_pct: number | null;
   ts_pct_change: number | null;
+  first_half_mpg: number;
+  second_half_mpg: number;
+  mpg_change: number;
+  first_half_topg: number;
+  second_half_topg: number;
+  topg_change: number;
 }
 
 export interface BackHalfLeaderboard {
   level_filter: string | null;
   season: string;
   min_games_per_half: number;
+  min_games: number;
+  min_mpg: number;
   sort: string;
   note: string;
   players: BackHalfPlayer[];
 }
 
-// sort=all response shape -- all 4 rankings from one call/one DB scan,
-// instead of 4 separate BackHalfLeaderboard fetches (see lib note on the
+// sort=all response shape -- all 6 rankings from one call/one DB scan,
+// instead of one BackHalfLeaderboard fetch per stat (see lib note on the
 // Data page for why that mattered in production).
 export interface BackHalfLeaderboardAll {
   level_filter: string | null;
   season: string;
   min_games_per_half: number;
+  min_games: number;
+  min_mpg: number;
   sort: "all";
   note: string;
   by_sort: {
@@ -486,6 +497,8 @@ export interface BackHalfLeaderboardAll {
     rpg: BackHalfPlayer[];
     apg: BackHalfPlayer[];
     ts: BackHalfPlayer[];
+    mpg: BackHalfPlayer[];
+    topg: BackHalfPlayer[];
   };
 }
 

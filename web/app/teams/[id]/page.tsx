@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamRoles, TeamNeeds, Player, TeamSchedule, LeapCandidates } from "@/lib/types";
-import { ROLE_NAMES, roleLabel } from "@/lib/types";
+import type { Team, TeamRoles, TeamNeeds, TeamNeedCategory, Player, TeamSchedule } from "@/lib/types";
+import { roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
 
 const TABS = [
@@ -19,7 +19,7 @@ export default async function TeamDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string; leap_role?: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;
@@ -41,9 +41,8 @@ export default async function TeamDetailPage({
         <span className="pill">{team.tier}</span>
       </p>
       <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
-        Overview covers this team&apos;s rating, its real minutes-based rotation roles, its biggest statistical
-        needs vs. its peers, and who&apos;d make the biggest Summit Score leap by transferring in. Roster,
-        Schedule, and Stats Breakdown are full detail tabs below.
+        Overview covers this team&apos;s rating, its real minutes-based rotation roles, and its statistical
+        profile vs. its peers. Roster, Schedule, and Stats Breakdown are full detail tabs below.
       </p>
 
       <div className="tabs">
@@ -54,7 +53,7 @@ export default async function TeamDetailPage({
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab id={id} team={team} leapRole={sp.leap_role} />}
+      {tab === "overview" && <OverviewTab id={id} team={team} />}
       {tab === "roster" && <RosterTab id={id} />}
       {tab === "schedule" && <ScheduleTab id={id} />}
       {tab === "stats" && <StatsTab id={id} team={team} />}
@@ -62,20 +61,13 @@ export default async function TeamDetailPage({
   );
 }
 
-async function OverviewTab({ id, team, leapRole }: { id: string; team: Team; leapRole?: string }) {
-  const resolvedLeapRole = ROLE_NAMES.includes(leapRole as (typeof ROLE_NAMES)[number]) ? (leapRole as string) : "starter";
-
-  const [roles, needs, leap] = await Promise.all([
+async function OverviewTab({ id, team }: { id: string; team: Team }) {
+  const [roles, needs] = await Promise.all([
     apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 60 }),
+    // top_n only controls the length of `weaknesses` below -- full_profile
+    // always returns every category regardless, which is what the Team
+    // Stat Profile chart uses.
     apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 3 }, revalidate: 60 }),
-    // Best Transfer Fits (ranked by raw projected stat value) is hidden for
-    // now -- it tends to surface the same handful of already-elite names
-    // regardless of team, which isn't a very useful "fit" read. This
-    // leap-by-role section replaces it: same underlying projection math,
-    // but ranked by the JUMP in Summit Score a transfer would represent,
-    // and it's not real-time cached (revalidate omitted) since it
-    // intentionally samples a different mix of names on each load.
-    apiFetch<LeapCandidates>(`/teams/${id}/leap-candidates`, { params: { role: resolvedLeapRole, limit: 8 }, revalidate: 0 }),
   ]);
 
   return (
@@ -152,78 +144,65 @@ async function OverviewTab({ id, team, leapRole }: { id: string; team: Team; lea
 
       <div className="card">
         <h2>
-          Biggest Summit Score Leap by Role
-          <span className="hint" title="Ranked by the jump between each candidate's CURRENT Summit Score and her PROJECTED Summit Score if she transferred here in the selected role -- not by raw projected value, so this surfaces the biggest statistical step-ups rather than just whoever's already elite. That jump is driven by the team-strength gap and doesn't change by role; the role you pick controls the projected minutes/stat line shown for each candidate, and which names get sampled into the list.">
+          Team Stat Profile
+          <span className="hint" title="Every category from Full Stats Breakdown, shown as how far above or below the league average this team is (in standard deviations). Bars to the right of center are a strength, bars to the left are a weakness -- the further from center, the more it stands out.">
             ?
           </span>
         </h2>
         <p className="section-note">
-          Pick a role to see who outside this roster would gain the most by transferring in and playing it.
-          Sampled from a wider pool of high-leap candidates, so reloading this section (or switching roles) can
-          surface a different mix of names rather than a frozen list.
+          Where this team stands out and where it doesn&apos;t, at a glance -- each bar is this team&apos;s
+          z-score vs. the league average in that category. See Stats Breakdown for the real per-game numbers
+          behind each bar.
         </p>
-        <div className="hero-actions" style={{ marginTop: 4, marginBottom: 16 }}>
-          {ROLE_NAMES.map((r) => (
-            <Link
-              key={r}
-              href={`/teams/${id}?tab=overview&leap_role=${r}`}
-              className={`btn${resolvedLeapRole === r ? " btn-primary" : ""}`}
-            >
-              {roleLabel(r)}
-            </Link>
-          ))}
-        </div>
-        {leap.candidates.length > 0 && leap.candidates[0].hoop_score_delta <= 0 && (
-          <p className="section-note" style={{ marginBottom: 12 }}>
-            Every candidate here shows a flat or negative leap -- that&apos;s expected for a team this strong:
-            the model&apos;s leap is driven by the team-strength gap, and there&apos;s little room to climb by
-            joining a team that&apos;s already at or near the top. Shown ranked smallest-drop-off-first instead.
-          </p>
-        )}
-        {leap.candidates.length === 0 ? (
-          <p className="empty-state">No qualifying candidates.</p>
-        ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>Current Team</th>
-                  <th>Level</th>
-                  <th>Current</th>
-                  <th>Projected</th>
-                  <th>Leap</th>
-                  <th>Proj. Min</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leap.candidates.map((c) => (
-                  <tr key={c.player_id}>
-                    <td>
-                      <Link href={`/players/${c.player_id}`}>{c.name}</Link>
-                    </td>
-                    <td>{c.current_team}</td>
-                    <td>
-                      <span className="pill">{c.level}</span>
-                    </td>
-                    <td>{c.current_hoop_score.toFixed(1)}</td>
-                    <td>{c.projected_hoop_score.toFixed(1)}</td>
-                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>
-                      {c.hoop_score_delta > 0 ? "+" : ""}
-                      {c.hoop_score_delta.toFixed(1)}
-                    </td>
-                    <td>{c.projected_minutes.toFixed(1)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <p className="section-note" style={{ marginTop: 10 }}>
-          {leap.role_applied ? `Assuming ${roleLabel(leap.role_applied.role)} minutes (${leap.role_applied.minutes.toFixed(1)}/game) at ${team.name}.` : ""}{" "}
-          {leap.candidates_considered} candidates considered.
-        </p>
+        <TeamProfileChart profile={needs.full_profile} />
       </div>
+    </div>
+  );
+}
+
+// Diverging bar chart: one row per stat category, bar extends right (strength,
+// var(--good)) or left (weakness, var(--warn)) from a center 0 line, scaled by
+// z-score. Reuses the site's existing good/warn status tokens (already used for
+// pill-good/pill-warn elsewhere) rather than introducing new chart colors.
+function TeamProfileChart({ profile }: { profile: TeamNeedCategory[] }) {
+  if (profile.length === 0) return <p className="empty-state">No stat profile available.</p>;
+  const maxAbsZ = Math.max(...profile.map((c) => Math.abs(c.z)), 0.0001);
+  // Sort strongest to weakest so the chart reads top-to-bottom like a ranking,
+  // not in whatever order the API happened to return categories.
+  const sorted = [...profile].sort((a, b) => b.z - a.z);
+  return (
+    <div style={{ marginTop: 4 }}>
+      {sorted.map((c) => {
+        const pct = (Math.abs(c.z) / maxAbsZ) * 50; // half-width max, diverges from center
+        const positive = c.z >= 0;
+        return (
+          <div
+            key={c.stat}
+            style={{ display: "grid", gridTemplateColumns: "110px 1fr 56px", alignItems: "center", gap: 8, marginBottom: 7, fontSize: "0.82rem" }}
+          >
+            <div style={{ color: "var(--text)" }}>{titleCase(c.label)}</div>
+            <div style={{ position: "relative", height: 10, background: "var(--bg-panel-2)", borderRadius: 4 }}>
+              <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "var(--border)" }} />
+              <div
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  width: `${pct}%`,
+                  borderRadius: 4,
+                  background: positive ? "var(--good)" : "var(--warn)",
+                  left: positive ? "50%" : undefined,
+                  right: positive ? undefined : "50%",
+                }}
+              />
+            </div>
+            <div style={{ textAlign: "right", fontWeight: 600, color: "var(--text)" }}>
+              {c.z > 0 ? "+" : ""}
+              {c.z.toFixed(2)}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -57,31 +57,36 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
       params: { own_level: "Low-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
     }),
-    // top50_only tables also need own_level set to the SAME tier as
-    // opponent_level -- without it, "Top 50 Mid-Major" pulled players from
-    // EVERY level (any High-Major/Low-Major player who happened to play a
-    // top-50 Mid-Major team), not just Mid-Major players, which is the
-    // "LM/MM showing players from other levels" bug reported against this
-    // section. own_level=opponent_level here is what actually makes each
-    // column "[level] players against the best 50 [level] teams."
+    // top50_national (not top50_only): each column is "[level] players
+    // against the best 50 teams IN THE COUNTRY," not the best 50 within
+    // their own level -- own_level still picks which level of PLAYER each
+    // column is about, but the opponent pool is the same national top 50
+    // across all three columns. (top50_only's level-scoped version made
+    // Low-Major's "top 50" a much softer bar than High-Major's, since a
+    // level's own top 50 isn't the same quality of competition level to
+    // level -- this is the sharper, genuinely-comparable read.)
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "High-Major", opponent_level: "High-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "High-Major", top50_national: true, stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "Mid-Major", opponent_level: "Mid-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Mid-Major", top50_national: true, stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "Low-Major", opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Low-Major", top50_national: true, stat: "points", min_games: 2, limit: 8 },
     }),
-    // One call, sort=all -- the backend computes all 4 rankings (PPG/RPG/
-    // APG/TS%) from a single full-season scan/aggregation instead of
-    // redoing that scan once per stat. An earlier version of this made 4
+    // One call, sort=all -- the backend computes all 6 rankings (PPG/RPG/
+    // APG/TS%/MPG/TOPG) from a single full-season scan/aggregation instead
+    // of redoing that scan once per stat. An earlier version of this made 4
     // separate back-half calls (one per stat) to fix the "same girls in
     // every section" bug -- correct in isolation, but it roughly doubled
     // this page's slowest, most expensive backend call and was enough
     // added latency to time the whole page out in production. sort=all
-    // keeps the 4-genuinely-distinct-lists fix at the original 1-call cost.
-    apiFetch<BackHalfLeaderboardAll>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "all" } }),
+    // keeps the genuinely-distinct-lists fix at the original 1-call cost.
+    // min_games=15/min_mpg=10 keep this to real rotation players, not
+    // small-sample noise from someone who barely played.
+    apiFetch<BackHalfLeaderboardAll>("/leaderboards/back-half", {
+      params: { min_games_per_half: 5, min_games: 15, min_mpg: 10, limit: 10, sort: "all" },
+    }),
     apiFetch<string[]>("/conferences"),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
@@ -270,27 +275,29 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
       <div className="card">
         <h2>
-          Best Against the Top 50 Teams, by Level
-          <span className="hint" title="Real per-game scoring against only the 50 highest-current_rating teams WITHIN each level, from players who are ALSO at that level -- not every team at that level (including its weakest), and not players visiting from a different level. High-Major's top 50 is nearly the whole level; Low-Major's top 50 is a much sharper cut of a much bigger pool.">
+          Best Against the Top 50 Teams Nationally, by Level
+          <span className="hint" title="Real per-game scoring against only the 50 highest-current_rating teams IN THE COUNTRY, regardless of tier -- the same 50 opponent teams in all three columns below. Each column restricts to players who are themselves at that level, so you can see how High-Major, Mid-Major, and Low-Major players each perform against genuinely elite competition, not just the best of their own level.">
             ?
           </span>
         </h2>
         <p className="section-note">
-          Real production against just the best 50 teams in each level (by current rating), restricted to
-          players whose own team is also at that level -- a sharper, apples-to-apples read than the whole-level
-          splits above, especially for Mid-Major and Low-Major. Same HM &rarr; MM &rarr; LM order throughout.
+          Real production against the same 50 best teams in the country (by current rating) for every column --
+          restricted to players whose own team is at that level. Since the national top 50 is almost entirely
+          High-Major teams, this is a much tougher bar for Mid-Major and Low-Major players than &quot;best of
+          their own level&quot; would be -- a genuinely apples-to-apples read of who travels well against real
+          elite competition.
         </p>
         <div className="card-grid card-grid-3">
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Top 50 High-Major</h2>
+            <h2 style={{ fontSize: "1.05rem" }}>High-Major players</h2>
             <OpponentSplitTable data={top50Hm} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Top 50 Mid-Major</h2>
+            <h2 style={{ fontSize: "1.05rem" }}>Mid-Major players</h2>
             <OpponentSplitTable data={top50Mm} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Top 50 Low-Major</h2>
+            <h2 style={{ fontSize: "1.05rem" }}>Low-Major players</h2>
             <OpponentSplitTable data={top50Lm} />
           </div>
         </div>
@@ -306,13 +313,17 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         <p className="section-note">
           Each half-season split is at the midpoint of a player&apos;s OWN games played (not the calendar
           midpoint), so a missed-games stretch early in the year doesn&apos;t skew this the way splitting by
-          calendar date would. Each chart below is ranked by its own stat&apos;s change -- these are four
-          distinct lists of top movers, not the same players re-labeled.
+          calendar date would. Each chart below is ranked by its own stat&apos;s change -- these are six
+          distinct lists of top movers, not the same players re-labeled. Limited to players with at least{" "}
+          {backHalfAll.min_games} games and {backHalfAll.min_mpg} minutes per game this season, so this
+          reflects real rotation players.
         </p>
         {backHalfAll.by_sort.ppg.length === 0 &&
         backHalfAll.by_sort.rpg.length === 0 &&
         backHalfAll.by_sort.apg.length === 0 &&
-        backHalfAll.by_sort.ts.length === 0 ? (
+        backHalfAll.by_sort.ts.length === 0 &&
+        backHalfAll.by_sort.mpg.length === 0 &&
+        backHalfAll.by_sort.topg.length === 0 ? (
           <p className="empty-state">No qualifying players.</p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
@@ -351,6 +362,24 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
               getFirst={(p) => p.first_half_ts_pct as number}
               getSecond={(p) => p.second_half_ts_pct as number}
               unit="TS%"
+            />
+            <BackHalfChangeChart
+              title="MPG change"
+              sub="Top movers, minutes per game -- whose role is trending up"
+              players={backHalfAll.by_sort.mpg}
+              getChange={(p) => p.mpg_change}
+              getFirst={(p) => p.first_half_mpg}
+              getSecond={(p) => p.second_half_mpg}
+              unit="MPG"
+            />
+            <BackHalfChangeChart
+              title="TOPG improvement"
+              sub="Biggest drop in turnovers per game -- most improved ball security"
+              players={backHalfAll.by_sort.topg}
+              getChange={(p) => -p.topg_change}
+              getFirst={(p) => p.first_half_topg}
+              getSecond={(p) => p.second_half_topg}
+              unit="TOPG"
             />
           </div>
         )}

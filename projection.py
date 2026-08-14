@@ -1360,48 +1360,66 @@ OPPONENT_SPLIT_STATS = {
 
 
 def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major", stat="points",
-                                min_games=3, limit=20, season=None, conference=None, top50_only=False):
+                                min_games=3, limit=20, season=None, conference=None, top50_only=False,
+                                top50_national=False):
     """Real per-game production, filtered to games played against opponents
     at a specific tier -- the "High-Major players who perform best
     specifically against other High-Major opponents" / "Low-Major players
     who perform best against High-Major opponents" leaderboards. own_level
     restricts which players' OWN team tier qualifies (None = any level,
     e.g. for the LM/MM vs HM "who travels well" read); opponent_level is
-    required (which tier of opponent these games were against). min_games
-    is the minimum number of games AGAINST THAT OPPONENT TIER specifically,
-    not season-total games -- a player might have played 30 games this
-    season but only 4 against High-Major competition, and it's the 4-game
-    sample this leaderboard is about. `conference` restricts to players
-    whose OWN team is in that conference. `top50_only` restricts to games
-    played against one of the 50 highest-current_rating teams WITHIN
-    opponent_level (not top 50 nationally) -- e.g. opponent_level=Low-Major,
-    top50_only=True is "games against the 50 best Low-Major teams", not
-    every Low-Major team including the weakest ones.
+    required (which tier of opponent these games were against) UNLESS
+    top50_national is set (see below). min_games is the minimum number of
+    games AGAINST THAT OPPONENT TIER specifically, not season-total games --
+    a player might have played 30 games this season but only 4 against
+    High-Major competition, and it's the 4-game sample this leaderboard is
+    about. `conference` restricts to players whose OWN team is in that
+    conference. `top50_only` restricts to games played against one of the
+    50 highest-current_rating teams WITHIN opponent_level (not top 50
+    nationally) -- e.g. opponent_level=Low-Major, top50_only=True is "games
+    against the 50 best Low-Major teams", not every Low-Major team
+    including the weakest ones. `top50_national` restricts to games played
+    against one of the 50 highest-current_rating teams IN THE COUNTRY,
+    regardless of tier -- this is the "how do our own Mid-Major/Low-Major
+    players actually perform against genuinely elite competition" read,
+    as opposed to top50_only's "best of their own tier" read. When
+    top50_national is set, opponent_level is ignored entirely as a filter
+    (own_level still applies, to pick which level of PLAYER this list is
+    about) -- top50_only and top50_national are mutually exclusive; if
+    both are set, top50_national wins.
     """
     own_level = normalize_tier(own_level)
-    opponent_level = normalize_tier(opponent_level)
     if stat not in OPPONENT_SPLIT_STATS:
         raise ProjectionError(f"stat must be one of {list(OPPONENT_SPLIT_STATS)}, got {stat!r}.")
-    if opponent_level not in VALID_LEVELS:
-        raise ProjectionError(f"opponent_level must be one of {VALID_LEVELS}, got {opponent_level!r}.")
     if own_level is not None and own_level not in VALID_LEVELS:
         raise ProjectionError(f"own_level must be one of {VALID_LEVELS}, got {own_level!r}.")
     info = OPPONENT_SPLIT_STATS[stat]
 
-    clauses = ["opp_t.tier = ?"]
-    params = [opponent_level]
+    clauses = []
+    params = []
+    if top50_national:
+        opponent_level = None
+        clauses.append(
+            "g.opponent_team_id IN (SELECT team_id FROM teams ORDER BY current_rating DESC LIMIT 50)"
+        )
+    else:
+        opponent_level = normalize_tier(opponent_level)
+        if opponent_level not in VALID_LEVELS:
+            raise ProjectionError(f"opponent_level must be one of {VALID_LEVELS}, got {opponent_level!r}.")
+        clauses.append("opp_t.tier = ?")
+        params.append(opponent_level)
+        if top50_only:
+            clauses.append(
+                "g.opponent_team_id IN (SELECT team_id FROM teams WHERE tier = ? "
+                "ORDER BY current_rating DESC LIMIT 50)"
+            )
+            params.append(opponent_level)
     if own_level is not None:
         clauses.append("own_t.tier = ?")
         params.append(own_level)
     if conference is not None:
         clauses.append("own_t.conference = ?")
         params.append(conference)
-    if top50_only:
-        clauses.append(
-            "g.opponent_team_id IN (SELECT team_id FROM teams WHERE tier = ? "
-            "ORDER BY current_rating DESC LIMIT 50)"
-        )
-        params.append(opponent_level)
     if season is not None:
         clauses.append("g.season = ?")
         params.append(season)
@@ -1446,7 +1464,7 @@ def opponent_split_leaderboard(conn, own_level=None, opponent_level="High-Major"
     return dict(
         stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
         own_level=own_level, opponent_level=opponent_level, min_games=min_games,
-        conference_filter=conference, top50_only=top50_only,
+        conference_filter=conference, top50_only=top50_only, top50_national=top50_national,
         players=players,
     )
 
@@ -1580,32 +1598,54 @@ BACK_HALF_SORT_FIELDS = {
     "rpg": "rpg_change",
     "apg": "apg_change",
     "ts": "ts_pct_change",
+    "mpg": "mpg_change",
+    "topg": "topg_change",
 }
 
+# turnovers: a DECREASE (negative change) is the improvement, same
+# lower_is_better convention used for turnovers everywhere else on the site
+# (CATEGORY_INFO, opponent-split leaderboards). Every other sort field here
+# treats a positive change as the improvement.
+BACK_HALF_LOWER_IS_BETTER = {"topg"}
 
-def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, season=None, sort="ppg"):
+
+def back_half_leaderboard(conn, level=None, min_games_per_half=5, min_games=15, min_mpg=10.0,
+                           limit=20, season=None, sort="ppg"):
     """'Best back half of the season' -- ranks current-season players by
     how much a given stat changed from the first half of THEIR OWN games
     played to the second half (split at the midpoint of her own games, not
     the calendar midpoint of the season, so a player who missed early
     games due to injury is still compared fairly on her own two halves).
-    A positive change means she's been trending up; negative means down.
-    No projection involved -- this is real per-game production, just
-    split in two and compared.
+    A positive change means she's been trending up; negative means down
+    (except `topg`, see BACK_HALF_LOWER_IS_BETTER above). No projection
+    involved -- this is real per-game production, just split in two and
+    compared.
 
     `sort` picks which stat's change ranks the returned list -- "ppg"
-    (default), "rpg", "apg", "ts" (true shooting %), or "all". Pass "all"
-    to get all 4 rankings in ONE call (see `by_sort` on the return value)
-    -- this re-sorts the same already-computed per-player rows 4 ways in
-    plain Python, so it costs one DB scan/aggregation instead of 4. A
-    caller that used to call this endpoint once per stat (4 round trips)
-    should switch to one `sort=all` call instead -- 4 separate calls each
-    re-run the same expensive full-season `player_game_logs` scan and
-    per-player aggregation from scratch, which is what made the Data
-    page's back-half section slow enough to time out in production after
-    that 4-calls-per-page-load pattern shipped. The four `first_half_*`/
-    `second_half_*`/`*_change` fields are always all present on every row
+    (default), "rpg", "apg", "ts" (true shooting %), "mpg" (minutes per
+    game -- whose role is trending up/down), "topg" (turnovers per game --
+    ranked by biggest DECREASE first, i.e. "who tightened up her ball
+    security the most"), or "all". Pass "all" to get all 6 rankings in ONE
+    call (see `by_sort` on the return value) -- this re-sorts the same
+    already-computed per-player rows 6 ways in plain Python, so it costs
+    one DB scan/aggregation instead of 6. A caller that used to call this
+    endpoint once per stat (multiple round trips) should switch to one
+    `sort=all` call instead -- separate calls each re-run the same
+    expensive full-season `player_game_logs` scan and per-player
+    aggregation from scratch, which is what made the Data page's back-half
+    section slow enough to time out in production after a 4-calls-per-
+    page-load pattern shipped in an earlier pass. All `first_half_*`/
+    `second_half_*`/`*_change` fields are always present on every row
     regardless of which stat is driving a given ranking.
+
+    `min_games` (default 15) is the minimum TOTAL games played this season
+    (both halves combined) -- a stricter floor than `min_games_per_half`
+    alone (default 5, i.e. as few as 10 total) to keep this leaderboard
+    limited to players with a real, meaningfully-sized role, not a deep
+    reserve who barely played. `min_mpg` (default 10.0) is the minimum
+    season-average minutes per game, same reasoning -- someone playing 3
+    minutes a game can post a huge PERCENTAGE swing in a stat from pure
+    noise. Both floors apply in addition to `min_games_per_half`.
     """
     level = normalize_tier(level)
     if level is not None and level not in VALID_LEVELS:
@@ -1623,7 +1663,7 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
 
     rows = conn.execute(
         f"""SELECT g.player_id, p.name, t.team_id, t.name AS team_name, t.tier, g.date,
-                   g.points, g.rebounds, g.assists, g.fgm, g.fga, g.ftm, g.fta
+                   g.points, g.rebounds, g.assists, g.fgm, g.fga, g.ftm, g.fta, g.minutes, g.turnovers
             FROM player_game_logs g
             JOIN players p ON g.player_id = p.player_id
             JOIN teams t ON g.team_id = t.team_id
@@ -1652,13 +1692,20 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
         ast = sum(g["assists"] for g in games)
         fga = sum(g["fga"] for g in games)
         fta = sum(g["fta"] for g in games)
+        mins = sum(g["minutes"] for g in games)
+        tov = sum(g["turnovers"] for g in games)
         tsa = fga + 0.44 * fta
         ts_pct = (pts / (2 * tsa)) if tsa >= HALF_TS_ATTEMPT_FLOOR else None
-        return dict(ppg=pts / n, rpg=reb / n, apg=ast / n, ts_pct=ts_pct)
+        return dict(ppg=pts / n, rpg=reb / n, apg=ast / n, ts_pct=ts_pct, mpg=mins / n, topg=tov / n)
 
     results = []
     for pid, glist in by_player.items():
         n = len(glist)
+        if n < min_games:
+            continue
+        season_mpg = sum(g["minutes"] for g in glist) / n
+        if season_mpg < min_mpg:
+            continue
         half = n // 2
         first, second = glist[:half], glist[half:]
         if len(first) < min_games_per_half or len(second) < min_games_per_half:
@@ -1678,15 +1725,21 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
             first_half_ts_pct=round(fs["ts_pct"] * 100, 1) if fs["ts_pct"] is not None else None,
             second_half_ts_pct=round(ss["ts_pct"] * 100, 1) if ss["ts_pct"] is not None else None,
             ts_pct_change=round((ss["ts_pct"] - fs["ts_pct"]) * 100, 1) if both_ts else None,
+            first_half_mpg=round(fs["mpg"], 1), second_half_mpg=round(ss["mpg"], 1),
+            mpg_change=round(ss["mpg"] - fs["mpg"], 1),
+            first_half_topg=round(fs["topg"], 1), second_half_topg=round(ss["topg"], 1),
+            topg_change=round(ss["topg"] - fs["topg"], 1),
         ))
 
     common_note = (
         "Each player's own games are split at the midpoint of HER games played this season (not the "
         "calendar midpoint). A missed-games injury early in the year doesn't skew this the way splitting "
-        "by calendar date would. First/second-half PPG, RPG, APG, and TS% are all shown on every row for "
-        f"context regardless of which stat is driving a given ranking. TS% needs at least "
+        "by calendar date would. First/second-half PPG, RPG, APG, TS%, MPG, and TOPG are all shown on "
+        f"every row for context regardless of which stat is driving a given ranking. TS% needs at least "
         f"{HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise, and those "
-        f"players are excluded when ranking by TS% change specifically."
+        f"players are excluded when ranking by TS% change specifically. Limited to players with at least "
+        f"{min_games} games and {min_mpg:g} minutes per game this season, so this reflects real rotation "
+        f"players, not small-sample noise from someone who barely played."
     )
 
     def _ranked(sort_key):
@@ -1694,21 +1747,30 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
         rows = results
         if sort_key == "ts":
             rows = [r for r in rows if r[field] is not None]
-        return sorted(rows, key=lambda r: r[field], reverse=True)[:limit]
+        reverse = sort_key not in BACK_HALF_LOWER_IS_BETTER
+        return sorted(rows, key=lambda r: r[field], reverse=reverse)[:limit]
 
     if sort == "all":
         return dict(
-            level_filter=level, season=season, min_games_per_half=min_games_per_half, sort="all",
+            level_filter=level, season=season, min_games_per_half=min_games_per_half,
+            min_games=min_games, min_mpg=min_mpg, sort="all",
             note=f"{common_note} This response has one independently-ranked list per stat (`by_sort.ppg`, "
-                 f".rpg, .apg, .ts) -- each is a genuinely distinct ranking, not the same players relabeled.",
+                 f".rpg, .apg, .ts, .mpg, .topg) -- each is a genuinely distinct ranking, not the same "
+                 f"players relabeled. `by_sort.topg` is ranked by the biggest DECREASE in turnovers first "
+                 f"(improved ball security), not the biggest increase.",
             by_sort=dict(
                 ppg=_ranked("ppg"), rpg=_ranked("rpg"), apg=_ranked("apg"), ts=_ranked("ts"),
+                mpg=_ranked("mpg"), topg=_ranked("topg"),
             ),
         )
 
-    stat_label = {"ppg": "points", "rpg": "rebounds", "apg": "assists", "ts": "true shooting %"}[sort]
+    stat_label = {
+        "ppg": "points", "rpg": "rebounds", "apg": "assists", "ts": "true shooting %",
+        "mpg": "minutes played", "topg": "turnovers (biggest decrease first)",
+    }[sort]
     return dict(
-        level_filter=level, season=season, min_games_per_half=min_games_per_half, sort=sort,
+        level_filter=level, season=season, min_games_per_half=min_games_per_half,
+        min_games=min_games, min_mpg=min_mpg, sort=sort,
         note=f"{common_note} This list is ranked by {stat_label} change from her first half to her second half.",
         players=_ranked(sort),
     )

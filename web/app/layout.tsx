@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Analytics } from "@vercel/analytics/next";
 import MobileNav from "@/components/MobileNav";
 import "./globals.css";
 
@@ -73,7 +74,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             periodically from the Summit TPE pipeline. &middot; <Link href="/about">About</Link> &middot;{" "}
             <Link href="/contact">Contact</Link>
           </div>
+          <div style={{ marginTop: 8 }}>
+            <a href="https://twitter.com/SummitTPE" target="_blank" rel="noopener noreferrer">
+              @SummitTPE on X
+            </a>{" "}
+            &middot;{" "}
+            <a href="https://instagram.com/SummitTPE" target="_blank" rel="noopener noreferrer">
+              @SummitTPE on Instagram
+            </a>
+          </div>
         </footer>
+        <Analytics />
       </body>
     </html>
   );

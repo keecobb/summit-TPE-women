@@ -553,7 +553,7 @@ def get_standouts_leaderboard(
 
 @app.get("/leaderboards/opponent-splits", dependencies=[Depends(require_api_key)])
 def get_opponent_split_leaderboard(
-    opponent_level: str = Query(..., description=f"One of {list(VALID_LEVELS)} -- the tier of opponent these games were against."),
+    opponent_level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)} -- the tier of opponent these games were against. Ignored (may be omitted) when top50_national=true."),
     own_level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)} -- restrict to players whose OWN team is at this tier. Omit for any level."),
     stat: str = Query("points", description=f"One of {list(OPPONENT_SPLIT_STATS)}."),
     min_games: int = Query(3, description="Minimum games played AGAINST that opponent tier specifically, not season-total games."),
@@ -561,6 +561,9 @@ def get_opponent_split_leaderboard(
     conference: str | None = Query(None, description="Exact conference match on the player's OWN team. Omit for any conference."),
     top50_only: bool = Query(False, description="Restrict to games against one of the 50 highest-current_rating "
                                                   "teams WITHIN opponent_level (not top 50 nationally)."),
+    top50_national: bool = Query(False, description="Restrict to games against one of the 50 highest-current_rating "
+                                                      "teams IN THE COUNTRY, regardless of tier -- overrides "
+                                                      "opponent_level/top50_only when set."),
     limit: int = Query(20, le=100),
 ):
     """Real per-game production filtered to games played against a specific
@@ -572,12 +575,20 @@ def get_opponent_split_leaderboard(
     season-average approximation. ("P5" is still accepted as an alias for
     High-Major in both level params.) Pass top50_only=true for the "best
     against the top 50 [tier] teams" leaderboards (vs. every team at that
-    tier, including its weakest)."""
+    tier, including its weakest). Pass top50_national=true instead for "best
+    against the top 50 teams in the country" regardless of tier -- e.g.
+    own_level=Mid-Major&top50_national=true is "how Mid-Major players
+    actually perform against the nation's genuinely elite teams," not just
+    the best 50 within their own tier; opponent_level is not required (and
+    is ignored) in this mode."""
+    if opponent_level is None and not top50_national:
+        raise HTTPException(status_code=422, detail="opponent_level is required unless top50_national=true.")
     conn = get_conn()
     try:
         return opponent_split_leaderboard(conn, own_level=own_level, opponent_level=opponent_level,
                                            stat=stat, min_games=min_games, limit=limit, season=season,
-                                           conference=conference, top50_only=top50_only)
+                                           conference=conference, top50_only=top50_only,
+                                           top50_national=top50_national)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:
@@ -588,23 +599,31 @@ def get_opponent_split_leaderboard(
 def get_back_half_leaderboard(
     level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
     min_games_per_half: int = Query(5, description="Minimum games required in EACH half of the season to qualify."),
+    min_games: int = Query(15, description="Minimum TOTAL games played this season (both halves combined) to qualify."),
+    min_mpg: float = Query(10.0, description="Minimum season-average minutes per game to qualify."),
     season: str | None = Query(None, description="Defaults to the cache's current season."),
     limit: int = Query(20, le=100),
-    sort: str = Query("ppg", description="Which stat's change ranks the list: ppg, rpg, apg, ts, or all."),
+    sort: str = Query("ppg", description="Which stat's change ranks the list: ppg, rpg, apg, ts, mpg, topg, or all."),
 ):
     """'Best back half of the season' -- ranks players by how much a given
     stat changed from the first half of their own games played to the
-    second half (positive = trending up). `sort` picks ppg/rpg/apg/ts for a
-    single ranked list, or "all" to get all 4 rankings in one response
-    (`by_sort.ppg`/`.rpg`/`.apg`/`.ts`) from a single DB scan/aggregation --
-    prefer "all" over 4 separate calls when a caller wants all 4 lists, since
-    the underlying full-season scan is the expensive part and running it 4x
-    is what made this section slow enough to time out under real production
-    load. See back_half_leaderboard()'s docstring for exactly how the split
-    works."""
+    second half (positive = trending up, except topg -- see below). `sort`
+    picks ppg/rpg/apg/ts/mpg/topg for a single ranked list, or "all" to get
+    all 6 rankings in one response (`by_sort.ppg`/`.rpg`/`.apg`/`.ts`/
+    `.mpg`/`.topg`) from a single DB scan/aggregation -- prefer "all" over
+    separate calls when a caller wants multiple lists, since the underlying
+    full-season scan is the expensive part and running it once per stat is
+    what made this section slow enough to time out under real production
+    load in an earlier pass. `topg` ranks by the biggest DECREASE in
+    turnovers per game first (improved ball security), the mirror of every
+    other sort field here. `min_games`/`min_mpg` default to 15 games and 10
+    minutes per game -- meant to keep this limited to real rotation
+    players, not small-sample noise from someone who barely played. See
+    back_half_leaderboard()'s docstring for exactly how the split works."""
     conn = get_conn()
     try:
         return back_half_leaderboard(conn, level=level, min_games_per_half=min_games_per_half,
+                                      min_games=min_games, min_mpg=min_mpg,
                                       limit=limit, season=season, sort=sort)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

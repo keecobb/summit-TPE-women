@@ -1,7 +1,10 @@
 import { Fragment } from "react";
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { PlayerDetail, PlayerTrajectory, PlayerSplits, OpponentTierSplit, PlayerGameLogs, PlayerGameLogRow } from "@/lib/types";
+import type {
+  PlayerDetail, PlayerTrajectory, PlayerTrajectorySeason, PlayerSplits, OpponentTierSplit,
+  PlayerGameLogs, PlayerGameLogRow,
+} from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 
@@ -32,14 +35,18 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
   // well-understood combined-production read, computed client-side from the
   // same real per-game rows /players/{id}/game-logs already exposes (no new
   // backend endpoint needed). Same "zero games -> nothing to show" case as
-  // splits above, not an error.
+  // splits above, not an error. The full chronological list (oldest first)
+  // is also kept for the Game-by-Game Scoring chart below -- the API
+  // returns most-recent-first, so it's reversed once here for both uses.
   let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
+  let gamesChronological: PlayerGameLogRow[] = [];
   try {
     const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 60 });
     bestGames = logs.games
       .map((g) => ({ ...g, combined: g.points + g.rebounds + g.assists }))
       .sort((a, b) => b.combined - a.combined)
       .slice(0, 3);
+    gamesChronological = [...logs.games].reverse();
   } catch (e) {
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
@@ -177,6 +184,22 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         </div>
       )}
 
+      {gamesChronological.length > 1 && (
+        <div className="card">
+          <h2>
+            Game-by-Game Scoring
+            <span className="hint" title="Points scored in every game this season, in date order (earliest to most recent) -- hover a bar for the date, opponent, and exact total.">
+              ?
+            </span>
+          </h2>
+          <p className="section-note">
+            {player.season} season, one bar per game -- how consistent or streaky her scoring has actually been,
+            not just the season average.
+          </p>
+          <GameByGameChart games={gamesChronological} />
+        </div>
+      )}
+
       {splits && splits.total_games > 0 && (
         <div className="card">
           <h2>
@@ -218,10 +241,13 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         <div className="card">
           <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
           {trajectory.seasons.length > 1 && (
-            <p className="section-note">
-              Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
-              {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
-            </p>
+            <>
+              <p className="section-note">
+                Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
+                {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
+              </p>
+              <SeasonTrendChart seasons={trajectory.seasons} />
+            </>
           )}
           <div className="table-scroll">
           <table>
@@ -328,4 +354,78 @@ function countTransfers(trajectory: PlayerTrajectory): number {
     if (trajectory.seasons[i].team_name !== trajectory.seasons[i - 1].team_name) count++;
   }
   return count;
+}
+
+// Simple SVG line chart, Summit Score across every season on record (2-3
+// points, typically) -- a single series, so no legend needed (the card
+// heading + trend line above already name it). One accent-colored line with
+// a rounded-end stroke, direct value labels on every point since there are
+// only a handful, and a native <title> per point for a hover tooltip.
+function SeasonTrendChart({ seasons }: { seasons: PlayerTrajectorySeason[] }) {
+  const width = 560;
+  const height = 130;
+  const padX = 40;
+  const padTop = 24;
+  const padBottom = 24;
+  const values = seasons.map((s) => s.hoop_score);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  const stepX = seasons.length > 1 ? (width - padX * 2) / (seasons.length - 1) : 0;
+  const points = seasons.map((s, i) => {
+    const x = padX + i * stepX;
+    const y = height - padBottom - ((s.hoop_score - min) / range) * (height - padTop - padBottom);
+    return { x, y, s };
+  });
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" ");
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Summit Score by season">
+        <path d={path} fill="none" stroke="var(--accent)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r={4} fill="var(--accent)" />
+            <title>{`${p.s.season}: ${p.s.hoop_score.toFixed(1)} Summit Score (${p.s.team_name})`}</title>
+            <text x={p.x} y={p.y - 10} fontSize={11} textAnchor="middle" fill="var(--text)">
+              {p.s.hoop_score.toFixed(1)}
+            </text>
+            <text x={p.x} y={height - 6} fontSize={10} textAnchor="middle" fill="var(--text-dim)">
+              {p.s.season}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// Simple SVG bar chart, points scored per game across a season in chronological
+// order -- a single magnitude series (one hue, var(--accent)), horizontally
+// scrollable since a full season can be 25-35+ games. A native <title> per bar
+// gives the date/opponent/total on hover.
+function GameByGameChart({ games }: { games: PlayerGameLogRow[] }) {
+  const perGame = 20;
+  const width = Math.max(360, games.length * perGame);
+  const height = 130;
+  const padTop = 10;
+  const padBottom = 20;
+  const max = Math.max(...games.map((g) => g.points), 1);
+  const barWidth = Math.min(14, perGame - 5);
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <svg width={width} height={height} role="img" aria-label="Points scored by game this season">
+        {games.map((g, i) => {
+          const x = i * perGame + 3;
+          const h = (g.points / max) * (height - padTop - padBottom);
+          const y = height - padBottom - h;
+          return (
+            <g key={`${g.date}-${i}`}>
+              <rect x={x} y={y} width={barWidth} height={Math.max(h, 1)} rx={2} fill="var(--accent)" />
+              <title>{`${formatShortDate(g.date)} vs ${g.opponent_name ?? "--"}: ${g.points} pts`}</title>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
 }
