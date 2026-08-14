@@ -25,12 +25,14 @@ export default async function HomePage() {
         <div className="notice-banner">All features are free and fully open during this preview period.</div>
         <h1>Summit TPE</h1>
         <p className="subtitle" style={{ maxWidth: 68 + "ch" }}>
-          A team strength rating that puts every D1 team on one shared scale, a per-player Summit Score built from
-          role- and opponent-adjusted production, and a transfer-portal projector that turns "what would she look
-          like at a different school" into an actual number -- grounded in how real transfers have historically
-          played out, not a guess. New here? Jump into Transfer Projection to run a single player through the
-          calculator, or Team Fits to work the other direction -- start from a team's needs and see who fits
-          best. Every page has a short explanation of what it does and how to read the numbers right up top.
+          Summit TPE puts every Division I women&apos;s basketball team and player on one shared, easy-to-compare
+          scale. Each team gets a Rating for how strong it really is this season, and each player gets a Summit
+          Score -- one number for how good her season has been, adjusted for her role and how tough her
+          opponents were. Wondering how a player would look at a different school? Transfer Projection gives you
+          a real estimate based on how actual transfers have played out in the past, not a guess. New here? Try
+          Transfer Projection with a single player, or Team Fits to work the other way -- start from a team&apos;s
+          needs and see who fits best. Every page on the site has a short explanation up top of what it shows and
+          how to read it.
         </p>
         <div className="hero-actions">
           <Link href="/tpe" className="btn btn-primary">
@@ -161,7 +163,7 @@ const SITE_SECTIONS: { href: string; label: string; detail: string }[] = [
   {
     href: "/compare",
     label: "Compare",
-    detail: "Pick any two players and see their current-season stat lines side by side, with the better value in each row called out.",
+    detail: "Pick any two players, or any two teams, and see their current-season stats side by side, with the better value in each row called out.",
   },
   {
     href: "/data",

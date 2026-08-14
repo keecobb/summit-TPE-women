@@ -230,14 +230,14 @@ UNDERCLASS_YEARS = {"FR", "SO"}
 # instead of a strength). Turnovers are the one category where more is
 # worse, so its z-score gets flipped before ranking "biggest weakness."
 CATEGORY_INFO = {
-    "per40_pts":  dict(label="scoring",                        proj_field="ppg",    lower_is_better=False),
-    "per40_reb":  dict(label="rebounding",                     proj_field="rpg",    lower_is_better=False),
-    "per40_ast":  dict(label="playmaking / assists",           proj_field="apg",    lower_is_better=False),
-    "per40_blk":  dict(label="shot blocking",                  proj_field="bpg",    lower_is_better=False),
-    "per40_stl":  dict(label="perimeter defense / steals",     proj_field="spg",    lower_is_better=False),
-    "per40_tov":  dict(label="ball security",                  proj_field="topg",   lower_is_better=True),
-    "ts_pct":     dict(label="scoring efficiency (true shooting %)", proj_field="ts_pct", lower_is_better=False),
-    "fg_pct":     dict(label="field goal %",                   proj_field="fg_pct", lower_is_better=False),
+    "per40_pts":  dict(label="points",     proj_field="ppg",    lower_is_better=False),
+    "per40_reb":  dict(label="rebounds",   proj_field="rpg",    lower_is_better=False),
+    "per40_ast":  dict(label="assists",    proj_field="apg",    lower_is_better=False),
+    "per40_blk":  dict(label="blocks",     proj_field="bpg",    lower_is_better=False),
+    "per40_stl":  dict(label="steals",     proj_field="spg",    lower_is_better=False),
+    "per40_tov":  dict(label="turnovers",  proj_field="topg",   lower_is_better=True),
+    "ts_pct":     dict(label="true shooting %", proj_field="ts_pct", lower_is_better=False),
+    "fg_pct":     dict(label="field goal %",    proj_field="fg_pct", lower_is_better=False),
 }
  
 # Same 3 tiers classify_tier() (summit_calc.py) assigns every team at cache
@@ -976,8 +976,29 @@ def leap_candidates(conn, team_id, role=None, minutes=None, limit=8, min_games=5
 
     ranked.sort(key=lambda r: r["hoop_score_delta"], reverse=True)
 
-    pool_size = min(len(ranked), max(limit * 3, limit))
-    pool = ranked[:pool_size]
+    # Cap how many candidates from the same originating school can enter the
+    # sampling pool. hoop_score_delta is driven purely by the strength-of-
+    # schedule gap (see _core_projection) -- it doesn't vary by which player
+    # is transferring, only by how much stronger the target team is than her
+    # CURRENT team. That means a handful of elite players at a few of the
+    # very weakest teams in the country post the largest possible gap/delta
+    # against almost any target team, so an uncapped top-delta pool ends up
+    # dominated by the same 2-3 schools on every team's page. Capping keeps
+    # the ranking itself unchanged (still strictly delta-ordered within what
+    # survives the cap) while forcing the pool to represent a wider slice of
+    # the country, which is what actually reads as "realistic" to a coach
+    # skimming this list.
+    MAX_PER_SCHOOL = 2
+    per_school_count = defaultdict(int)
+    diversified = []
+    for r in ranked:
+        if per_school_count[r["current_team"]] >= MAX_PER_SCHOOL:
+            continue
+        diversified.append(r)
+        per_school_count[r["current_team"]] += 1
+
+    pool_size = min(len(diversified), max(limit * 3, limit))
+    pool = diversified[:pool_size]
     chosen = random.sample(pool, min(limit, len(pool))) if pool else []
     chosen.sort(key=lambda r: r["hoop_score_delta"], reverse=True)
 
@@ -990,9 +1011,11 @@ def leap_candidates(conn, team_id, role=None, minutes=None, limit=8, min_games=5
         note=(
             "Ranked by the jump between each candidate's CURRENT Summit Score and her PROJECTED Summit "
             "Score if she transferred to this team in this role -- not by raw projected value, so this "
-            "surfaces the biggest statistical step-ups, not just whoever's already elite. Sampled from "
-            "the top pool of leap candidates each time this loads, so refreshing this section can surface "
-            "a different (but still genuinely high-leap) mix of names rather than a frozen list."
+            "surfaces the biggest statistical step-ups, not just whoever's already elite. No more than "
+            f"{MAX_PER_SCHOOL} candidates from the same current school are allowed into the pool, so this "
+            "doesn't turn into the same 2-3 programs' rosters every time. Sampled from the top pool of "
+            "leap candidates each time this loads, so refreshing this section can surface a different "
+            "(but still genuinely high-leap) mix of names rather than a frozen list."
         ),
     )
 
@@ -1542,19 +1565,37 @@ def player_splits(conn, player_id, season=None):
     )
 
 
-def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, season=None):
+BACK_HALF_SORT_FIELDS = {
+    "ppg": "ppg_change",
+    "rpg": "rpg_change",
+    "apg": "apg_change",
+    "ts": "ts_pct_change",
+}
+
+
+def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, season=None, sort="ppg"):
     """'Best back half of the season' -- ranks current-season players by
-    how much their scoring changed from the first half of THEIR OWN games
+    how much a given stat changed from the first half of THEIR OWN games
     played to the second half (split at the midpoint of her own games, not
     the calendar midpoint of the season, so a player who missed early
     games due to injury is still compared fairly on her own two halves).
-    A positive ppg_change means she's been trending up; negative means
-    down. No projection involved -- this is real per-game production,
-    just split in two and compared.
+    A positive change means she's been trending up; negative means down.
+    No projection involved -- this is real per-game production, just
+    split in two and compared.
+
+    `sort` picks which stat's change ranks the returned list -- "ppg"
+    (default), "rpg", "apg", or "ts" (true shooting %). Each call returns
+    ONE ranking; a caller that wants "top movers in PPG" AND "top movers
+    in RPG" as two genuinely distinct lists (not the same players re-
+    labeled) needs to call this twice with different `sort` values -- the
+    four `first_half_*`/`second_half_*`/`*_change` fields are always all
+    present on every row regardless of which one is driving the sort.
     """
     level = normalize_tier(level)
     if level is not None and level not in VALID_LEVELS:
         raise ProjectionError(f"level must be one of {VALID_LEVELS}, got {level!r}.")
+    if sort not in BACK_HALF_SORT_FIELDS:
+        raise ProjectionError(f"sort must be one of {list(BACK_HALF_SORT_FIELDS)}, got {sort!r}.")
     season = season or _load_meta(conn)["season"]
 
     clauses = ["g.season = ?"]
@@ -1623,15 +1664,24 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
             ts_pct_change=round((ss["ts_pct"] - fs["ts_pct"]) * 100, 1) if both_ts else None,
         ))
 
-    results.sort(key=lambda r: r["ppg_change"], reverse=True)
+    sort_field = BACK_HALF_SORT_FIELDS[sort]
+    if sort == "ts":
+        # ts_pct_change is null for players who didn't clear the
+        # attempt floor in both halves -- exclude them from THIS
+        # ranking rather than letting None sort arbitrarily.
+        results = [r for r in results if r[sort_field] is not None]
+    results.sort(key=lambda r: r[sort_field], reverse=True)
+
+    stat_label = {"ppg": "points", "rpg": "rebounds", "apg": "assists", "ts": "true shooting %"}[sort]
     return dict(
-        level_filter=level, season=season, min_games_per_half=min_games_per_half,
-        note="Each player's own games are split at the midpoint of HER games played this season (not "
-             "the calendar midpoint) -- ranked by points-per-game change from her first half to her "
-             "second half. A missed-games injury early in the year doesn't skew this the way splitting "
-             "by calendar date would. Rebounds/assists/TS% are shown the same way for context, but the "
-             "ranking itself is scoring-only. TS% needs at least "
-             f"{HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise.",
+        level_filter=level, season=season, min_games_per_half=min_games_per_half, sort=sort,
+        note=f"Each player's own games are split at the midpoint of HER games played this season (not "
+             f"the calendar midpoint) -- this list is ranked by {stat_label} change from her first half "
+             f"to her second half. A missed-games injury early in the year doesn't skew this the way "
+             f"splitting by calendar date would. First/second-half PPG, RPG, APG, and TS% are all shown "
+             f"on every row for context regardless of which stat is driving the ranking. TS% needs at "
+             f"least {HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise, "
+             f"and those players are excluded when ranking by TS% change specifically.",
         players=results[:limit],
     )
 

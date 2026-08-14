@@ -81,9 +81,22 @@ async function OverviewTab({ id, team, leapRole }: { id: string; team: Team; lea
   return (
     <div>
       <div className="stat-grid" style={{ maxWidth: 400 }}>
-        <Stat label="Rating" value={team.current_rating} highlight />
-        <Stat label="SOS" value={team.sos} />
-        <Stat label="Roster" value={roles.roster_size} />
+        <Stat
+          label="Rating"
+          value={team.current_rating}
+          highlight
+          hint="This team's overall strength on one shared scale, computed from this season's real results. Higher is stronger; roughly centered on 0 across all of Division I, so a positive number is above average and a negative number is below."
+        />
+        <Stat
+          label="SOS"
+          value={team.sos}
+          hint="Strength of schedule -- the average Rating of this team's opponents this season. Higher means a tougher schedule."
+        />
+        <Stat
+          label="Roster"
+          value={roles.roster_size}
+          hint="Number of players on this team's current-season roster with enough recorded games/minutes to be included in the site's stats."
+        />
       </div>
 
       <div className="card">
@@ -111,7 +124,7 @@ async function OverviewTab({ id, team, leapRole }: { id: string; team: Team; lea
             <thead>
               <tr>
                 <th>Category</th>
-                <th>Team</th>
+                <th>Team Average</th>
                 <th>{needs.conference ?? "Conf."} Avg</th>
                 <th>League Avg</th>
                 <th>
@@ -374,14 +387,29 @@ function ZScoreHint() {
   );
 }
 
-function Stat({ label, value, highlight }: { label: string; value: unknown; highlight?: boolean }) {
-  const num = typeof value === "number" ? value.toFixed(2) : String(value ?? "--");
+function Stat({
+  label, value, highlight, hint,
+}: {
+  label: string;
+  value: unknown;
+  highlight?: boolean;
+  hint?: string;
+}) {
+  const num =
+    typeof value === "number" ? (Number.isInteger(value) ? String(value) : value.toFixed(2)) : String(value ?? "--");
   return (
     <div className="stat-tile">
       <div className="value" style={highlight ? { color: "var(--accent)" } : undefined}>
         {num}
       </div>
-      <div className="label">{label}</div>
+      <div className="label">
+        {label}
+        {hint ? (
+          <span className="hint" title={hint}>
+            ?
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

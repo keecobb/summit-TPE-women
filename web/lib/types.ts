@@ -467,6 +467,7 @@ export interface BackHalfLeaderboard {
   level_filter: string | null;
   season: string;
   min_games_per_half: number;
+  sort: string;
   note: string;
   players: BackHalfPlayer[];
 }

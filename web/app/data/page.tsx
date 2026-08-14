@@ -37,7 +37,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
 
   const [
     leaderboard, lmStandouts, mmStandouts, hmVsHm, mmVsHm, lmVsHm,
-    top50Hm, top50Mm, top50Lm, backHalf, conferences, ...chartData
+    top50Hm, top50Mm, top50Lm, backHalfPpg, backHalfRpg, backHalfApg, backHalfTs, conferences, ...chartData
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
       params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
@@ -73,7 +73,14 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
       params: { own_level: "Low-Major", opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
     }),
-    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10 } }),
+    // Fetched once per stat (not once total) so each of the 4 charts below
+    // shows its OWN top movers -- a single PPG-ranked fetch reused for all
+    // 4 charts was the "same girls in every section" bug reported against
+    // this page; each of these is an independently-ranked list.
+    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "ppg" } }),
+    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "rpg" } }),
+    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "apg" } }),
+    apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10, sort: "ts" } }),
     apiFetch<string[]>("/conferences"),
     ...pageStats.map((s) =>
       apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: s, min_games: 8, limit: CHART_TOP_N } })
@@ -295,15 +302,23 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             ?
           </span>
         </h2>
-        <p className="section-note">{backHalf.note}</p>
-        {backHalf.players.length === 0 ? (
+        <p className="section-note">
+          Each half-season split is at the midpoint of a player&apos;s OWN games played (not the calendar
+          midpoint), so a missed-games stretch early in the year doesn&apos;t skew this the way splitting by
+          calendar date would. Each chart below is ranked by its own stat&apos;s change -- these are four
+          distinct lists of top movers, not the same players re-labeled.
+        </p>
+        {backHalfPpg.players.length === 0 &&
+        backHalfRpg.players.length === 0 &&
+        backHalfApg.players.length === 0 &&
+        backHalfTs.players.length === 0 ? (
           <p className="empty-state">No qualifying players.</p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
             <BackHalfChangeChart
               title="PPG change"
-              sub={`Ranked stat -- first half → second half (min. ${backHalf.min_games_per_half} games each half)`}
-              players={backHalf.players}
+              sub={`Top movers -- first half → second half (min. ${backHalfPpg.min_games_per_half} games each half)`}
+              players={backHalfPpg.players}
               getChange={(p) => p.ppg_change}
               getFirst={(p) => p.first_half_ppg}
               getSecond={(p) => p.second_half_ppg}
@@ -311,8 +326,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             />
             <BackHalfChangeChart
               title="RPG change"
-              sub="Same split, rebounds per game"
-              players={backHalf.players}
+              sub="Top movers, rebounds per game"
+              players={backHalfRpg.players}
               getChange={(p) => p.rpg_change}
               getFirst={(p) => p.first_half_rpg}
               getSecond={(p) => p.second_half_rpg}
@@ -320,8 +335,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             />
             <BackHalfChangeChart
               title="APG change"
-              sub="Same split, assists per game"
-              players={backHalf.players}
+              sub="Top movers, assists per game"
+              players={backHalfApg.players}
               getChange={(p) => p.apg_change}
               getFirst={(p) => p.first_half_apg}
               getSecond={(p) => p.second_half_apg}
@@ -329,8 +344,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             />
             <BackHalfChangeChart
               title="TS% change"
-              sub="Same split, true shooting % (needs 8+ true-shot attempts in a half to compute)"
-              players={backHalf.players.filter((p) => p.ts_pct_change != null)}
+              sub="Top movers, true shooting % (needs 8+ true-shot attempts in a half to compute)"
+              players={backHalfTs.players}
               getChange={(p) => p.ts_pct_change as number}
               getFirst={(p) => p.first_half_ts_pct as number}
               getSecond={(p) => p.second_half_ts_pct as number}
@@ -505,7 +520,7 @@ function BackHalfChangeChart({
       })}
       <p className="section-note" style={{ marginTop: 10 }}>
         1st half {getFirst(top).toFixed(1)} {unit} &rarr; 2nd half {getSecond(top).toFixed(1)} {unit} for the top
-        mover on this list (players ranked by PPG change overall, not re-sorted per chart).
+        mover on this list.
       </p>
     </div>
   );

@@ -135,10 +135,16 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                 <tr>
                   <th>Date</th>
                   <th>Opponent</th>
+                  <th>Min</th>
                   <th>PTS</th>
                   <th>REB</th>
                   <th>AST</th>
-                  <th>Combined</th>
+                  <th>STL</th>
+                  <th>BLK</th>
+                  <th>TO</th>
+                  <th>FG</th>
+                  <th>3PT</th>
+                  <th>FT</th>
                 </tr>
               </thead>
               <tbody>
@@ -153,10 +159,16 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                         </span>
                       ) : null}
                     </td>
-                    <td>{g.points}</td>
+                    <td>{g.minutes}</td>
+                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>{g.points}</td>
                     <td>{g.rebounds}</td>
                     <td>{g.assists}</td>
-                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>{g.combined}</td>
+                    <td>{g.steals}</td>
+                    <td>{g.blocks}</td>
+                    <td>{g.turnovers}</td>
+                    <td>{g.fgm}-{g.fga}</td>
+                    <td>{g.tfgm}-{g.tfga}</td>
+                    <td>{g.ftm}-{g.fta}</td>
                   </tr>
                 ))}
               </tbody>

@@ -1,12 +1,15 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { PlayerDetail } from "@/lib/types";
+import type { PlayerDetail, Team, TeamNeeds } from "@/lib/types";
 import { tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 
 interface SP {
+  mode?: string;
   player1?: string;
   player2?: string;
+  team1?: string;
+  team2?: string;
 }
 
 // Stat rows shown in the comparison table -- [key on PlayerDetail, label,
@@ -29,8 +32,38 @@ const ROWS: { key: keyof PlayerDetail; label: string; fmt?: (v: number) => strin
   { key: "hoop_score", label: "Summit Score" },
 ];
 
+// Fixed display order for the team full-stats-profile categories -- each
+// team's own /teams/{id}/needs response sorts its full_profile by that
+// team's OWN z-score (weakest-first), so two teams' lists aren't in the
+// same order as each other. Re-indexing by stat key and walking this fixed
+// order keeps both columns aligned on the same category per row.
+const TEAM_STAT_ORDER = [
+  "per40_pts", "per40_reb", "per40_ast", "per40_blk", "per40_stl", "per40_tov", "ts_pct", "fg_pct",
+];
+const TEAM_STAT_LOWER_IS_BETTER = new Set(["per40_tov"]);
+const TEAM_STAT_IS_PCT = new Set(["ts_pct", "fg_pct"]);
+
+function ModeTabs({ mode }: { mode: "players" | "teams" }) {
+  return (
+    <div className="tabs" style={{ marginBottom: 20 }}>
+      <Link href="/compare" className={`tab${mode === "players" ? " active" : ""}`}>
+        Players
+      </Link>
+      <Link href="/compare?mode=teams" className={`tab${mode === "teams" ? " active" : ""}`}>
+        Teams
+      </Link>
+    </div>
+  );
+}
+
 export default async function ComparePage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
+  const mode: "players" | "teams" = sp.mode === "teams" ? "teams" : "players";
+
+  if (mode === "teams") {
+    if (!sp.team1 || !sp.team2) return <TeamPickerView sp={sp} />;
+    return <TeamResultView sp={sp} />;
+  }
 
   if (!sp.player1 || !sp.player2) {
     return <PickerView sp={sp} />;
@@ -47,6 +80,7 @@ export default async function ComparePage({ searchParams }: { searchParams: Prom
       return (
         <div>
           <h1>Compare Players</h1>
+          <ModeTabs mode="players" />
           <div className="error-box">{e.message}</div>
           <p style={{ marginTop: 20 }}>
             <Link href="/compare">&larr; Start over</Link>
@@ -60,6 +94,7 @@ export default async function ComparePage({ searchParams }: { searchParams: Prom
   return (
     <div>
       <h1>Compare Players</h1>
+      <ModeTabs mode="players" />
       <p className="subtitle">
         {p1.season} season, per-game unless noted. Higher is bolded for every row (lower is better for TOPG, not
         bolded specially -- read that one the other way).
@@ -132,6 +167,7 @@ async function PickerView({ sp }: { sp: SP }) {
   return (
     <div>
       <h1>Compare Players</h1>
+      <ModeTabs mode="players" />
       <p className="subtitle">Pick two players to see their current-season stats side by side.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
         Search by name for each player, pick from the dropdown, then submit -- every row is real production
@@ -139,8 +175,8 @@ async function PickerView({ sp }: { sp: SP }) {
         the other way around).
       </p>
 
-      <div className="card" style={{ maxWidth: 480 }}>
-        <form action="/compare">
+      <div className="card card-prose" style={{ maxWidth: 480 }}>
+        <form action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div className="field">
             <label htmlFor="player1-search">Player 1</label>
             <Typeahead
@@ -165,7 +201,186 @@ async function PickerView({ sp }: { sp: SP }) {
               required
             />
           </div>
-          <button className="btn btn-primary" type="submit">
+          <button className="btn btn-primary" type="submit" style={{ marginTop: 4 }}>
+            Compare
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+async function TeamResultView({ sp }: { sp: SP }) {
+  let t1: Team, t2: Team, needs1: TeamNeeds, needs2: TeamNeeds;
+  try {
+    [t1, t2, needs1, needs2] = await Promise.all([
+      apiFetch<Team>(`/teams/${sp.team1}`, { revalidate: 60 }),
+      apiFetch<Team>(`/teams/${sp.team2}`, { revalidate: 60 }),
+      apiFetch<TeamNeeds>(`/teams/${sp.team1}/needs`, { params: { top_n: 8 }, revalidate: 60 }),
+      apiFetch<TeamNeeds>(`/teams/${sp.team2}/needs`, { params: { top_n: 8 }, revalidate: 60 }),
+    ]);
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return (
+        <div>
+          <h1>Compare Teams</h1>
+          <ModeTabs mode="teams" />
+          <div className="error-box">{e.message}</div>
+          <p style={{ marginTop: 20 }}>
+            <Link href="/compare?mode=teams">&larr; Start over</Link>
+          </p>
+        </div>
+      );
+    }
+    throw e;
+  }
+
+  const cats1 = Object.fromEntries(needs1.full_profile.map((c) => [c.stat, c]));
+  const cats2 = Object.fromEntries(needs2.full_profile.map((c) => [c.stat, c]));
+
+  return (
+    <div>
+      <h1>Compare Teams</h1>
+      <ModeTabs mode="teams" />
+      <p className="subtitle">
+        Current season, real team averages unless noted. Higher is bolded for every stat row (lower is better
+        for Turnovers, not bolded specially -- read that one the other way).
+      </p>
+
+      <div className="card">
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Stat</th>
+                <th>
+                  <Link href={`/teams/${t1.team_id}`}>{t1.name}</Link>
+                  <div className="label" style={{ marginTop: 2 }}>
+                    {t1.conference} &middot; {tierAbbrev(t1.tier)}
+                  </div>
+                </th>
+                <th>
+                  <Link href={`/teams/${t2.team_id}`}>{t2.name}</Link>
+                  <div className="label" style={{ marginTop: 2 }}>
+                    {t2.conference} &middot; {tierAbbrev(t2.tier)}
+                  </div>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>
+                  Rating
+                  <span className="hint" title="Overall team strength on one shared scale -- higher is stronger, roughly centered on 0 across all of Division I.">
+                    ?
+                  </span>
+                </td>
+                <td style={t1.current_rating > t2.current_rating ? { fontWeight: 700, color: "var(--accent)" } : undefined}>
+                  {t1.current_rating.toFixed(2)}
+                </td>
+                <td style={t2.current_rating > t1.current_rating ? { fontWeight: 700, color: "var(--accent)" } : undefined}>
+                  {t2.current_rating.toFixed(2)}
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  SOS
+                  <span className="hint" title="Strength of schedule -- the average Rating of this team's opponents this season.">
+                    ?
+                  </span>
+                </td>
+                <td>{t1.sos?.toFixed(2) ?? "--"}</td>
+                <td>{t2.sos?.toFixed(2) ?? "--"}</td>
+              </tr>
+              <tr>
+                <td>Roster Size</td>
+                <td>{needs1.roster_size}</td>
+                <td>{needs2.roster_size}</td>
+              </tr>
+              {TEAM_STAT_ORDER.map((stat) => {
+                const c1 = cats1[stat];
+                const c2 = cats2[stat];
+                if (!c1 && !c2) return null;
+                const label = (c1 ?? c2).label;
+                const v1 = c1?.team_value;
+                const v2 = c2?.team_value;
+                const lowerBetter = TEAM_STAT_LOWER_IS_BETTER.has(stat);
+                const better1 = v1 != null && v2 != null && (lowerBetter ? v1 < v2 : v1 > v2);
+                const better2 = v1 != null && v2 != null && (lowerBetter ? v2 < v1 : v2 > v1);
+                const suffix = TEAM_STAT_IS_PCT.has(stat) ? "%" : "";
+                return (
+                  <tr key={stat}>
+                    <td style={{ textTransform: "capitalize" }}>{label}</td>
+                    <td style={better1 ? { fontWeight: 700, color: "var(--accent)" } : undefined}>
+                      {v1 != null ? `${v1.toFixed(1)}${suffix}` : "--"}
+                    </td>
+                    <td style={better2 ? { fontWeight: 700, color: "var(--accent)" } : undefined}>
+                      {v2 != null ? `${v2.toFixed(1)}${suffix}` : "--"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <p style={{ marginTop: 20 }}>
+        <Link href="/compare?mode=teams">&larr; Compare different teams</Link>
+      </p>
+    </div>
+  );
+}
+
+async function TeamPickerView({ sp }: { sp: SP }) {
+  let team1: Team | null = null;
+  if (sp.team1) {
+    try {
+      team1 = await apiFetch<Team>(`/teams/${sp.team1}`, { revalidate: 60 });
+    } catch {
+      // ignore -- fall through to letting them pick again
+    }
+  }
+
+  return (
+    <div>
+      <h1>Compare Teams</h1>
+      <ModeTabs mode="teams" />
+      <p className="subtitle">Pick two teams to see their ratings and real season averages side by side.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Search by name for each team, pick from the dropdown, then submit -- Rating, SOS, and every team-average
+        stat category are compared, with the better value in each row bolded (lower is better for Turnovers
+        only, read that row the other way around).
+      </p>
+
+      <div className="card card-prose" style={{ maxWidth: 480 }}>
+        <form action="/compare" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <input type="hidden" name="mode" value="teams" />
+          <div className="field">
+            <label htmlFor="team1-search">Team 1</label>
+            <Typeahead
+              kind="teams"
+              inputId="team1-search"
+              placeholder="e.g. South Carolina"
+              mode="select"
+              hiddenName="team1"
+              required
+              defaultSelectedId={team1?.team_id}
+              defaultSelectedLabel={team1?.name}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="team2-search">Team 2</label>
+            <Typeahead
+              kind="teams"
+              inputId="team2-search"
+              placeholder="e.g. UCLA"
+              mode="select"
+              hiddenName="team2"
+              required
+            />
+          </div>
+          <button className="btn btn-primary" type="submit" style={{ marginTop: 4 }}>
             Compare
           </button>
         </form>
