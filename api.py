@@ -53,9 +53,9 @@ from pydantic import BaseModel
  
 from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
-    back_half_leaderboard, conference_standings, find_fits, game_detail, leaderboard, opponent_split_leaderboard,
-    player_game_logs, player_splits, player_trajectory, project_batch, project_player, standout_projections,
-    team_needs, team_roles, team_schedule,
+    back_half_leaderboard, conference_standings, find_fits, game_detail, leaderboard, leap_candidates,
+    opponent_split_leaderboard, player_game_logs, player_splits, player_trajectory, project_batch,
+    project_player, standout_projections, team_needs, team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
  
@@ -184,7 +184,7 @@ PLAYERS_SORT_COLUMNS = {
     "name": "p.name", "team_name": "t.name", "tier": "t.tier", "position": "p.position",
     "class_year": "p.class_year", "games": "p.games", "ppg": "p.ppg", "rpg": "p.rpg",
     "apg": "p.apg", "bpg": "p.bpg", "spg": "p.spg", "topg": "p.topg",
-    "hoop_score": "p.hoop_score_raw", "height": "p.height",
+    "hoop_score": "p.hoop_score_raw", "height": "p.height", "height_in": "p.height_in",
 }
 
 
@@ -192,7 +192,13 @@ PLAYERS_SORT_COLUMNS = {
 def list_players(
     search: str | None = Query(None, description="Case-insensitive substring match on player name"),
     team_id: int | None = None,
-    position: str | None = None,
+    position: str | None = Query(None, description="Exact match, e.g. G/F/C."),
+    class_year: str | None = Query(None, description="Exact match, e.g. FR/SO/JR/SR/GR."),
+    min_height_in: int | None = Query(None, description="Minimum height in total inches (inclusive). "
+                                                          "Players with no parseable height on record are excluded "
+                                                          "whenever either height bound is given."),
+    max_height_in: int | None = Query(None, description="Maximum height in total inches (inclusive). Same "
+                                                          "exclusion note as min_height_in."),
     sort: str | None = Query(None, description=f"Column to sort by, one of {list(PLAYERS_SORT_COLUMNS)}. "
                                                  f"Omit for the default (Summit Score, best first)."),
     order: str = Query("desc", description="asc or desc. Ignored if `sort` is omitted."),
@@ -210,6 +216,15 @@ def list_players(
     if position:
         clauses.append("p.position = ?")
         params.append(position)
+    if class_year:
+        clauses.append("p.class_year = ?")
+        params.append(class_year)
+    if min_height_in is not None:
+        clauses.append("p.height_in >= ?")
+        params.append(min_height_in)
+    if max_height_in is not None:
+        clauses.append("p.height_in <= ?")
+        params.append(max_height_in)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
     if sort is not None:
@@ -239,7 +254,7 @@ def list_players(
         # crowding out real, well-evidenced seasons in the default browse
         # order. NULLS LAST on hoop_score_raw DESC handles the zero-game
         # placeholder rows, which have no computed score at all.
-        f"""SELECT p.player_id, p.name, p.height, p.team_id, t.name AS team_name, t.tier, p.position,
+        f"""SELECT p.player_id, p.name, p.height, p.height_in, p.team_id, t.name AS team_name, t.tier, p.position,
                    p.class_year, p.games, p.total_minutes, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg,
                    p.hoop_score, p.thin_sample
             FROM players p LEFT JOIN teams t ON p.team_id = t.team_id
@@ -400,6 +415,36 @@ def get_team_fits(
         conn.close()
  
  
+@app.get("/teams/{team_id}/leap-candidates", dependencies=[Depends(require_api_key)])
+def get_team_leap_candidates(
+    team_id: int,
+    role: str | None = Query(None, description=f"One of {ROLE_NAMES} -- resolved from THIS team's (team_id's) "
+                                                 f"own current roster via /teams/{{id}}/roles, applied to every "
+                                                 f"candidate's projection. Ignored if `minutes` is given. Omit "
+                                                 f"both for each candidate's own auto-projected minutes."),
+    minutes: float | None = Query(None, description="Exact 0-40 minutes applied to every candidate's "
+                                                      "projection. Wins over `role` if both are given."),
+    limit: int = Query(8, le=30),
+    min_games: int = Query(5, description="Exclude candidates with a thinner sample than this many games"),
+):
+    """'Who would make the biggest jump in Summit Score if she transferred
+    here and played this role' -- every player NOT on this roster, ranked
+    by the DELTA between her current Summit Score and her projected Summit
+    Score at team_id (not by raw projected value the way /teams/{team_id}/
+    fits ranks). Powers the team profile page's role-picker section
+    (Starter/Sixth Man/Role Player/Depth Piece) -- pick a role and see
+    which outside players would gain the most by transferring in and
+    playing it. See leap_candidates()'s docstring for why results are
+    sampled from a top pool rather than a frozen top-N list."""
+    conn = get_conn()
+    try:
+        return leap_candidates(conn, team_id, role=role, minutes=minutes, limit=limit, min_games=min_games)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
 class BatchPlayerRequest(BaseModel):
     player_id: int
     minutes: float | None = None

@@ -45,6 +45,12 @@ export default async function TeamsPage({
     <div>
       <h1>Teams</h1>
       <p className="subtitle">D1 teams, rated on one shared strength scale.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Rating is each team&apos;s Current Rating from the strength model -- higher is stronger, roughly
+        centered on 0 across all of Division I. Filter by name, Level (High-Major/Mid-Major/Low-Major), or a
+        single conference, then click any column header to sort. Click a team name to open its full profile
+        -- roster, schedule, and a Stats Breakdown tab comparing it to its league and conference.
+      </p>
 
       <form className="filter-form" action="/teams">
         <div className="field">
@@ -52,7 +58,7 @@ export default async function TeamsPage({
           <input id="search" name="search" defaultValue={sp.search ?? ""} placeholder="e.g. Baylor" />
         </div>
         <div className="field">
-          <label htmlFor="tier">Tier</label>
+          <label htmlFor="tier">Level</label>
           <select id="tier" name="tier" defaultValue={sp.tier ?? ""}>
             <option value="">Any</option>
             {TIERS.map((t) => (
@@ -95,7 +101,7 @@ export default async function TeamsPage({
             <tr>
               <SortableTh column="name" label="Team" defaultDir="asc" />
               <SortableTh column="conference" label="Conference" defaultDir="asc" />
-              <SortableTh column="tier" label="Tier" defaultDir="asc" />
+              <SortableTh column="tier" label="Level" defaultDir="asc" />
               <SortableTh column="current_rating" label="Rating" />
               <SortableTh column="sos" label="SOS" />
             </tr>

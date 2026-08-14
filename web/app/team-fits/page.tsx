@@ -31,7 +31,7 @@ async function TeamPickerView({ sp }: { sp: SP }) {
       <h1>Team Fits</h1>
       <p className="subtitle">Pick your team, then tell us what you&apos;re looking for.</p>
 
-      <div className="card" style={{ maxWidth: 420 }}>
+      <div className="card card-prose" style={{ maxWidth: 420 }}>
         <div className="field">
           <label htmlFor="team-fits-search">Find your team</label>
           <Typeahead
@@ -79,6 +79,12 @@ async function FitsView({ sp }: { sp: SP }) {
     <div>
       <h1>{team.name}: Team Fits</h1>
       <p className="subtitle">Top 20 players who&apos;d project best into what you&apos;re looking for.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Pick a stat category (or leave it blank to auto-target this team&apos;s biggest statistical weakness),
+        then narrow by level, class, position, or a role/minutes assumption. Every candidate is projected with
+        the same math as Transfer Projection -- this just runs it over the whole player pool at once and ranks
+        the results.
+      </p>
 
       <div className="card">
         <form action="/team-fits">

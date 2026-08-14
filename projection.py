@@ -118,6 +118,7 @@ always wins if given.
    just the current one), with a simple labeled up/down/flat trend.
 """
  
+import random
 import sqlite3
 import statistics
 from collections import defaultdict
@@ -904,6 +905,98 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
     )
  
  
+# ---------- "biggest leap in role" (team profile page) ----------
+
+def leap_candidates(conn, team_id, role=None, minutes=None, limit=8, min_games=5):
+    """'Who would make the biggest jump in Summit Score if she transferred
+    here and played this role' -- every player NOT on team_id, projected at
+    team_id (same role/minutes semantics as project_player/find_fits),
+    ranked by the DELTA between her CURRENT Summit Score and her PROJECTED
+    Summit Score at this role/team -- not by raw projected value the way
+    find_fits ranks stat fits. A high delta means this specific role/team
+    combination would be an unusually big statistical step up for her,
+    which surfaces different names than "who's already elite" (find_fits'
+    default framing).
+
+    To avoid this section freezing on the exact same handful of names every
+    time a coach reloads it, the final `limit` candidates are sampled at
+    random from the top pool of leap candidates (3x limit, or every
+    candidate if fewer) rather than always the strict top N in the same
+    order -- still all genuinely high-delta players, just not a frozen
+    list. See the response's `note`.
+    """
+    target_team = get_team(conn, team_id)
+    if target_team is None:
+        raise ProjectionError(f"No team with id {team_id} in the current-season cache.")
+    if role is not None and role not in ROLE_NAMES:
+        raise ProjectionError(f"role must be one of {ROLE_NAMES}, got {role!r}.")
+
+    meta = _load_meta(conn)
+    teams_by_id = _all_teams_by_id(conn)
+
+    role_info = None
+    if role is not None:
+        roles = team_roles(conn, team_id)
+        role_info = roles[role]
+
+    cols = [d[0] for d in conn.execute("SELECT * FROM players LIMIT 0").description]
+    # Same eligibility floor as find_fits (real, well-evidenced seasons only)
+    # plus hoop_score_raw IS NOT NULL -- a bare zero-game placeholder row has
+    # no current score to compute a meaningful delta from.
+    candidates = [
+        dict(zip(cols, row)) for row in conn.execute(
+            "SELECT p.* FROM players p JOIN teams t ON p.team_id = t.team_id "
+            "WHERE p.team_id != ? AND p.games >= ? AND (p.thin_sample IS NULL OR p.thin_sample = 0) "
+            "AND p.hoop_score_raw IS NOT NULL",
+            (team_id, min_games),
+        ).fetchall()
+    ]
+
+    ranked = []
+    for player in candidates:
+        current_team = teams_by_id.get(player["team_id"])
+        if current_team is None:
+            continue
+        try:
+            result = _core_projection(player, current_team, target_team, meta,
+                                       minutes_override=minutes, role=role, role_info=role_info)
+        except ProjectionError:
+            continue
+        delta = result["projected"]["hoop_score"] - player["hoop_score"]
+        ranked.append(dict(
+            player_id=player["player_id"], name=player["name"], position=player["position"],
+            class_year=player["class_year"], current_team=current_team["name"],
+            current_tier=current_team["tier"], level=current_team["tier"],
+            current_hoop_score=player["hoop_score"],
+            projected_hoop_score=result["projected"]["hoop_score"],
+            hoop_score_delta=round(delta, 1),
+            projected_minutes=result["projected"]["minutes"],
+            confidence=result["confidence"],
+        ))
+
+    ranked.sort(key=lambda r: r["hoop_score_delta"], reverse=True)
+
+    pool_size = min(len(ranked), max(limit * 3, limit))
+    pool = ranked[:pool_size]
+    chosen = random.sample(pool, min(limit, len(pool))) if pool else []
+    chosen.sort(key=lambda r: r["hoop_score_delta"], reverse=True)
+
+    return dict(
+        team_id=team_id, team_name=target_team["name"],
+        role_applied=dict(role=role, minutes=role_info["minutes"]) if role_info else None,
+        minutes_applied=minutes,
+        candidates=chosen,
+        candidates_considered=len(candidates),
+        note=(
+            "Ranked by the jump between each candidate's CURRENT Summit Score and her PROJECTED Summit "
+            "Score if she transferred to this team in this role -- not by raw projected value, so this "
+            "surfaces the biggest statistical step-ups, not just whoever's already elite. Sampled from "
+            "the top pool of leap candidates each time this loads, so refreshing this section can surface "
+            "a different (but still genuinely high-leap) mix of names rather than a frozen list."
+        ),
+    )
+
+
 # ---------- multi-target roster building ----------
  
 def project_batch(conn, target_team_id, requests):
@@ -1188,6 +1281,7 @@ def standout_projections(conn, level, target_level="High-Major", min_games=8, li
             current_hoop_score=player["hoop_score"],
             projected_hoop_score=result["projected"]["hoop_score"],
             projected_ppg=result["projected"]["ppg"],
+            projected_minutes=result["projected"]["minutes"],
             confidence=result["confidence"], extreme_mismatch=result["extreme_mismatch"],
         ))
 
@@ -1201,6 +1295,12 @@ def standout_projections(conn, level, target_level="High-Major", min_games=8, li
             f"{round(synthetic_rating, 2)}, the live mean of every real {target_level} team this season), "
             f"not any single real school -- a directional 'who could stand out at that level' read, not a "
             f"projection at a specific program."
+        ),
+        projected_minutes_note=(
+            "projected_minutes is each player's own auto-projected minutes at the synthetic target's "
+            "strength (her current minutes, scaled for the level jump) -- no role or target-roster minutes "
+            "were applied, since the target here is a synthetic average team, not a real roster with its "
+            "own rotation to slot into."
         ),
         players=ranked[:limit],
         candidates_considered=len(candidates),
@@ -1465,7 +1565,8 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
     where = " AND ".join(clauses)
 
     rows = conn.execute(
-        f"""SELECT g.player_id, p.name, t.team_id, t.name AS team_name, t.tier, g.date, g.points
+        f"""SELECT g.player_id, p.name, t.team_id, t.name AS team_name, t.tier, g.date,
+                   g.points, g.rebounds, g.assists, g.fgm, g.fga, g.ftm, g.fta
             FROM player_game_logs g
             JOIN players p ON g.player_id = p.player_id
             JOIN teams t ON g.team_id = t.team_id
@@ -1480,6 +1581,24 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
         by_player[r["player_id"]].append(r)
         meta_by_player[r["player_id"]] = (r["name"], r["team_id"], r["team_name"], r["tier"])
 
+    # True-shooting floor for a HALF-season sample is deliberately lower than
+    # the 15-attempt season floor used elsewhere (build_cache.py) -- a half
+    # is already a smaller slice by definition, and requiring 15 attempts
+    # per half would blank out efficiency for most otherwise-qualifying
+    # players. 8 still screens out the most extreme small-sample noise.
+    HALF_TS_ATTEMPT_FLOOR = 8
+
+    def _half_stats(games):
+        n = len(games)
+        pts = sum(g["points"] for g in games)
+        reb = sum(g["rebounds"] for g in games)
+        ast = sum(g["assists"] for g in games)
+        fga = sum(g["fga"] for g in games)
+        fta = sum(g["fta"] for g in games)
+        tsa = fga + 0.44 * fta
+        ts_pct = (pts / (2 * tsa)) if tsa >= HALF_TS_ATTEMPT_FLOOR else None
+        return dict(ppg=pts / n, rpg=reb / n, apg=ast / n, ts_pct=ts_pct)
+
     results = []
     for pid, glist in by_player.items():
         n = len(glist)
@@ -1487,14 +1606,21 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
         first, second = glist[:half], glist[half:]
         if len(first) < min_games_per_half or len(second) < min_games_per_half:
             continue
-        first_ppg = sum(g["points"] for g in first) / len(first)
-        second_ppg = sum(g["points"] for g in second) / len(second)
+        fs, ss = _half_stats(first), _half_stats(second)
         name, team_id, team_name, tier = meta_by_player[pid]
+        both_ts = fs["ts_pct"] is not None and ss["ts_pct"] is not None
         results.append(dict(
             player_id=pid, name=name, team_id=team_id, team_name=team_name, tier=tier,
             first_half_games=len(first), second_half_games=len(second),
-            first_half_ppg=round(first_ppg, 1), second_half_ppg=round(second_ppg, 1),
-            ppg_change=round(second_ppg - first_ppg, 1),
+            first_half_ppg=round(fs["ppg"], 1), second_half_ppg=round(ss["ppg"], 1),
+            ppg_change=round(ss["ppg"] - fs["ppg"], 1),
+            first_half_rpg=round(fs["rpg"], 1), second_half_rpg=round(ss["rpg"], 1),
+            rpg_change=round(ss["rpg"] - fs["rpg"], 1),
+            first_half_apg=round(fs["apg"], 1), second_half_apg=round(ss["apg"], 1),
+            apg_change=round(ss["apg"] - fs["apg"], 1),
+            first_half_ts_pct=round(fs["ts_pct"] * 100, 1) if fs["ts_pct"] is not None else None,
+            second_half_ts_pct=round(ss["ts_pct"] * 100, 1) if ss["ts_pct"] is not None else None,
+            ts_pct_change=round((ss["ts_pct"] - fs["ts_pct"]) * 100, 1) if both_ts else None,
         ))
 
     results.sort(key=lambda r: r["ppg_change"], reverse=True)
@@ -1503,7 +1629,9 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, limit=20, seas
         note="Each player's own games are split at the midpoint of HER games played this season (not "
              "the calendar midpoint) -- ranked by points-per-game change from her first half to her "
              "second half. A missed-games injury early in the year doesn't skew this the way splitting "
-             "by calendar date would.",
+             "by calendar date would. Rebounds/assists/TS% are shown the same way for context, but the "
+             "ranking itself is scoring-only. TS% needs at least "
+             f"{HALF_TS_ATTEMPT_FLOOR} true-shot attempts in a half to compute -- null otherwise.",
         players=results[:limit],
     )
 

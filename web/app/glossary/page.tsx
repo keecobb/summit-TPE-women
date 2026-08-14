@@ -11,8 +11,8 @@ const TERMS: { term: string; body: string }[] = [
   {
     term: "High-Major / Mid-Major / Low-Major (HM / MM / LM)",
     body:
-      "The three competitive tiers every team and player is grouped into, sourced from the workbook's own " +
-      "School Level column. High-Major is the top tier (the power conferences), Low-Major the deepest. Old " +
+      "The three competitive levels every team and player is grouped into, sourced from the workbook's own " +
+      "School Level column. High-Major is the top level (the power conferences), Low-Major the deepest. Old " +
       "links or data using \"P5\" mean the same thing as High-Major.",
   },
   {
@@ -109,7 +109,7 @@ const TERMS: { term: string; body: string }[] = [
     term: "Top 50 Opponents",
     body:
       "The 50 highest-Current-Rating teams -- either nationally (on a player's own profile splits) or within one " +
-      "tier specifically (on the Data page's tier-scoped leaderboards, e.g. the 50 best Low-Major teams, not " +
+      "level specifically (on the Data page's level-scoped leaderboards, e.g. the 50 best Low-Major teams, not " +
       "every Low-Major team including its weakest).",
   },
 ];

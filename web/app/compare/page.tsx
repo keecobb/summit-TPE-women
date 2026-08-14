@@ -133,6 +133,11 @@ async function PickerView({ sp }: { sp: SP }) {
     <div>
       <h1>Compare Players</h1>
       <p className="subtitle">Pick two players to see their current-season stats side by side.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Search by name for each player, pick from the dropdown, then submit -- every row is real production
+        this season, with the better value in each row bolded (lower is better for TOPG only, read that row
+        the other way around).
+      </p>
 
       <div className="card" style={{ maxWidth: 480 }}>
         <form action="/compare">

@@ -294,6 +294,19 @@ h2 {
   margin-bottom: 0;
 }
 
+/* For cards that are pure explanatory text (a heading + a paragraph or
+   two, no table/form/grid inside) -- on a wide desktop viewport a
+   full-width .card left-aligns a couple sentences of prose and leaves a
+   large empty gap on the right. Capping the width and centering the card
+   itself (while the text inside stays left-aligned, which reads better
+   than centered prose) kills that dead space without touching any card
+   that actually needs the full width for a table or a multi-field form. */
+.card-prose {
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* Grid items default to a min-width based on their CONTENT's intrinsic
    size, not the track width -- a wide, nowrap table inside a grid cell
    (e.g. the Standouts/opponent-split tables below) was forcing the whole
@@ -633,7 +646,11 @@ tbody tr td:first-child a:hover {
 
 .bar-row {
   display: grid;
-  grid-template-columns: 92px 1fr 46px;
+  /* Name column has a capped-but-generous width, and the name itself is
+     allowed to wrap onto a second line below (see .bar-name) instead of
+     being ellipsis-truncated -- a fixed 92px + ellipsis was cutting real
+     players' names off mid-word on the Data page's charts. */
+  grid-template-columns: 108px 1fr 46px;
   align-items: center;
   gap: 8px;
   margin-bottom: 7px;
@@ -641,9 +658,10 @@ tbody tr td:first-child a:hover {
 }
 
 .bar-row .bar-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: unset;
+  white-space: normal;
+  line-height: 1.2;
   color: var(--text);
   text-decoration: none;
 }
@@ -752,7 +770,7 @@ tbody tr td:first-child a:hover {
   }
 
   .bar-row {
-    grid-template-columns: 70px 1fr 40px;
+    grid-template-columns: 86px 1fr 40px;
   }
 }
 

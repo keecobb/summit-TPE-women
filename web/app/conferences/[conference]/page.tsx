@@ -21,6 +21,11 @@ export default async function ConferenceStandingsPage({ params }: { params: Prom
     <div>
       <h1>{name} Standings</h1>
       <p className="subtitle">{standings.season} season &middot; sorted by conference win percentage.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Rating is each team&apos;s Current Rating from the strength model, shown for reference -- these
+        standings themselves are plain real win/loss records, not rating-based. Click a team to open its full
+        profile.
+      </p>
 
       <div className="card">
         <div className="table-scroll">

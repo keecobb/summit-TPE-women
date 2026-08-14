@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { PlayerDetail, PlayerTrajectory, PlayerSplits, OpponentTierSplit } from "@/lib/types";
+import type { PlayerDetail, PlayerTrajectory, PlayerSplits, OpponentTierSplit, PlayerGameLogs, PlayerGameLogRow } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 
@@ -28,6 +28,22 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
 
+  // Best 3 games this season by points + rebounds + assists -- a simple,
+  // well-understood combined-production read, computed client-side from the
+  // same real per-game rows /players/{id}/game-logs already exposes (no new
+  // backend endpoint needed). Same "zero games -> nothing to show" case as
+  // splits above, not an error.
+  let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
+  try {
+    const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 60 });
+    bestGames = logs.games
+      .map((g) => ({ ...g, combined: g.points + g.rebounds + g.assists }))
+      .sort((a, b) => b.combined - a.combined)
+      .slice(0, 3);
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
   const transfers = trajectory ? countTransfers(trajectory) : 0;
 
   return (
@@ -40,6 +56,11 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         {player.thin_sample ? (
           <span className="pill pill-warn" style={{ marginLeft: 8 }}>limited sample</span>
         ) : null}
+      </p>
+      <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
+        Real season production first, then how it splits against tougher/weaker opponents and how it&apos;s
+        trended over time. Want to see what she&apos;d project to at a different school? Use the button below to
+        send her straight into Transfer Projection.
       </p>
 
       {player.thin_sample ? (
@@ -100,6 +121,49 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           </p>
         )}
       </div>
+
+      {bestGames.length > 0 && (
+        <div className="card">
+          <h2>Best 3 Games</h2>
+          <p className="section-note">
+            Ranked by points + rebounds + assists combined, {player.season} season -- real box scores, no
+            projection involved.
+          </p>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Opponent</th>
+                  <th>PTS</th>
+                  <th>REB</th>
+                  <th>AST</th>
+                  <th>Combined</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bestGames.map((g) => (
+                  <tr key={`${g.date}-${g.opponent_name}`}>
+                    <td>{formatShortDate(g.date)}</td>
+                    <td>
+                      {g.opponent_name ?? "--"}
+                      {g.opponent_tier ? (
+                        <span className="pill" style={{ marginLeft: 6 }} title={g.opponent_tier}>
+                          {tierAbbrev(g.opponent_tier)}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td>{g.points}</td>
+                    <td>{g.rebounds}</td>
+                    <td>{g.assists}</td>
+                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>{g.combined}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {splits && splits.total_games > 0 && (
         <div className="card">
@@ -238,6 +302,12 @@ function SplitRow({ label, row }: { label: string; row: OpponentTierSplit | null
       <td>{row.avg_minutes.toFixed(1)}</td>
     </tr>
   );
+}
+
+function formatShortDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 function countTransfers(trajectory: PlayerTrajectory): number {

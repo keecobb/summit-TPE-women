@@ -28,8 +28,15 @@ async function StartView({ sp }: { sp: SP }) {
 
   return (
     <div>
-      <h1>TPE Engine</h1>
+      <h1>Transfer Projection</h1>
       <p className="subtitle">Find the player you want to project -- search by name, or browse a team's roster.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 24, maxWidth: "68ch" }}>
+        This is a 3-step flow: find a player below, pick a target school (plus an optional role or exact
+        minutes) on the next screen, then see her projected stat line side by side with what she's doing
+        today. The projection is grounded in how real transfers at a comparable strength gap have actually
+        played out, not a hand-picked formula -- every result includes a confidence read and a real range,
+        not just one number.
+      </p>
 
       <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 32 }}>
         <div className="card">
@@ -234,7 +241,7 @@ async function ResultView({ sp }: { sp: SP }) {
     if (e instanceof ApiError) {
       return (
         <div>
-          <h1>TPE Engine</h1>
+          <h1>Transfer Projection</h1>
           <div className="error-box">{e.message}</div>
           <Link className="btn" href={`/tpe?player_id=${sp.player_id}`}>
             &larr; Try a different school

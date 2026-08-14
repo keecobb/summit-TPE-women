@@ -39,6 +39,7 @@ export interface Player {
   player_id: number;
   name: string;
   height?: string | null;
+  height_in?: number | null;
   team_id: number;
   team_name?: string;
   tier?: string;
@@ -250,6 +251,7 @@ export interface StandoutPlayer {
   current_hoop_score: number;
   projected_hoop_score: number;
   projected_ppg: number;
+  projected_minutes: number;
   confidence: string;
   extreme_mismatch: boolean;
 }
@@ -259,6 +261,7 @@ export interface StandoutsLeaderboard {
   target_level: string;
   synthetic_target_rating: number;
   synthetic_target_note: string;
+  projected_minutes_note: string;
   players: StandoutPlayer[];
   candidates_considered: number;
 }
@@ -449,6 +452,15 @@ export interface BackHalfPlayer {
   first_half_ppg: number;
   second_half_ppg: number;
   ppg_change: number;
+  first_half_rpg: number;
+  second_half_rpg: number;
+  rpg_change: number;
+  first_half_apg: number;
+  second_half_apg: number;
+  apg_change: number;
+  first_half_ts_pct: number | null;
+  second_half_ts_pct: number | null;
+  ts_pct_change: number | null;
 }
 
 export interface BackHalfLeaderboard {
@@ -535,4 +547,31 @@ export function roleLabel(role: string): string {
     .split("_")
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
+}
+
+// -------- Biggest Leap (team profile page, phase 7) --------
+
+export interface LeapCandidate {
+  player_id: number;
+  name: string;
+  position: string;
+  class_year: string;
+  current_team: string;
+  current_tier: string;
+  level: string;
+  current_hoop_score: number;
+  projected_hoop_score: number;
+  hoop_score_delta: number;
+  projected_minutes: number;
+  confidence: string;
+}
+
+export interface LeapCandidates {
+  team_id: number;
+  team_name: string;
+  role_applied: { role: string; minutes: number } | null;
+  minutes_applied: number | null;
+  candidates: LeapCandidate[];
+  candidates_considered: number;
+  note: string;
 }

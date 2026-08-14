@@ -15,8 +15,8 @@ export default async function HomePage() {
   // the rest of the site shows. Small, cheap calls; safe to run on every
   // home page load with the normal 60s revalidate window.
   const [topTeams, topScorers] = await Promise.all([
-    apiFetch<Team[]>("/teams", { params: { limit: 3 } }),
-    apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 3 } }),
+    apiFetch<Team[]>("/teams", { params: { limit: 5 } }),
+    apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 5 } }),
   ]);
 
   return (
@@ -28,11 +28,13 @@ export default async function HomePage() {
           A team strength rating that puts every D1 team on one shared scale, a per-player Summit Score built from
           role- and opponent-adjusted production, and a transfer-portal projector that turns "what would she look
           like at a different school" into an actual number -- grounded in how real transfers have historically
-          played out, not a guess.
+          played out, not a guess. New here? Jump into Transfer Projection to run a single player through the
+          calculator, or Team Fits to work the other direction -- start from a team's needs and see who fits
+          best. Every page has a short explanation of what it does and how to read the numbers right up top.
         </p>
         <div className="hero-actions">
           <Link href="/tpe" className="btn btn-primary">
-            Open the TPE Engine
+            Open Transfer Projection
           </Link>
           <Link href="/team-fits" className="btn">
             Find team fits
@@ -44,20 +46,31 @@ export default async function HomePage() {
       </section>
 
       <div className="card">
-        <h2>What is this, in plain terms?</h2>
-        <p className="subtitle" style={{ marginBottom: 0 }}>
-          Summit TPE takes real women&apos;s college basketball stats and turns them into answers to three simple
-          questions: how good is a team, really, compared to every other team in the country? How good is a
-          player, accounting for her role and how tough her opponents were? And if a player switched schools, what
-          would her stats actually look like at the new place? No spreadsheets, no digging through box scores by
-          hand -- just search for a team or player and get a clear number.
+        <h2>Top 5 teams by Current Rating</h2>
+        <p className="section-note">
+          A quick look at the strength model in action -- see the full board on the Teams page. (For the
+          plain-language explanation of how this all works, see the About page.)
         </p>
+        {topTeams.map((t) => (
+          <div className="bar-row" key={t.team_id}>
+            <Link href={`/teams/${t.team_id}`} className="bar-name" title={`${t.name} (${t.tier})`}>
+              {t.name}
+            </Link>
+            <div className="bar-track">
+              <div
+                className="bar-fill"
+                style={{ width: `${(t.current_rating / Math.max(...topTeams.map((x) => x.current_rating), 0.0001)) * 100}%` }}
+              />
+            </div>
+            <div className="bar-value">{t.current_rating.toFixed(1)}</div>
+          </div>
+        ))}
       </div>
 
       <div className="card-grid">
         <Link href="/tpe">
           <div className="card">
-            <h2>TPE Engine</h2>
+            <h2>Transfer Projection</h2>
             <p className="subtitle" style={{ marginBottom: 0 }}>
               Pick a player, pick a new school, pick a role or set exact minutes -- see her projected production
               side by side with what she's doing today.
@@ -88,7 +101,7 @@ export default async function HomePage() {
         <h2>What the ratings actually look like right now</h2>
         <p className="section-note">Live from this season's data -- not a mockup.</p>
         <div className="stat-grid">
-          {topTeams.map((t) => (
+          {topTeams.slice(0, 3).map((t) => (
             <div className="stat-tile" key={t.team_id}>
               <div className="value">{t.current_rating.toFixed(1)}</div>
               <div className="label">
@@ -96,7 +109,7 @@ export default async function HomePage() {
               </div>
             </div>
           ))}
-          {topScorers.players.map((p: LeaderboardPlayer) => (
+          {topScorers.players.slice(0, 3).map((p: LeaderboardPlayer) => (
             <div className="stat-tile" key={p.player_id}>
               <div className="value" style={{ color: "var(--accent)" }}>
                 {p.ppg.toFixed(1)} PPG
@@ -132,7 +145,7 @@ export default async function HomePage() {
 const SITE_SECTIONS: { href: string; label: string; detail: string }[] = [
   {
     href: "/tpe",
-    label: "TPE Engine",
+    label: "Transfer Projection",
     detail:
       "The core transfer projector -- pick any player and any target school, set her minutes or a role " +
       "(starter, sixth man, etc.), and see a full projected stat line at the new school, with a confidence read " +
@@ -169,12 +182,12 @@ const SITE_SECTIONS: { href: string; label: string; detail: string }[] = [
     href: "/teams",
     label: "Teams",
     detail:
-      "Search or browse every D1 team, filterable by tier and conference, with a full team profile -- roster, " +
+      "Search or browse every D1 team, filterable by level and conference, with a full team profile -- roster, " +
       "schedule, and a real Stats Breakdown tab showing how the team compares to its league and its conference.",
   },
   {
     href: "/glossary",
     label: "Glossary",
-    detail: "Plain-language definitions for every stat and term used across the site -- Summit Score, tiers, SOS, per-40, and more.",
+    detail: "Plain-language definitions for every stat and term used across the site -- Summit Score, levels, SOS, per-40, and more.",
   },
 ];

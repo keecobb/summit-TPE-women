@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamRoles, TeamNeeds, TeamFits, Player, TeamSchedule } from "@/lib/types";
-import { roleLabel } from "@/lib/types";
+import type { Team, TeamRoles, TeamNeeds, Player, TeamSchedule, LeapCandidates } from "@/lib/types";
+import { ROLE_NAMES, roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
 
 const TABS = [
@@ -19,7 +19,7 @@ export default async function TeamDetailPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{ tab?: string; leap_role?: string }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;
@@ -40,6 +40,11 @@ export default async function TeamDetailPage({
         <Link href={`/conferences/${encodeURIComponent(team.conference)}`}>{team.conference}</Link> &middot;{" "}
         <span className="pill">{team.tier}</span>
       </p>
+      <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
+        Overview covers this team&apos;s rating, its real minutes-based rotation roles, its biggest statistical
+        needs vs. its peers, and who&apos;d make the biggest Summit Score leap by transferring in. Roster,
+        Schedule, and Stats Breakdown are full detail tabs below.
+      </p>
 
       <div className="tabs">
         {TABS.map((t) => (
@@ -49,7 +54,7 @@ export default async function TeamDetailPage({
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab id={id} team={team} />}
+      {tab === "overview" && <OverviewTab id={id} team={team} leapRole={sp.leap_role} />}
       {tab === "roster" && <RosterTab id={id} />}
       {tab === "schedule" && <ScheduleTab id={id} />}
       {tab === "stats" && <StatsTab id={id} team={team} />}
@@ -57,11 +62,20 @@ export default async function TeamDetailPage({
   );
 }
 
-async function OverviewTab({ id, team }: { id: string; team: Team }) {
-  const [roles, needs, fits] = await Promise.all([
+async function OverviewTab({ id, team, leapRole }: { id: string; team: Team; leapRole?: string }) {
+  const resolvedLeapRole = ROLE_NAMES.includes(leapRole as (typeof ROLE_NAMES)[number]) ? (leapRole as string) : "starter";
+
+  const [roles, needs, leap] = await Promise.all([
     apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 60 }),
     apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 3 }, revalidate: 60 }),
-    apiFetch<TeamFits>(`/teams/${id}/fits`, { params: { limit: 5 }, revalidate: 60 }),
+    // Best Transfer Fits (ranked by raw projected stat value) is hidden for
+    // now -- it tends to surface the same handful of already-elite names
+    // regardless of team, which isn't a very useful "fit" read. This
+    // leap-by-role section replaces it: same underlying projection math,
+    // but ranked by the JUMP in Summit Score a transfer would represent,
+    // and it's not real-time cached (revalidate omitted) since it
+    // intentionally samples a different mix of names on each load.
+    apiFetch<LeapCandidates>(`/teams/${id}/leap-candidates`, { params: { role: resolvedLeapRole, limit: 8 }, revalidate: 0 }),
   ]);
 
   return (
@@ -124,39 +138,78 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
       </div>
 
       <div className="card">
-        <h2>Best Transfer Fits</h2>
+        <h2>
+          Biggest Summit Score Leap by Role
+          <span className="hint" title="Ranked by the jump between each candidate's CURRENT Summit Score and her PROJECTED Summit Score if she transferred here in the selected role -- not by raw projected value, so this surfaces the biggest statistical step-ups rather than just whoever's already elite. That jump is driven by the team-strength gap and doesn't change by role; the role you pick controls the projected minutes/stat line shown for each candidate, and which names get sampled into the list.">
+            ?
+          </span>
+        </h2>
         <p className="section-note">
-          Top candidates by projected {fits.stat_label} if they transferred in -- a plain ranking, not filtered by
-          recruiting realism.
+          Pick a role to see who outside this roster would gain the most by transferring in and playing it.
+          Sampled from a wider pool of high-leap candidates, so reloading this section (or switching roles) can
+          surface a different mix of names rather than a frozen list.
         </p>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Player</th>
-                <th>Current Team</th>
-                <th>Level</th>
-                <th>Class</th>
-                <th>Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fits.candidates.map((c) => (
-                <tr key={c.player_id}>
-                  <td>
-                    <Link href={`/players/${c.player_id}`}>{c.name}</Link>
-                  </td>
-                  <td>{c.current_team}</td>
-                  <td>
-                    <span className="pill">{c.level}</span>
-                  </td>
-                  <td>{c.class_year}</td>
-                  <td>{c.confidence}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="hero-actions" style={{ marginTop: 4, marginBottom: 16 }}>
+          {ROLE_NAMES.map((r) => (
+            <Link
+              key={r}
+              href={`/teams/${id}?tab=overview&leap_role=${r}`}
+              className={`btn${resolvedLeapRole === r ? " btn-primary" : ""}`}
+            >
+              {roleLabel(r)}
+            </Link>
+          ))}
         </div>
+        {leap.candidates.length > 0 && leap.candidates[0].hoop_score_delta <= 0 && (
+          <p className="section-note" style={{ marginBottom: 12 }}>
+            Every candidate here shows a flat or negative leap -- that&apos;s expected for a team this strong:
+            the model&apos;s leap is driven by the team-strength gap, and there&apos;s little room to climb by
+            joining a team that&apos;s already at or near the top. Shown ranked smallest-drop-off-first instead.
+          </p>
+        )}
+        {leap.candidates.length === 0 ? (
+          <p className="empty-state">No qualifying candidates.</p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>Current Team</th>
+                  <th>Level</th>
+                  <th>Current</th>
+                  <th>Projected</th>
+                  <th>Leap</th>
+                  <th>Proj. Min</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leap.candidates.map((c) => (
+                  <tr key={c.player_id}>
+                    <td>
+                      <Link href={`/players/${c.player_id}`}>{c.name}</Link>
+                    </td>
+                    <td>{c.current_team}</td>
+                    <td>
+                      <span className="pill">{c.level}</span>
+                    </td>
+                    <td>{c.current_hoop_score.toFixed(1)}</td>
+                    <td>{c.projected_hoop_score.toFixed(1)}</td>
+                    <td style={{ color: "var(--accent)", fontWeight: 700 }}>
+                      {c.hoop_score_delta > 0 ? "+" : ""}
+                      {c.hoop_score_delta.toFixed(1)}
+                    </td>
+                    <td>{c.projected_minutes.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="section-note" style={{ marginTop: 10 }}>
+          {leap.role_applied ? `Assuming ${roleLabel(leap.role_applied.role)} minutes (${leap.role_applied.minutes.toFixed(1)}/game) at ${team.name}.` : ""}{" "}
+          {leap.candidates_considered} candidates considered.
+        </p>
       </div>
     </div>
   );

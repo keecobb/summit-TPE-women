@@ -5,7 +5,7 @@ import Link from "next/link";
 import ThemeToggle from "./ThemeToggle";
 
 const LINKS: { href: string; label: string }[] = [
-  { href: "/tpe", label: "TPE Engine" },
+  { href: "/tpe", label: "Transfer Projection" },
   { href: "/team-fits", label: "Team Fits" },
   { href: "/compare", label: "Compare" },
   { href: "/data", label: "Data" },

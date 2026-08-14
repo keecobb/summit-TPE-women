@@ -28,6 +28,9 @@ export default async function GameDetailPage({ params }: { params: Promise<{ id:
         {game.overtime ? " · OT" : ""}
         {game.conference_game ? " · Conference game" : ""}
       </p>
+      <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
+        Full box scores for both teams, most-productive scorer first -- click any player to jump to her profile.
+      </p>
 
       <div className="card" style={{ maxWidth: 480 }}>
         <div className="stat-grid" style={{ gridTemplateColumns: "1fr auto 1fr" }}>

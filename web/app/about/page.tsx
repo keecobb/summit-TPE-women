@@ -2,8 +2,9 @@ export default function AboutPage() {
   return (
     <div>
       <h1>About Summit TPE</h1>
+      <p className="subtitle">The plain-language version of what this site does and how the numbers behind it work.</p>
 
-      <div className="card">
+      <div className="card card-prose">
         <h2>The product</h2>
         <p className="subtitle" style={{ marginBottom: 0 }}>
           Summit TPE puts every D1 women&apos;s basketball team on one shared strength scale, scores every player
@@ -14,7 +15,7 @@ export default function AboutPage() {
         </p>
       </div>
 
-      <div className="card">
+      <div className="card card-prose">
         <h2>How the numbers work</h2>
         <p className="subtitle" style={{ marginBottom: 0 }}>
           Team strength ratings come from a margin-of-victory network run across every D1 game, so a mismatch a few
@@ -26,7 +27,7 @@ export default function AboutPage() {
         </p>
       </div>
 
-      <div className="card">
+      <div className="card card-prose">
         <h2>About the founder</h2>
         <p className="subtitle" style={{ marginBottom: 0 }}>
           Summit TPE is built and maintained by Keeshaun Cobb, a former collegiate basketball player turned Data

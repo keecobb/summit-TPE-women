@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { apiFetch } from "@/lib/api";
 import type {
-  PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboard,
+  PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboard, BackHalfPlayer,
 } from "@/lib/types";
 import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
 
@@ -36,7 +36,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
   const pageStats = chartStats.slice(chartPage * CHARTS_PER_PAGE, chartPage * CHARTS_PER_PAGE + CHARTS_PER_PAGE);
 
   const [
-    leaderboard, lmStandouts, mmStandouts, hmVsHm, lmVsHm, mmVsHm,
+    leaderboard, lmStandouts, mmStandouts, hmVsHm, mmVsHm, lmVsHm,
     top50Hm, top50Mm, top50Lm, backHalf, conferences, ...chartData
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
@@ -52,19 +52,26 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
       params: { own_level: "High-Major", opponent_level: "High-Major", stat: "points", min_games: 5, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { own_level: "Low-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
-    }),
-    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
       params: { own_level: "Mid-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { opponent_level: "High-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Low-Major", opponent_level: "High-Major", stat: "points", min_games: 2, limit: 8 },
+    }),
+    // top50_only tables also need own_level set to the SAME tier as
+    // opponent_level -- without it, "Top 50 Mid-Major" pulled players from
+    // EVERY level (any High-Major/Low-Major player who happened to play a
+    // top-50 Mid-Major team), not just Mid-Major players, which is the
+    // "LM/MM showing players from other levels" bug reported against this
+    // section. own_level=opponent_level here is what actually makes each
+    // column "[level] players against the best 50 [level] teams."
+    apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
+      params: { own_level: "High-Major", opponent_level: "High-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { opponent_level: "Mid-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Mid-Major", opponent_level: "Mid-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<OpponentSplitLeaderboard>("/leaderboards/opponent-splits", {
-      params: { opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
+      params: { own_level: "Low-Major", opponent_level: "Low-Major", top50_only: true, stat: "points", min_games: 2, limit: 8 },
     }),
     apiFetch<BackHalfLeaderboard>("/leaderboards/back-half", { params: { min_games_per_half: 5, limit: 10 } }),
     apiFetch<string[]>("/conferences"),
@@ -77,6 +84,12 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     <div>
       <h1>Data</h1>
       <p className="subtitle">Real season leaderboards and standout projections -- for coaches and fans alike.</p>
+      <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
+        Everything above the Standouts section is real, already-happened production this season -- no
+        projection involved. Standouts and Back Half further down mix in the site's projection model and a
+        real season-over-season split, respectively; each section says which kind it is. Use the Leaderboard
+        filters to slice by stat, level, conference, or minimum games played.
+      </p>
 
       <div className="card">
         <h2>Leaderboard</h2>
@@ -237,26 +250,27 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <OpponentSplitTable data={hmVsHm} />
           </div>
           <div>
-            <h2 style={{ fontSize: "1.05rem" }}>Low-Major vs. HM</h2>
-            <OpponentSplitTable data={lmVsHm} />
-          </div>
-          <div>
             <h2 style={{ fontSize: "1.05rem" }}>Mid-Major vs. HM</h2>
             <OpponentSplitTable data={mmVsHm} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: "1.05rem" }}>Low-Major vs. HM</h2>
+            <OpponentSplitTable data={lmVsHm} />
           </div>
         </div>
       </div>
 
       <div className="card">
         <h2>
-          Best Against the Top 50 Teams, by Tier
-          <span className="hint" title="Real per-game scoring against only the 50 highest-current_rating teams WITHIN each tier -- not every team at that tier, including its weakest. High-Major's top 50 is nearly the whole tier; Low-Major's top 50 is a much sharper cut of a much bigger pool.">
+          Best Against the Top 50 Teams, by Level
+          <span className="hint" title="Real per-game scoring against only the 50 highest-current_rating teams WITHIN each level, from players who are ALSO at that level -- not every team at that level (including its weakest), and not players visiting from a different level. High-Major's top 50 is nearly the whole level; Low-Major's top 50 is a much sharper cut of a much bigger pool.">
             ?
           </span>
         </h2>
         <p className="section-note">
-          Real production against just the best 50 teams in each tier (by current rating), not every team at
-          that level -- a sharper read than the whole-tier splits above, especially for Mid-Major and Low-Major.
+          Real production against just the best 50 teams in each level (by current rating), restricted to
+          players whose own team is also at that level -- a sharper, apples-to-apples read than the whole-level
+          splits above, especially for Mid-Major and Low-Major. Same HM &rarr; MM &rarr; LM order throughout.
         </p>
         <div className="card-grid card-grid-3">
           <div>
@@ -285,37 +299,43 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         {backHalf.players.length === 0 ? (
           <p className="empty-state">No qualifying players.</p>
         ) : (
-          <div className="chart-card" style={{ maxWidth: 640 }}>
-            <div className="chart-sub">
-              PPG change, first half &rarr; second half (min. {backHalf.min_games_per_half} games each half)
-            </div>
-            {(() => {
-              const max = Math.max(...backHalf.players.map((p) => Math.abs(p.ppg_change)), 0.0001);
-              return backHalf.players.map((p) => (
-                <div className="bar-row" key={p.player_id}>
-                  <Link href={`/players/${p.player_id}`} className="bar-name" title={`${p.name} (${p.team_name})`}>
-                    {p.name}
-                  </Link>
-                  <div className="bar-track">
-                    <div
-                      className="bar-fill"
-                      style={{
-                        width: `${(Math.abs(p.ppg_change) / max) * 100}%`,
-                        background: p.ppg_change < 0 ? "var(--text-dim)" : undefined,
-                      }}
-                    />
-                  </div>
-                  <div className="bar-value">
-                    {p.ppg_change > 0 ? "+" : ""}
-                    {p.ppg_change.toFixed(1)}
-                  </div>
-                </div>
-              ));
-            })()}
-            <p className="section-note" style={{ marginTop: 10 }}>
-              1st half {backHalf.players[0]?.first_half_ppg.toFixed(1)} PPG &rarr; 2nd half{" "}
-              {backHalf.players[0]?.second_half_ppg.toFixed(1)} PPG for the top mover.
-            </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+            <BackHalfChangeChart
+              title="PPG change"
+              sub={`Ranked stat -- first half → second half (min. ${backHalf.min_games_per_half} games each half)`}
+              players={backHalf.players}
+              getChange={(p) => p.ppg_change}
+              getFirst={(p) => p.first_half_ppg}
+              getSecond={(p) => p.second_half_ppg}
+              unit="PPG"
+            />
+            <BackHalfChangeChart
+              title="RPG change"
+              sub="Same split, rebounds per game"
+              players={backHalf.players}
+              getChange={(p) => p.rpg_change}
+              getFirst={(p) => p.first_half_rpg}
+              getSecond={(p) => p.second_half_rpg}
+              unit="RPG"
+            />
+            <BackHalfChangeChart
+              title="APG change"
+              sub="Same split, assists per game"
+              players={backHalf.players}
+              getChange={(p) => p.apg_change}
+              getFirst={(p) => p.first_half_apg}
+              getSecond={(p) => p.second_half_apg}
+              unit="APG"
+            />
+            <BackHalfChangeChart
+              title="TS% change"
+              sub="Same split, true shooting % (needs 8+ true-shot attempts in a half to compute)"
+              players={backHalf.players.filter((p) => p.ts_pct_change != null)}
+              getChange={(p) => p.ts_pct_change as number}
+              getFirst={(p) => p.first_half_ts_pct as number}
+              getSecond={(p) => p.second_half_ts_pct as number}
+              unit="TS%"
+            />
           </div>
         )}
       </div>
@@ -362,7 +382,13 @@ function StandoutTable({ data }: { data: StandoutsLeaderboard }) {
             <th>Current</th>
             <th>
               Proj. Summit Score
-              <span className="hint" title="What this player's Summit Score projects to if placed on an average High-Major roster, using the same model as the TPE Engine.">
+              <span className="hint" title="What this player's Summit Score projects to if placed on an average High-Major roster, using the same model as Transfer Projection.">
+                ?
+              </span>
+            </th>
+            <th>
+              Proj. Min
+              <span className="hint" title="Each player's own auto-projected minutes at the synthetic target's strength (her current minutes, scaled for the level jump) -- not a specific target team's rotation, since the target here is a synthetic average team, not a real roster.">
                 ?
               </span>
             </th>
@@ -379,6 +405,7 @@ function StandoutTable({ data }: { data: StandoutsLeaderboard }) {
               </td>
               <td>{p.current_hoop_score.toFixed(1)}</td>
               <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.projected_hoop_score.toFixed(1)}</td>
+              <td>{p.projected_minutes.toFixed(1)}</td>
             </tr>
           ))}
         </tbody>
@@ -397,6 +424,8 @@ function OpponentSplitTable({ data }: { data: OpponentSplitLeaderboard }) {
             <th>Player</th>
             <th>GP</th>
             <th>PPG</th>
+            <th>RPG</th>
+            <th>APG</th>
           </tr>
         </thead>
         <tbody>
@@ -410,10 +439,74 @@ function OpponentSplitTable({ data }: { data: OpponentSplitLeaderboard }) {
               </td>
               <td>{p.games_vs_opponent}</td>
               <td style={{ color: "var(--accent)", fontWeight: 700 }}>{p.avg_points.toFixed(1)}</td>
+              <td>{p.avg_rebounds.toFixed(1)}</td>
+              <td>{p.avg_assists.toFixed(1)}</td>
             </tr>
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// Reusable first-half -> second-half bar chart for the Back Half section --
+// same visual language as ChartCard above (bar-row/bar-track/bar-fill), just
+// driven by a change value plus first/second-half readouts instead of a
+// single top-N stat value. Used once per metric (PPG/RPG/APG/TS%).
+function BackHalfChangeChart({
+  title, sub, players, getChange, getFirst, getSecond, unit,
+}: {
+  title: string;
+  sub: string;
+  players: BackHalfPlayer[];
+  getChange: (p: BackHalfPlayer) => number;
+  getFirst: (p: BackHalfPlayer) => number;
+  getSecond: (p: BackHalfPlayer) => number;
+  unit: string;
+}) {
+  if (players.length === 0) {
+    return (
+      <div className="chart-card">
+        <h3>{title}</h3>
+        <p className="empty-state" style={{ padding: "12px 0" }}>
+          No qualifying players.
+        </p>
+      </div>
+    );
+  }
+  const max = Math.max(...players.map((p) => Math.abs(getChange(p))), 0.0001);
+  const top = players[0];
+  return (
+    <div className="chart-card">
+      <h3>{title}</h3>
+      <div className="chart-sub">{sub}</div>
+      {players.map((p) => {
+        const change = getChange(p);
+        return (
+          <div className="bar-row" key={p.player_id}>
+            <Link href={`/players/${p.player_id}`} className="bar-name" title={`${p.name} (${p.team_name})`}>
+              {p.name}
+            </Link>
+            <div className="bar-track">
+              <div
+                className="bar-fill"
+                style={{
+                  width: `${(Math.abs(change) / max) * 100}%`,
+                  background: change < 0 ? "var(--text-dim)" : undefined,
+                }}
+              />
+            </div>
+            <div className="bar-value">
+              {change > 0 ? "+" : ""}
+              {change.toFixed(1)}
+            </div>
+          </div>
+        );
+      })}
+      <p className="section-note" style={{ marginTop: 10 }}>
+        1st half {getFirst(top).toFixed(1)} {unit} &rarr; 2nd half {getSecond(top).toFixed(1)} {unit} for the top
+        mover on this list (players ranked by PPG change overall, not re-sorted per chart).
+      </p>
     </div>
   );
 }

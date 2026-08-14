@@ -28,10 +28,11 @@ Usage:
 """
  
 import argparse
+import re
 import sqlite3
 import statistics
 from collections import defaultdict
- 
+
 import openpyxl
  
 from summit_calc import (
@@ -48,6 +49,26 @@ TEAM_PROFILE_STATS = ["per40_pts", "per40_reb", "per40_ast", "per40_blk", "per40
 TEAM_PROFILE_PCT_STATS = ["ts_pct", "fg_pct"]
  
  
+_HEIGHT_RE = re.compile(r"^(\d+)'\s*(\d+)?")
+
+
+def parse_height_inches(height_text):
+    """Free-text height like 6' 2\" or 5'9 -> total inches (int), for the
+    Players page's height filter -- the Height column itself stays free
+    text for display (not every source formats it identically), but a
+    numeric form is needed to filter/sort by height at all. Returns None
+    for anything that doesn't match the expected feet'inches\" shape rather
+    than guessing."""
+    if not height_text:
+        return None
+    m = _HEIGHT_RE.match(height_text.strip())
+    if not m:
+        return None
+    feet = int(m.group(1))
+    inches = int(m.group(2)) if m.group(2) else 0
+    return feet * 12 + inches
+
+
 def header_map(ws):
     mapping = {}
     for cell in next(ws.iter_rows(min_row=1, max_row=1)):
@@ -446,6 +467,7 @@ def compute_season_profiles(data, season, sheet_meta=None):
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
             height=data["player_height"].get(pid),
+            height_in=parse_height_inches(data["player_height"].get(pid)),
             team_id=meta["team_id"], division=meta["division"], position=meta["position"],
             class_year=meta["class_year"], in_transfer_portal=meta["in_transfer_portal"],
             season=season, games=n_games,
@@ -484,6 +506,7 @@ def compute_season_profiles(data, season, sheet_meta=None):
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
             height=data["player_height"].get(pid),
+            height_in=parse_height_inches(data["player_height"].get(pid)),
             team_id=ps["team_id"], division=ps["division"], position=ps["position"],
             class_year=ps["class_year"], in_transfer_portal=data["player_transfer_portal"].get(pid),
             season=season, games=0, total_minutes=0,
@@ -536,6 +559,7 @@ def compute_season_profiles(data, season, sheet_meta=None):
             player_rows.append(dict(
                 player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
                 height=data["player_height"].get(pid),
+                height_in=parse_height_inches(data["player_height"].get(pid)),
                 team_id=tid, division=meta.get("division"), position=meta.get("position"),
                 class_year=meta.get("class_year"), in_transfer_portal=data["player_transfer_portal"].get(pid),
                 season=season, games=0, total_minutes=0,
@@ -721,7 +745,7 @@ def main():
     """)
     conn.execute("""
         CREATE TABLE players (
-            player_id INTEGER PRIMARY KEY, name TEXT, height TEXT, team_id INTEGER, division TEXT,
+            player_id INTEGER PRIMARY KEY, name TEXT, height TEXT, height_in INTEGER, team_id INTEGER, division TEXT,
             position TEXT, class_year TEXT, season TEXT, games INTEGER, total_minutes REAL,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
             ts_pct REAL, fg_pct REAL,
@@ -754,7 +778,7 @@ def main():
         team_rows,
     )
     conn.executemany(
-        """INSERT INTO players VALUES (:player_id,:name,:height,:team_id,:division,:position,:class_year,
+        """INSERT INTO players VALUES (:player_id,:name,:height,:height_in,:team_id,:division,:position,:class_year,
            :season,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,
            :hoop_score,:hoop_score_raw,:in_transfer_portal,:thin_sample)""",
