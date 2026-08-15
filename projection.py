@@ -212,10 +212,23 @@ def _interp_spread(gap_std):
 #   - Starter: starts in >= ROLE_STARTER_START_PCT of the games she's
 #     played (not of the team's total games -- her OWN games played).
 #   - Sixth Man: among players who start in < ROLE_SIXTH_MAN_START_PCT of
-#     their own games, the SINGLE one with the highest avg_minutes (the
-#     bench player a coach turns to first). Not a fixed rank -- if two
-#     teams have very different bench depth, "sixth man" still means "the
-#     top bench player," not "whoever happens to be 6th by minutes."
+#     their own games AND have played in more than
+#     ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT of the TEAM's games this season,
+#     the SINGLE one with the highest avg_minutes (the bench player a coach
+#     turns to first). Not a fixed rank -- if two teams have very different
+#     bench depth, "sixth man" still means "the top bench player," not
+#     "whoever happens to be 6th by minutes." The games-played floor
+#     (phase 11j) stops a small-sample fluke from qualifying -- e.g. a
+#     player who logged heavy bench minutes in her first 6 games of a
+#     38-game season and then never played again (injury, coach's
+#     decision, whatever) has a real high avg_minutes but was never
+#     actually the team's real go-to bench player across the season; she's
+#     excluded from the sixth-man pool by this floor and falls through to
+#     Role Player/Depth Piece by her minutes instead, same as any other
+#     non-starter, non-sixth-man player. Note this is against the TEAM's
+#     total games this season, not the player's own -- unlike the starter/
+#     sixth-man start-rate checks above, which are intentionally against
+#     each player's own games played (see the Starter note below).
 #   - Depth Piece: not a starter or the sixth man, and averages under
 #     ROLE_DEPTH_PIECE_MAX_MINUTES minutes/game.
 #   - Role Player: everyone else -- meaningful bench minutes, but not the
@@ -224,6 +237,7 @@ def _interp_spread(gap_std):
 #     isn't the single highest-minutes non-starter).
 ROLE_STARTER_START_PCT = 0.80
 ROLE_SIXTH_MAN_START_PCT = 0.25
+ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT = 0.50
 ROLE_DEPTH_PIECE_MAX_MINUTES = 10.0
 ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
  
@@ -342,6 +356,21 @@ def team_roles(conn, team_id):
     season = _load_meta(conn)["season"]
     gs_by_player = games_started_by_player(conn, season)
 
+    # Team's real games played this season, for the sixth-man games-played
+    # floor below -- distinct game_ids in player_game_logs, the same "real
+    # box-score coverage" convention build_cache.py's compute_team_profiles()
+    # already established for team-scale game counts (see phase 5's writeup
+    # in ARCHITECTURE_HOSTING_PLAN.md for why this beats counting off the
+    # `games` schedule table: up to 13 games for one real team had a final
+    # score on record but no player_game_logs rows, which would overcount
+    # "games played" relative to what this site can actually verify anyone
+    # played in).
+    team_games_row = conn.execute(
+        "SELECT COUNT(DISTINCT game_id) FROM player_game_logs WHERE team_id = ? AND season = ?",
+        (team_id, season),
+    ).fetchone()
+    team_games = team_games_row[0] if team_games_row else 0
+
     rows = conn.execute(
         "SELECT player_id, name, avg_minutes, games, hoop_score, thin_sample FROM players "
         "WHERE team_id = ? ORDER BY avg_minutes DESC",
@@ -371,13 +400,21 @@ def team_roles(conn, team_id):
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
 
     # Sixth Man: the single highest-avg_minutes player among everyone who
-    # starts in under 25% of her own games -- not a fixed rank. A team
-    # with a deep, low-minutes bench and a team with a thin one both just
-    # get whichever one non-starting player actually plays the most.
+    # starts in under 25% of her own games AND has played in more than 50%
+    # of the TEAM's games this season -- not a fixed rank. A team with a
+    # deep, low-minutes bench and a team with a thin one both just get
+    # whichever one non-starting, real-rotation player actually plays the
+    # most. The games-played floor (phase 11j) keeps a small-sample fluke
+    # out of the pool -- someone who played heavy bench minutes for 6 games
+    # of a 38-game season and then never again has a real high avg_minutes
+    # but was never actually this team's real go-to bench player across the
+    # season; excluded here, she falls through to Role Player/Depth Piece
+    # below by her minutes instead, same as any other non-starter.
     sixth_man_pool = [
         p for p in roster
         if p["player_id"] not in starter_ids and p["start_pct"] is not None
         and p["start_pct"] < ROLE_SIXTH_MAN_START_PCT and p["avg_minutes"] is not None
+        and team_games > 0 and (p["games"] / team_games) > ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT
     ]
     sixth_man = max(sixth_man_pool, key=lambda p: p["avg_minutes"]) if sixth_man_pool else None
     sixth_man_minutes = round(sixth_man["avg_minutes"], 1) if sixth_man else None
@@ -445,7 +482,9 @@ def team_roles(conn, team_id):
                           f"she's played this season."),
         sixth_man=dict(minutes=sixth_man_minutes,
                         note=f"the single highest-minutes player among everyone who starts in under "
-                             f"{ROLE_SIXTH_MAN_START_PCT:.0%} of her own games -- not a fixed rank."),
+                             f"{ROLE_SIXTH_MAN_START_PCT:.0%} of her own games and has played in more than "
+                             f"{ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT:.0%} of the team's games this season -- "
+                             f"not a fixed rank."),
         role_player=dict(minutes=role_player_minutes, range=role_player_range, player_count=len(role_players),
                           note=f"real average of every non-starter, non-sixth-man player averaging "
                                f"{ROLE_DEPTH_PIECE_MAX_MINUTES:.0f}+ minutes/game."),

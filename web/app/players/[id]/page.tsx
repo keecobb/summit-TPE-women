@@ -45,9 +45,20 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
 
   const player = await apiFetch<PlayerDetail>(`/players/${id}`, { revalidate: 0 });
 
+  // Phase 11j: all three fetches below were still on `revalidate: 60` after
+  // phase 11i's fix -- reasoned at the time that up-to-a-minute staleness on
+  // a season trend chart or a splits table wouldn't be user-visible the way
+  // a missing Summit Score is. That reasoning was wrong: the Season by
+  // Season chart (built from `trajectory`, right below) hit the exact same
+  // "shows stale/wrong data until a refresh happens to land after the
+  // cache window" bug phase 11i fixed on the player's primary record.
+  // Everything on this page reads from the same live, pipeline-refreshed
+  // tables, so it's all equally exposed -- set to `revalidate: 0` (always
+  // live) across the board here instead of trying to guess which fields
+  // are "important enough" to be exempt from staleness.
   let trajectory: PlayerTrajectory | null = null;
   try {
-    trajectory = await apiFetch<PlayerTrajectory>(`/players/${id}/trajectory`, { revalidate: 60 });
+    trajectory = await apiFetch<PlayerTrajectory>(`/players/${id}/trajectory`, { revalidate: 0 });
   } catch (e) {
     // Trajectory 404s if the player has no multi-season history on record --
     // not an error worth showing, the current-season card below still renders.
@@ -56,7 +67,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
 
   let splits: PlayerSplits | null = null;
   try {
-    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 60 });
+    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 0 });
   } catch (e) {
     // Same as trajectory above -- a thin_sample player with zero games this
     // season has nothing to split, not an error worth surfacing.
@@ -73,7 +84,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
   let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
   let gamesChronological: PlayerGameLogRow[] = [];
   try {
-    const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 60 });
+    const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 0 });
     bestGames = logs.games
       .map((g) => ({ ...g, combined: g.points + g.rebounds + g.assists }))
       .sort((a, b) => b.combined - a.combined)

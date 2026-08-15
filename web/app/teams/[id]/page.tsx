@@ -10,14 +10,16 @@ import RoleStat from "@/components/RoleStat";
 // Cache/Full Route Cache treating this route as static (see
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 //
-// Phase 11i: `force-dynamic` only controls the Full Route Cache -- each
+// Phase 11i/11j: `force-dynamic` only controls the Full Route Cache -- each
 // `apiFetch()` call below still carries its own independent Data Cache
 // entry, which a `revalidate: 60` option lets serve stale for up to 60
-// real seconds regardless of this route-level setting. The team/roles/
-// roster calls that feed this page's Summit Score, roster avg, and
-// per-player GP/GS/role fields are set to `revalidate: 0` (always live)
-// below for that reason -- see the matching note on the player profile
-// page for how this was confirmed against the running app, not just docs.
+// real seconds regardless of this route-level setting. Phase 11i fixed
+// this for the Summit Score/roster fields first (confirmed live against
+// the running app, not just docs -- see the matching note on the player
+// profile page); phase 11j extended it to every remaining fetch on this
+// page (schedule, needs/stats breakdown) after the same staleness bug
+// turned up on a section that phase 11i had assumed was low-risk enough
+// to leave cached. Every fetch below is now `revalidate: 0` (always live).
 export const dynamic = "force-dynamic";
 
 const TABS = [
@@ -81,8 +83,9 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
     apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 0 }),
     // top_n only controls the length of `weaknesses` below -- full_profile
     // always returns every category regardless, which is what the Team
-    // Stat Profile chart uses.
-    apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 3 }, revalidate: 60 }),
+    // Stat Profile chart uses. revalidate: 0 (phase 11j) for the same
+    // reason as everything else on this page now -- see the file-top note.
+    apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 3 }, revalidate: 0 }),
   ]);
 
   return (
@@ -287,7 +290,7 @@ async function RosterTab({ id }: { id: string }) {
 }
 
 async function ScheduleTab({ id }: { id: string }) {
-  const schedule = await apiFetch<TeamSchedule>(`/teams/${id}/schedule`, { params: { season: "2025-26" }, revalidate: 60 });
+  const schedule = await apiFetch<TeamSchedule>(`/teams/${id}/schedule`, { params: { season: "2025-26" }, revalidate: 0 });
 
   if (schedule.games.length === 0) {
     return <p className="empty-state">No games on record for this team.</p>;
@@ -347,7 +350,7 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
   // top_n only controls how many are called out as "weaknesses" -- full_profile
   // always includes every tracked category regardless, so this just needs to be
   // a valid value (the API caps it at the total category count, currently 8).
-  const needs = await apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 8 }, revalidate: 60 });
+  const needs = await apiFetch<TeamNeeds>(`/teams/${id}/needs`, { params: { top_n: 8 }, revalidate: 0 });
 
   return (
     <div className="card">
