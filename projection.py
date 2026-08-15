@@ -308,9 +308,10 @@ def team_roles(conn, team_id):
     rather than guessing.
     """
     rows = conn.execute(
-        "SELECT name, avg_minutes, hoop_score, thin_sample FROM players WHERE team_id = ? ORDER BY avg_minutes DESC", (team_id,)
+        "SELECT player_id, name, avg_minutes, hoop_score, thin_sample FROM players WHERE team_id = ? ORDER BY avg_minutes DESC",
+        (team_id,),
     ).fetchall()
-    roster = [dict(name=r[0], avg_minutes=r[1]) for r in rows]
+    roster = [dict(player_id=r[0], name=r[1], avg_minutes=r[2]) for r in rows]
 
     # Roster-wide Summit Score average -- only real (non-thin-sample) profiles
     # count, so a handful of zero-game placeholder rows (see /players's
@@ -347,6 +348,29 @@ def team_roles(conn, team_id):
     if depth_players:
         depth_minutes = round(sum(p["avg_minutes"] for p in depth_players) / len(depth_players), 1)
 
+    # Per-player role labels, in the same rank order as `roster` -- lets a
+    # caller (the Roster tab) show which bucket each individual player
+    # actually fell into, not just the 4 aggregate minutes numbers above.
+    # Same classification the aggregates above are built from: first
+    # ROLE_STARTER_COUNT by avg_minutes are Starter, the next one is Sixth
+    # Man, and everyone after that is Role Player or Depth Piece depending
+    # on whether she clears ROLE_PLAYER_MIN_MINUTES.
+    roster_roles = []
+    for i, p in enumerate(roster):
+        if i < ROLE_STARTER_COUNT:
+            role = "Starter"
+        elif i == ROLE_SIXTH_MAN_RANK - 1:
+            role = "Sixth Man"
+        elif p["avg_minutes"] is not None and p["avg_minutes"] >= ROLE_PLAYER_MIN_MINUTES:
+            role = "Role Player"
+        else:
+            role = "Depth Piece"
+        roster_roles.append(dict(
+            player_id=p["player_id"], name=p["name"],
+            avg_minutes=round(p["avg_minutes"], 1) if p["avg_minutes"] is not None else None,
+            role=role,
+        ))
+
     return dict(
         team_id=team_id,
         roster_size=len(roster),
@@ -362,6 +386,7 @@ def team_roles(conn, team_id):
                           note=f"real average of every rank #{ROLE_SIXTH_MAN_RANK + 1}-and-later bench player under "
                                f"{ROLE_PLAYER_MIN_MINUTES:.0f} minutes/game -- runs to the end of the roster, not "
                                f"capped at a fixed rank."),
+        roster_roles=roster_roles,
     )
  
  
@@ -1253,28 +1278,51 @@ def player_trajectory(conn, player_id):
 # opponent_split_leaderboard() below is exactly that follow-up leaderboard.)
 
 LEADERBOARD_STATS = {
-    "ppg":        dict(label="points per game",            lower_is_better=False),
-    "rpg":        dict(label="rebounds per game",           lower_is_better=False),
-    "apg":        dict(label="assists per game",            lower_is_better=False),
-    "spg":        dict(label="steals per game",             lower_is_better=False),
-    "bpg":        dict(label="blocks per game",             lower_is_better=False),
-    "topg":       dict(label="turnovers per game",          lower_is_better=True),
-    "ts_pct":     dict(label="true shooting %",              lower_is_better=False),
-    "fg_pct":     dict(label="field goal %",                 lower_is_better=False),
-    "hoop_score": dict(label="Hoop Score",                   lower_is_better=False),
-    "per40_pts":  dict(label="points per 40",                lower_is_better=False),
-    "per40_reb":  dict(label="rebounds per 40",              lower_is_better=False),
-    "per40_ast":  dict(label="assists per 40",               lower_is_better=False),
-    "per40_blk":  dict(label="blocks per 40",                lower_is_better=False),
-    "per40_stl":  dict(label="steals per 40",                lower_is_better=False),
+    # source="players": a straight read of a precomputed per-game/season
+    # column already on `players`.
+    "ppg":        dict(label="points per game",            lower_is_better=False, source="players"),
+    "rpg":        dict(label="rebounds per game",           lower_is_better=False, source="players"),
+    "apg":        dict(label="assists per game",            lower_is_better=False, source="players"),
+    "spg":        dict(label="steals per game",             lower_is_better=False, source="players"),
+    "bpg":        dict(label="blocks per game",             lower_is_better=False, source="players"),
+    "topg":       dict(label="turnovers per game",          lower_is_better=True,  source="players"),
+    "ts_pct":     dict(label="true shooting %",              lower_is_better=False, source="players"),
+    "fg_pct":     dict(label="field goal %",                 lower_is_better=False, source="players"),
+    "hoop_score": dict(label="Hoop Score",                   lower_is_better=False, source="players"),
+    # source="totals": `players` has no precomputed season totals, so these
+    # are summed live from player_game_logs (indexed on player_id+season).
+    "total_pts":  dict(label="total points",                lower_is_better=False, source="totals", gl_col="points"),
+    "total_reb":  dict(label="total rebounds",              lower_is_better=False, source="totals", gl_col="rebounds"),
+    "total_ast":  dict(label="total assists",               lower_is_better=False, source="totals", gl_col="assists"),
+    "total_stl":  dict(label="total steals",                lower_is_better=False, source="totals", gl_col="steals"),
+    "total_blk":  dict(label="total blocks",                lower_is_better=False, source="totals", gl_col="blocks"),
+    "total_tfgm": dict(label="total 3-pointers made",        lower_is_better=False, source="totals", gl_col="tfgm"),
+    "total_ftm":  dict(label="total free throws made",       lower_is_better=False, source="totals", gl_col="ftm"),
+    # source="pct": also live off player_game_logs -- makes/attempts summed
+    # across the whole season, same convention build_cache.py already uses
+    # for ts_pct/fg_pct (total makes / total attempts, not an average of
+    # per-game percentages), gated by LEADERBOARD_MIN_PCT_ATTEMPTS so a
+    # small-sample hot streak can't top the board.
+    "tfg_pct":    dict(label="3-point % (season)",          lower_is_better=False, source="pct",
+                        makes_col="tfgm", attempts_col="tfga"),
+    "ft_pct":     dict(label="free throw % (season)",        lower_is_better=False, source="pct",
+                        makes_col="ftm", attempts_col="fta"),
 }
 
+# Minimum season attempts required for a made%-based leaderboard entry
+# (tfg_pct/ft_pct) -- mirrors the >=15-attempt floor build_cache.py already
+# applies to ts_pct/fg_pct, so a player who is 2-for-2 on threes all year
+# doesn't outrank a real season of volume shooting.
+LEADERBOARD_MIN_PCT_ATTEMPTS = 15
 
-def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=None, min_games=5, limit=25):
+
+def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=None, class_year=None,
+                 position=None, min_games=5, limit=25):
     """A straightforward public leaderboard: top (or, for turnovers,
     lowest) players by one real season stat, optionally restricted to one
-    tier (level), division (D1/D2), and/or conference. No projection
-    involved -- this is what actually happened this season, not a what-if.
+    tier (level), division (D1/D2), conference, class year, and/or
+    position. No projection involved -- this is what actually happened
+    this season, not a what-if.
     """
     if stat not in LEADERBOARD_STATS:
         raise ProjectionError(f"stat must be one of {list(LEADERBOARD_STATS)}, got {stat!r}.")
@@ -1298,26 +1346,65 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=N
     if conference is not None:
         clauses.append("t.conference = ?")
         params.append(conference)
+    if class_year is not None:
+        clauses.append("p.class_year = ?")
+        params.append(class_year)
+    if position is not None:
+        clauses.append("p.position = ?")
+        params.append(position)
     where = " AND ".join(clauses)
     order = "ASC" if info["lower_is_better"] else "DESC"
-    # For hoop_score specifically, sort by hoop_score_raw (unclamped), not
-    # hoop_score (the displayed, 30-99-bounded value) -- same reasoning as
-    # the fix already applied to /players: several distinct real seasons can
-    # legitimately round to the same displayed value near the ceiling, and
-    # sorting on that rounded value would tie those players and order them
-    # arbitrarily instead of by their real, distinct performance.
-    order_col = "p.hoop_score_raw" if stat == "hoop_score" else f"p.{stat}"
 
-    rows = conn.execute(
-        f"""SELECT p.player_id, p.name, p.team_id, t.name AS team_name, t.tier, p.division, p.position,
-                   p.class_year, p.games, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg, p.ts_pct, p.fg_pct,
-                   p.hoop_score, p.{stat} AS stat_value
-            FROM players p JOIN teams t ON p.team_id = t.team_id
-            WHERE {where} AND p.{stat} IS NOT NULL
-            ORDER BY {order_col} {order}
-            LIMIT ?""",
-        params + [limit],
-    ).fetchall()
+    common_cols = ("p.player_id, p.name, p.team_id, t.name AS team_name, t.tier, p.division, p.position, "
+                   "p.class_year, p.games, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg, p.ts_pct, p.fg_pct, "
+                   "p.hoop_score")
+
+    if info["source"] == "players":
+        # For hoop_score specifically, sort by hoop_score_raw (unclamped),
+        # not hoop_score (the displayed, 30-99-bounded value) -- same
+        # reasoning as the fix already applied to /players: several
+        # distinct real seasons can legitimately round to the same
+        # displayed value near the ceiling, and sorting on that rounded
+        # value would tie those players and order them arbitrarily instead
+        # of by their real, distinct performance.
+        order_col = "p.hoop_score_raw" if stat == "hoop_score" else f"p.{stat}"
+        rows = conn.execute(
+            f"""SELECT {common_cols}, p.{stat} AS stat_value
+                FROM players p JOIN teams t ON p.team_id = t.team_id
+                WHERE {where} AND p.{stat} IS NOT NULL
+                ORDER BY {order_col} {order}
+                LIMIT ?""",
+            params + [limit],
+        ).fetchall()
+    elif info["source"] == "totals":
+        season = _load_meta(conn)["season"]
+        rows = conn.execute(
+            f"""SELECT {common_cols}, SUM(g.{info['gl_col']}) AS stat_value
+                FROM players p
+                JOIN teams t ON p.team_id = t.team_id
+                JOIN player_game_logs g ON g.player_id = p.player_id AND g.season = ?
+                WHERE {where}
+                GROUP BY p.player_id
+                ORDER BY stat_value {order}
+                LIMIT ?""",
+            [season] + params + [limit],
+        ).fetchall()
+    else:  # source == "pct"
+        season = _load_meta(conn)["season"]
+        rows = conn.execute(
+            f"""SELECT {common_cols},
+                       SUM(g.{info['makes_col']}) AS makes, SUM(g.{info['attempts_col']}) AS attempts
+                FROM players p
+                JOIN teams t ON p.team_id = t.team_id
+                JOIN player_game_logs g ON g.player_id = p.player_id AND g.season = ?
+                WHERE {where}
+                GROUP BY p.player_id
+                HAVING attempts >= ?
+                ORDER BY (CAST(makes AS REAL) / attempts) {order}
+                LIMIT ?""",
+            [season] + params + [LEADERBOARD_MIN_PCT_ATTEMPTS, limit],
+        ).fetchall()
+
     result_rows = []
     for r in rows:
         d = dict(r)
@@ -1325,11 +1412,15 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=N
             d["ts_pct"] = round(d["ts_pct"] * 100, 1)
         if d.get("fg_pct") is not None:
             d["fg_pct"] = round(d["fg_pct"] * 100, 1)
+        if info["source"] == "pct":
+            makes, attempts = d.pop("makes"), d.pop("attempts")
+            d["stat_value"] = round(makes / attempts * 100, 1) if attempts else None
         result_rows.append(d)
 
     return dict(
         stat=stat, stat_label=info["label"], lower_is_better=info["lower_is_better"],
-        level_filter=level, division_filter=division, conference_filter=conference, min_games=min_games,
+        level_filter=level, division_filter=division, conference_filter=conference,
+        class_filter=class_year, position_filter=position, min_games=min_games,
         players=result_rows,
     )
 
@@ -1791,19 +1882,20 @@ def player_game_logs(conn, player_id, season=None):
     return dict(player_id=player_id, season=season, games=[dict(r) for r in rows])
 
 
-BEST_GAME_SORT_FIELDS = {"points", "production_rating"}
+BEST_GAME_SORT_FIELDS = {"points", "production_rating", "rebounds", "assists"}
 
 
 def best_single_game_performances(conn, season=None, sort="points", level=None, limit=20):
     """The single best individual game performances this season, site-wide
     -- real box scores from `player_game_logs`, not a projection or a
     season average. `sort` picks which single-game number ranks the list:
-    `points` (a real point total) or `production_rating` (points + rebounds
-    + assists + steals + blocks - turnovers for that one game -- the same
-    metric the player profile page's Game-by-Game Production Rating chart
-    uses, computed live here rather than stored, so both stay in sync with
-    one definition). Every row also carries the full box score for that
-    game regardless of `sort`, so a caller isn't locked into one column.
+    `points` or `rebounds` or `assists` (a real single-game total), or
+    `production_rating` (points + rebounds + assists + steals + blocks -
+    turnovers for that one game -- the same metric the player profile
+    page's Game-by-Game Production Rating chart uses, computed live here
+    rather than stored, so both stay in sync with one definition). Every
+    row also carries the full box score for that game regardless of
+    `sort`, so a caller isn't locked into one column.
 
     level: optional -- one of VALID_LEVELS, scopes to games played by
     players whose own team is at that level (the OPPONENT's level isn't
@@ -1824,8 +1916,12 @@ def best_single_game_performances(conn, season=None, sort="points", level=None, 
         params.append(level)
     where = " AND ".join(clauses)
 
-    order_col = "g.points" if sort == "points" else \
-        "(g.points + g.rebounds + g.assists + g.steals + g.blocks - g.turnovers)"
+    order_col = {
+        "points": "g.points",
+        "rebounds": "g.rebounds",
+        "assists": "g.assists",
+        "production_rating": "(g.points + g.rebounds + g.assists + g.steals + g.blocks - g.turnovers)",
+    }[sort]
 
     rows = conn.execute(
         f"""SELECT g.player_id, p.name, g.team_id, t.name AS team_name, t.tier,
@@ -1912,16 +2008,25 @@ def player_splits(conn, player_id, season=None):
         def avg(key):
             return round(sum(r[key] for r in rows) / n, 1)
 
+        # fg_pct here is total makes / total attempts across the bucket's
+        # games (same season-aggregate convention as build_cache.py's
+        # players.fg_pct), not an average of each game's own percentage --
+        # a bucket with any attempts at all gets a real number since these
+        # are already small, curated buckets (opponent tier / top-50 /
+        # last-10), not a full-season leaderboard needing a volume floor.
+        total_fga = sum(r["fga"] for r in rows)
+        fg_pct = round(sum(r["fgm"] for r in rows) / total_fga * 100, 1) if total_fga else None
+
         return dict(
             games=n, avg_points=avg("points"), avg_rebounds=avg("rebounds"),
             avg_assists=avg("assists"), avg_steals=avg("steals"), avg_blocks=avg("blocks"),
-            avg_turnovers=avg("turnovers"), avg_minutes=avg("minutes"),
+            avg_turnovers=avg("turnovers"), avg_minutes=avg("minutes"), fg_pct=fg_pct,
         )
 
     rows = conn.execute(
         """SELECT g.game_id, g.date, g.opponent_team_id, g.opponent_name, opp_t.tier AS opponent_tier,
                   opp_t.current_rating AS opponent_rating,
-                  g.minutes, g.points, g.rebounds, g.assists, g.steals, g.blocks, g.turnovers
+                  g.minutes, g.points, g.rebounds, g.assists, g.steals, g.blocks, g.turnovers, g.fgm, g.fga
            FROM player_game_logs g
            LEFT JOIN teams opp_t ON g.opponent_team_id = opp_t.team_id
            WHERE g.player_id = ? AND g.season = ?

@@ -214,13 +214,27 @@ function TeamProfileChart({ profile }: { profile: TeamNeedCategory[] }) {
 }
 
 async function RosterTab({ id }: { id: string }) {
-  const roster = await apiFetch<Player[]>("/players", { params: { team_id: id, limit: 50 } });
+  const [roster, roles] = await Promise.all([
+    apiFetch<Player[]>("/players", { params: { team_id: id, limit: 50 } }),
+    apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 60 }),
+  ]);
 
   if (roster.length === 0) return <p className="empty-state">No players on record for this team.</p>;
+
+  // roster_roles is the same Starter/Sixth Man/Role Player/Depth Piece
+  // classification shown in aggregate on the Overview tab's Rotation
+  // Minutes card, applied here per player -- matched by player_id, not
+  // roster order, since /players and /teams/{id}/roles are two separate
+  // fetches.
+  const roleByPlayer = new Map(roles.roster_roles.map((r) => [r.player_id, r.role]));
 
   return (
     <div className="card">
       <h2>Roster</h2>
+      <p className="section-note" style={{ marginTop: -8, marginBottom: 16 }}>
+        Role is this team&apos;s own real minutes-based rotation classification -- see the Rotation Minutes card
+        on the Overview tab for how it&apos;s computed.
+      </p>
       <div className="table-scroll">
         <table>
           <thead>
@@ -229,6 +243,7 @@ async function RosterTab({ id }: { id: string }) {
               <th>Pos</th>
               <th>Height</th>
               <th>Class</th>
+              <th>Role</th>
               <th>PPG</th>
               <th>RPG</th>
               <th>APG</th>
@@ -244,6 +259,7 @@ async function RosterTab({ id }: { id: string }) {
                 <td>{p.position}</td>
                 <td>{p.height ?? "--"}</td>
                 <td>{p.class_year}</td>
+                <td>{roleByPlayer.get(p.player_id) ?? "--"}</td>
                 <td>{p.ppg?.toFixed(1)}</td>
                 <td>{p.rpg?.toFixed(1)}</td>
                 <td>{p.apg?.toFixed(1)}</td>

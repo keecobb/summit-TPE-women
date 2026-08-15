@@ -98,6 +98,15 @@ export interface TeamRoles {
   // that bucket (e.g. a team with no bench player over the 20 MPG line).
   role_player: { minutes: number | null; range: [number, number] | null; player_count: number; note: string };
   depth_piece: { minutes: number | null; player_count: number; note: string };
+  // Same 4-way classification applied to every individual player on the
+  // roster, in roster (avg_minutes descending) order -- lets a UI label
+  // each player rather than just showing the 4 aggregate numbers above.
+  roster_roles: {
+    player_id: number;
+    name: string;
+    avg_minutes: number | null;
+    role: "Starter" | "Sixth Man" | "Role Player" | "Depth Piece";
+  }[];
 }
 
 export interface TeamNeedCategory {
@@ -210,6 +219,8 @@ export interface PlayerLeaderboard {
   level_filter: string | null;
   division_filter: string | null;
   conference_filter?: string | null;
+  class_filter?: string | null;
+  position_filter?: string | null;
   min_games: number;
   players: LeaderboardPlayer[];
 }
@@ -224,11 +235,15 @@ export const LEADERBOARD_STATS = [
   "topg",
   "ts_pct",
   "fg_pct",
-  "per40_pts",
-  "per40_reb",
-  "per40_ast",
-  "per40_blk",
-  "per40_stl",
+  "total_pts",
+  "total_reb",
+  "total_ast",
+  "total_stl",
+  "total_blk",
+  "total_tfgm",
+  "total_ftm",
+  "tfg_pct",
+  "ft_pct",
 ] as const;
 
 export const LEADERBOARD_STAT_LABELS: Record<string, string> = {
@@ -241,12 +256,23 @@ export const LEADERBOARD_STAT_LABELS: Record<string, string> = {
   topg: "Turnovers per game (lowest)",
   ts_pct: "True shooting %",
   fg_pct: "Field goal %",
-  per40_pts: "Points per 40",
-  per40_reb: "Rebounds per 40",
-  per40_ast: "Assists per 40",
-  per40_blk: "Blocks per 40",
-  per40_stl: "Steals per 40",
+  total_pts: "Total points",
+  total_reb: "Total rebounds",
+  total_ast: "Total assists",
+  total_stl: "Total steals",
+  total_blk: "Total blocks",
+  total_tfgm: "Total 3-pointers made",
+  total_ftm: "Total free throws made",
+  tfg_pct: "3-point % (season)",
+  ft_pct: "Free throw % (season)",
 };
+
+// Player class years / positions -- used to populate the Leaderboard's
+// class/position filter dropdowns on the Data page. Matches the exact
+// values stored in players.class_year / players.position (see
+// API_REFERENCE.md).
+export const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"] as const;
+export const POSITIONS = ["G", "F", "C"] as const;
 
 export interface StandoutPlayer {
   player_id: number;
@@ -428,6 +454,10 @@ export interface OpponentTierSplit {
   avg_blocks: number;
   avg_turnovers: number;
   avg_minutes: number;
+  // Total makes / total attempts across this bucket's games (not an
+  // average of each game's own %) -- null only if the bucket has zero
+  // field goal attempts on record.
+  fg_pct: number | null;
 }
 
 export interface PlayerSplits {

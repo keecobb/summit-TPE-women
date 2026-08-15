@@ -35,7 +35,7 @@ export default function SeasonGameLog({ playerId, season }: { playerId: number; 
 
   return (
     <tr>
-      <td colSpan={9} style={{ padding: 0, borderBottom: open ? undefined : "none" }}>
+      <td colSpan={11} style={{ padding: 0, borderBottom: open ? undefined : "none" }}>
         <button
           type="button"
           onClick={toggle}
@@ -74,6 +74,8 @@ export default function SeasonGameLog({ playerId, season }: { playerId: number; 
                       <th>Blk</th>
                       <th>TO</th>
                       <th>FG</th>
+                      <th>3FG</th>
+                      <th>FT</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -97,6 +99,12 @@ export default function SeasonGameLog({ playerId, season }: { playerId: number; 
                         <td>{g.turnovers}</td>
                         <td>
                           {g.fgm}-{g.fga}
+                        </td>
+                        <td>
+                          {g.tfgm}-{g.tfga}
+                        </td>
+                        <td>
+                          {g.ftm}-{g.fta}
                         </td>
                       </tr>
                     ))}

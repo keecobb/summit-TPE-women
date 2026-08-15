@@ -4,7 +4,7 @@ import type {
   PlayerLeaderboard, StandoutsLeaderboard, OpponentSplitLeaderboard, BackHalfLeaderboardAll, BackHalfPlayer,
   SeasonJumpLeaderboard, TeamEfficiencyQuadrant, PlayerEfficiencyQuadrant, BestGamesLeaderboard,
 } from "@/lib/types";
-import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, TIERS, tierAbbrev } from "@/lib/types";
+import { LEADERBOARD_STATS, LEADERBOARD_STAT_LABELS, CLASS_YEARS, POSITIONS, TIERS, tierAbbrev } from "@/lib/types";
 import FilterForm from "@/components/FilterForm";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
@@ -20,6 +20,8 @@ interface SP {
   level?: string;
   min_games?: string;
   conference?: string;
+  class_year?: string;
+  position?: string;
   page?: string;
   eff_level?: string;
   peff_level?: string;
@@ -42,7 +44,10 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
     top50Hm, top50Mm, top50Lm, backHalfAll, seasonJump, efficiency, playerEfficiency, bestGames, conferences,
   ] = await Promise.all([
     apiFetch<PlayerLeaderboard>("/leaderboards/players", {
-      params: { stat, level: sp.level, conference: sp.conference, min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX },
+      params: {
+        stat, level: sp.level, conference: sp.conference, class_year: sp.class_year, position: sp.position,
+        min_games: sp.min_games ?? 8, limit: LEADERBOARD_MAX,
+      },
     }),
     apiFetch<StandoutsLeaderboard>("/leaderboards/standouts", {
       params: { level: "Low-Major", target_level: "High-Major", limit: 8 },
@@ -120,7 +125,7 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
         Everything above the Standouts section is real, already-happened production this season -- no
         projection involved. Standouts and Back Half further down mix in the site's projection model and a
         real season-over-season split, respectively; each section says which kind it is. Use the Leaderboard
-        filters to slice by stat, level, conference, or minimum games played.
+        filters to slice by stat, level, conference, class, position, or minimum games played.
       </p>
 
       <div className="card">
@@ -159,6 +164,28 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             </select>
           </div>
           <div className="field">
+            <label htmlFor="class_year">Class</label>
+            <select id="class_year" name="class_year" defaultValue={sp.class_year ?? ""}>
+              <option value="">Any class</option>
+              {CLASS_YEARS.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="position">Position</label>
+            <select id="position" name="position" defaultValue={sp.position ?? ""}>
+              <option value="">Any position</option>
+              {POSITIONS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
             <label htmlFor="min_games">Min. games</label>
             <input id="min_games" name="min_games" type="number" min={0} defaultValue={sp.min_games ?? "8"} />
           </div>
@@ -175,6 +202,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                 <th>Player</th>
                 <th>Team</th>
                 <th>Level</th>
+                <th>Pos</th>
+                <th>Class</th>
                 <th>
                   {leaderboard.stat_label}
                   {isHoopScore && (
@@ -198,7 +227,9 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
                     <td>
                       <span className="pill" title={p.tier}>{tierAbbrev(p.tier)}</span>
                     </td>
-                    <td>{p.stat_value.toFixed(stat === "ts_pct" || stat === "fg_pct" ? 1 : 2)}</td>
+                    <td>{p.position}</td>
+                    <td>{p.class_year}</td>
+                    <td>{p.stat_value.toFixed(stat.endsWith("_pct") ? 1 : stat.startsWith("total_") ? 0 : 2)}</td>
                   </tr>
                 ))}
             </tbody>
@@ -305,6 +336,8 @@ export default async function DataPage({ searchParams }: { searchParams: Promise
             <label htmlFor="games_sort">Ranked by</label>
             <select id="games_sort" name="games_sort" defaultValue={sp.games_sort ?? "points"}>
               <option value="points">Points</option>
+              <option value="rebounds">Rebounds</option>
+              <option value="assists">Assists</option>
               <option value="production_rating">Production Rating</option>
             </select>
           </div>
@@ -892,6 +925,8 @@ function withLeaderboardPage(sp: SP, page: number): string {
   if (sp.stat) p.set("stat", sp.stat);
   if (sp.level) p.set("level", sp.level);
   if (sp.conference) p.set("conference", sp.conference);
+  if (sp.class_year) p.set("class_year", sp.class_year);
+  if (sp.position) p.set("position", sp.position);
   if (sp.min_games) p.set("min_games", sp.min_games);
   p.set("page", String(page));
   return p.toString();

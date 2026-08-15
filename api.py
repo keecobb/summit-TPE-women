@@ -158,7 +158,11 @@ def get_team_roles(team_id: int):
     """Role-based minutes for this team, computed from its own current
     roster (Starter/Sixth Man/Role Player/Depth Piece) -- lets a UI show a
     coach e.g. 'Starter (31.2 min)' as a pickable option before running
-    /project with role=starter, instead of only a free-text minutes field."""
+    /project with role=starter, instead of only a free-text minutes field.
+    Also includes `roster_roles`, the same classification applied
+    per-player in roster order, for a UI that wants to label every player
+    on the roster with her role rather than just the 4 aggregate
+    numbers."""
     conn = get_conn()
     team = conn.execute("SELECT team_id, name FROM teams WHERE team_id = ?", (team_id,)).fetchone()
     if team is None:
@@ -498,17 +502,19 @@ def get_player_leaderboard(
     level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Omit for the whole league."),
     division: str | None = Query(None, description="D1 or D2 (as recorded on the Teams sheet). Omit for both."),
     conference: str | None = Query(None, description="Exact conference name match. Omit for all conferences."),
+    class_year: str | None = Query(None, description="Exact match, e.g. FR/SO/JR/SR/GR. Omit for all classes."),
+    position: str | None = Query(None, description="Exact match, e.g. G/F/C. Omit for all positions."),
     min_games: int = Query(5, description="Exclude players with a thinner sample than this many games."),
     limit: int = Query(25, le=100),
 ):
     """A real, no-projection leaderboard -- top players this season by one
     stat (or lowest, for turnovers), optionally restricted to a tier,
-    division, and/or conference. This is what actually happened, not a
-    what-if."""
+    division, conference, class year, and/or position. This is what
+    actually happened, not a what-if."""
     conn = get_conn()
     try:
         return leaderboard(conn, stat=stat, level=level, division=division, conference=conference,
-                            min_games=min_games, limit=limit)
+                            class_year=class_year, position=position, min_games=min_games, limit=limit)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:
@@ -710,7 +716,7 @@ def get_player_efficiency_quadrant(
 @app.get("/leaderboards/best-games", dependencies=[Depends(require_api_key)])
 def get_best_single_game_performances(
     season: str | None = Query(None, description="Defaults to the cache's current season."),
-    sort: str = Query("points", description="points or production_rating -- which single-game number ranks the list."),
+    sort: str = Query("points", description="points, rebounds, assists, or production_rating -- which single-game number ranks the list."),
     level: str | None = Query(None, description=f"One of {list(VALID_LEVELS)}. Scopes to players whose own team is at that level. Omit for the whole league."),
     limit: int = Query(20, le=100),
 ):

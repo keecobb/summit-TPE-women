@@ -139,6 +139,16 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         )}
       </div>
 
+      <div className="card">
+        <h2>
+          Key Stats
+          <span className="hint" title="Each axis is scaled to a fixed, sensible ceiling for a women's college season (not a percentile or a comparison to other players -- no extra query needed for that) purely so the shape stays readable. The real number is always printed at each point.">
+            ?
+          </span>
+        </h2>
+        <PlayerRadarChart player={player} />
+      </div>
+
       {bestGames.length > 0 && (
         <div className="card">
           <h2>Best 3 Games</h2>
@@ -243,6 +253,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
                   <th>BPG</th>
                   <th>TOPG</th>
                   <th>MPG</th>
+                  <th>FG%</th>
                 </tr>
               </thead>
               <tbody>
@@ -342,7 +353,7 @@ function SplitRow({ label, row }: { label: string; row: OpponentTierSplit | null
     return (
       <tr>
         <td>{label}</td>
-        <td colSpan={8} className="section-note">
+        <td colSpan={9} className="section-note">
           No games in this split
         </td>
       </tr>
@@ -359,6 +370,7 @@ function SplitRow({ label, row }: { label: string; row: OpponentTierSplit | null
       <td>{row.avg_blocks.toFixed(1)}</td>
       <td>{row.avg_turnovers.toFixed(1)}</td>
       <td>{row.avg_minutes.toFixed(1)}</td>
+      <td>{row.fg_pct != null ? `${row.fg_pct.toFixed(1)}%` : "--"}</td>
     </tr>
   );
 }
@@ -417,6 +429,100 @@ function SeasonTrendChart({ seasons }: { seasons: PlayerTrajectorySeason[] }) {
         ))}
       </svg>
     </div>
+  );
+}
+
+// Fixed per-axis scaling ceilings, used only to lay each stat out on a 0-1
+// radius so the polygon has a legible shape -- NOT percentiles or a
+// comparison against other players (that would need a separate query this
+// chart doesn't need). Chosen as a realistic high-end for a women's
+// college season per stat. TOPG is inverted (fewer turnovers reaches
+// further out) since it's the one stat here where lower is better. The
+// real value is always printed at the vertex regardless of how the axis
+// is scaled, so the scaling choice never hides the actual number.
+const RADAR_AXES: { key: string; label: string; max: number; invert?: boolean; value: (p: PlayerDetail) => number | null }[] = [
+  { key: "ppg", label: "PPG", max: 28, value: (p) => p.ppg },
+  { key: "rpg", label: "RPG", max: 14, value: (p) => p.rpg },
+  { key: "apg", label: "APG", max: 9, value: (p) => p.apg },
+  { key: "spg", label: "SPG", max: 4, value: (p) => p.spg },
+  { key: "bpg", label: "BPG", max: 4, value: (p) => p.bpg },
+  { key: "topg", label: "TOPG", max: 5.5, invert: true, value: (p) => p.topg },
+  { key: "ts_pct", label: "TS%", max: 70, value: (p) => (p.ts_pct != null ? p.ts_pct * 100 : null) },
+];
+
+// Simple SVG radar/spider chart -- one axis per key stat above, a filled
+// polygon connecting this player's real values, 4 reference rings behind
+// it (25/50/75/100% of each axis's ceiling) so the shape reads at a
+// glance. Same plain-SVG-with-<title>-tooltips approach as SeasonTrendChart
+// above, no client-side JS needed.
+function PlayerRadarChart({ player }: { player: PlayerDetail }) {
+  const size = 360;
+  const center = size / 2;
+  const radius = 110;
+  const labelOffset = 34;
+  const n = RADAR_AXES.length;
+  const angleFor = (i: number) => (Math.PI * 2 * i) / n - Math.PI / 2;
+
+  const points = RADAR_AXES.map((axis, i) => {
+    const angle = angleFor(i);
+    const raw = axis.value(player);
+    let frac = 0;
+    if (raw != null) {
+      const scaled = axis.invert ? (axis.max - raw) / axis.max : raw / axis.max;
+      frac = Math.max(0, Math.min(1, scaled));
+    }
+    const r = frac * radius;
+    return {
+      x: center + r * Math.cos(angle),
+      y: center + r * Math.sin(angle),
+      labelX: center + (radius + labelOffset) * Math.cos(angle),
+      labelY: center + (radius + labelOffset) * Math.sin(angle),
+      axis,
+      raw,
+    };
+  });
+  const polygon = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const rings = [0.25, 0.5, 0.75, 1].map((frac) =>
+    RADAR_AXES.map((_, i) => {
+      const angle = angleFor(i);
+      const r = frac * radius;
+      return `${(center + r * Math.cos(angle)).toFixed(1)},${(center + r * Math.sin(angle)).toFixed(1)}`;
+    }).join(" ")
+  );
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Key stats radar chart">
+      {rings.map((pts, i) => (
+        <polygon key={i} points={pts} fill="none" stroke="var(--border)" strokeWidth={1} />
+      ))}
+      {RADAR_AXES.map((_, i) => {
+        const angle = angleFor(i);
+        return (
+          <line
+            key={i}
+            x1={center}
+            y1={center}
+            x2={center + radius * Math.cos(angle)}
+            y2={center + radius * Math.sin(angle)}
+            stroke="var(--border)"
+            strokeWidth={1}
+          />
+        );
+      })}
+      <polygon points={polygon} fill="var(--accent)" fillOpacity={0.25} stroke="var(--accent)" strokeWidth={2} />
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle cx={p.x} cy={p.y} r={3.5} fill="var(--accent)" />
+          <title>{`${p.axis.label}: ${p.raw != null ? p.raw.toFixed(1) : "--"}`}</title>
+          <text x={p.labelX} y={p.labelY - 6} fontSize={11} textAnchor="middle" fill="var(--text-dim)">
+            {p.axis.label}
+          </text>
+          <text x={p.labelX} y={p.labelY + 8} fontSize={12} fontWeight={700} textAnchor="middle" fill="var(--accent)">
+            {p.raw != null ? p.raw.toFixed(1) : "--"}
+          </text>
+        </g>
+      ))}
+    </svg>
   );
 }
 
