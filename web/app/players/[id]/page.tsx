@@ -7,6 +7,8 @@ import type {
 } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
+import PlayerCard from "@/components/PlayerCard";
+import PerGameProductionCard from "@/components/PerGameProductionCard";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static -- this page in
@@ -67,9 +69,7 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
     <div>
       <h1>{player.name}</h1>
       <p className="subtitle">
-        {player.position}
-        {player.height ? ` · ${player.height}` : ""} &middot; {player.class_year} &middot;{" "}
-        {player.team_name ?? "--"} ({player.team_tier ?? player.tier}) &middot; {player.season}
+        {player.season} season
         {player.thin_sample ? (
           <span className="pill pill-warn" style={{ marginLeft: 8 }}>limited sample</span>
         ) : null}
@@ -96,58 +96,126 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         </Link>
       </div>
 
-      <div className="card">
-        <h2>Per-game production</h2>
-        <div className="stat-grid">
-          <Stat label="GP" value={player.games} decimals={0} />
-          <Stat label="MPG" value={player.avg_minutes} />
-          <Stat label="PPG" value={player.ppg} />
-          <Stat label="RPG" value={player.rpg} />
-          <Stat label="APG" value={player.apg} />
-          <Stat label="SPG" value={player.spg} />
-          <Stat label="BPG" value={player.bpg} />
-          <Stat label="TOPG" value={player.topg} />
-        </div>
-      </div>
+      <PlayerCard player={player} />
 
-      <div className="card">
-        <h2>Efficiency &amp; per-40</h2>
-        <div className="stat-grid">
-          {/* null * 100 === 0 in JS -- guard explicitly so a player with too
-              few shot attempts to compute a shooting % (see build_cache.py's
-              15-attempt floor) shows "--" instead of a misleading "0.0". */}
-          <Stat label="TS%" value={player.ts_pct != null ? player.ts_pct * 100 : null} />
-          <Stat label="FG%" value={player.fg_pct != null ? player.fg_pct * 100 : null} />
-          <Stat label="Pts/40" value={player.per40_pts} />
-          <Stat label="Reb/40" value={player.per40_reb} />
-          <Stat label="Ast/40" value={player.per40_ast} />
-          <Stat label="Blk/40" value={player.per40_blk} />
-          <Stat label="Stl/40" value={player.per40_stl} />
-          <Stat label="TO/40" value={player.per40_tov} />
-          <Stat label="Summit Score" value={player.hoop_score} highlight />
+      <PerGameProductionCard player={player} />
+
+      {trajectory && trajectory.seasons.length > 0 && (
+        <div className="card">
+          <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
+          {trajectory.seasons.length > 1 && (
+            <>
+              <p className="section-note">
+                Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
+                {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
+              </p>
+              <SeasonTrendChart seasons={trajectory.seasons} />
+            </>
+          )}
+          <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Season</th>
+                <th>Team</th>
+                <th>GP</th>
+                <th>MPG</th>
+                <th>PPG</th>
+                <th>RPG</th>
+                <th>APG</th>
+                <th>TS%</th>
+                <th>Summit Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trajectory.seasons.map((s, i) => {
+                const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
+                const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
+                return (
+                  <Fragment key={s.season}>
+                    <tr>
+                      <td>{s.season}</td>
+                      <td>
+                        {s.team_name}
+                        {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
+                      </td>
+                      <td>{s.games}</td>
+                      <td>{s.avg_minutes?.toFixed(1)}</td>
+                      <td>{s.ppg?.toFixed(1)}</td>
+                      <td>{s.rpg?.toFixed(1)}</td>
+                      <td>{s.apg?.toFixed(1)}</td>
+                      <td>{s.ts_pct?.toFixed(1)}</td>
+                      <td>
+                        {s.hoop_score?.toFixed(1)}
+                        {s.thin_sample ? (
+                          <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
+                            limited
+                          </span>
+                        ) : null}
+                      </td>
+                    </tr>
+                    <SeasonGameLog playerId={player.player_id} season={s.season} />
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
         </div>
-        {player.national_percentile != null && (
-          <p className="section-note">
-            <strong>Top {player.national_percentile}%</strong> nationally by Summit Score, among{" "}
-            {player.season} Division I players on record.
-          </p>
-        )}
-        {player.in_transfer_portal != null && (
-          <p className="section-note">
-            Transfer portal status: <strong>{player.in_transfer_portal ? "In the portal" : "Not in the portal"}</strong>
-          </p>
-        )}
-      </div>
+      )}
 
       <div className="card">
         <h2>
           Key Stats
-          <span className="hint" title="Each axis is scaled to a fixed, sensible ceiling for a women's college season (not a percentile or a comparison to other players -- no extra query needed for that) purely so the shape stays readable. The real number is always printed at each point.">
+          <span className="hint" title="Each axis is scaled to a fixed, sensible ceiling for a women's college season (not a percentile or a comparison to other players), purely so the shape stays readable. The real number is always printed at each point.">
             ?
           </span>
         </h2>
+        <p className="section-note">
+          Not a percentile and not a comparison against the rest of the league -- each axis is capped at a fixed,
+          realistic ceiling for a women&apos;s college season (e.g. 28 PPG, 14 RPG, 70% TS), purely so the shape
+          stays readable at a glance. The real number is always printed at every point.
+        </p>
         <PlayerRadarChart player={player} />
       </div>
+
+      {splits && splits.total_games > 0 && (
+        <div className="card">
+          <h2>
+            Performance by Opponent Strength
+            <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
+              ?
+            </span>
+          </h2>
+          <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Split</th>
+                  <th>GP</th>
+                  <th>PPG</th>
+                  <th>RPG</th>
+                  <th>APG</th>
+                  <th>SPG</th>
+                  <th>BPG</th>
+                  <th>TOPG</th>
+                  <th>MPG</th>
+                  <th>FG%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TIERS.map((t) => (
+                  <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
+                ))}
+                <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
+                <SplitRow label="Last 10 games" row={splits.last10} />
+              </tbody>
+            </table>
+          </div>
+          <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
+        </div>
+      )}
 
       {bestGames.length > 0 && (
         <div className="card">
@@ -231,119 +299,6 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         </div>
       )}
 
-      {splits && splits.total_games > 0 && (
-        <div className="card">
-          <h2>
-            Performance by Opponent Strength
-            <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
-              ?
-            </span>
-          </h2>
-          <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Split</th>
-                  <th>GP</th>
-                  <th>PPG</th>
-                  <th>RPG</th>
-                  <th>APG</th>
-                  <th>SPG</th>
-                  <th>BPG</th>
-                  <th>TOPG</th>
-                  <th>MPG</th>
-                  <th>FG%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {TIERS.map((t) => (
-                  <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
-                ))}
-                <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
-                <SplitRow label="Last 10 games" row={splits.last10} />
-              </tbody>
-            </table>
-          </div>
-          <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
-        </div>
-      )}
-
-      {trajectory && trajectory.seasons.length > 0 && (
-        <div className="card">
-          <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
-          {trajectory.seasons.length > 1 && (
-            <>
-              <p className="section-note">
-                Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
-                {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
-              </p>
-              <SeasonTrendChart seasons={trajectory.seasons} />
-            </>
-          )}
-          <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Season</th>
-                <th>Team</th>
-                <th>GP</th>
-                <th>MPG</th>
-                <th>PPG</th>
-                <th>RPG</th>
-                <th>APG</th>
-                <th>TS%</th>
-                <th>Summit Score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trajectory.seasons.map((s, i) => {
-                const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
-                const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
-                return (
-                  <Fragment key={s.season}>
-                    <tr>
-                      <td>{s.season}</td>
-                      <td>
-                        {s.team_name}
-                        {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
-                      </td>
-                      <td>{s.games}</td>
-                      <td>{s.avg_minutes?.toFixed(1)}</td>
-                      <td>{s.ppg?.toFixed(1)}</td>
-                      <td>{s.rpg?.toFixed(1)}</td>
-                      <td>{s.apg?.toFixed(1)}</td>
-                      <td>{s.ts_pct?.toFixed(1)}</td>
-                      <td>
-                        {s.hoop_score?.toFixed(1)}
-                        {s.thin_sample ? (
-                          <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
-                            limited
-                          </span>
-                        ) : null}
-                      </td>
-                    </tr>
-                    <SeasonGameLog playerId={player.player_id} season={s.season} />
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Stat({ label, value, highlight, decimals = 1 }: { label: string; value: unknown; highlight?: boolean; decimals?: number }) {
-  const num = typeof value === "number" ? value.toFixed(decimals) : String(value ?? "--");
-  return (
-    <div className="stat-tile">
-      <div className="value" style={highlight ? { color: "var(--accent)" } : undefined}>
-        {num}
-      </div>
-      <div className="label">{label}</div>
     </div>
   );
 }
@@ -491,38 +446,44 @@ function PlayerRadarChart({ player }: { player: PlayerDetail }) {
   );
 
   return (
-    <svg width="100%" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Key stats radar chart">
-      {rings.map((pts, i) => (
-        <polygon key={i} points={pts} fill="none" stroke="var(--border)" strokeWidth={1} />
-      ))}
-      {RADAR_AXES.map((_, i) => {
-        const angle = angleFor(i);
-        return (
-          <line
-            key={i}
-            x1={center}
-            y1={center}
-            x2={center + radius * Math.cos(angle)}
-            y2={center + radius * Math.sin(angle)}
-            stroke="var(--border)"
-            strokeWidth={1}
-          />
-        );
-      })}
-      <polygon points={polygon} fill="var(--accent)" fillOpacity={0.25} stroke="var(--accent)" strokeWidth={2} />
-      {points.map((p, i) => (
-        <g key={i}>
-          <circle cx={p.x} cy={p.y} r={3.5} fill="var(--accent)" />
-          <title>{`${p.axis.label}: ${p.raw != null ? p.raw.toFixed(1) : "--"}`}</title>
-          <text x={p.labelX} y={p.labelY - 6} fontSize={11} textAnchor="middle" fill="var(--text-dim)">
-            {p.axis.label}
-          </text>
-          <text x={p.labelX} y={p.labelY + 8} fontSize={12} fontWeight={700} textAnchor="middle" fill="var(--accent)">
-            {p.raw != null ? p.raw.toFixed(1) : "--"}
-          </text>
-        </g>
-      ))}
-    </svg>
+    // Capped and centered -- on a wide desktop card this SVG would
+    // otherwise stretch to fill the full card width (viewBox scales with
+    // its container), reading as oversized next to every other chart on
+    // the page. The same cap also trims it down slightly on mobile.
+    <div style={{ maxWidth: 280, margin: "0 auto" }}>
+      <svg width="100%" viewBox={`0 0 ${size} ${size}`} role="img" aria-label="Key stats radar chart">
+        {rings.map((pts, i) => (
+          <polygon key={i} points={pts} fill="none" stroke="var(--border)" strokeWidth={1} />
+        ))}
+        {RADAR_AXES.map((_, i) => {
+          const angle = angleFor(i);
+          return (
+            <line
+              key={i}
+              x1={center}
+              y1={center}
+              x2={center + radius * Math.cos(angle)}
+              y2={center + radius * Math.sin(angle)}
+              stroke="var(--border)"
+              strokeWidth={1}
+            />
+          );
+        })}
+        <polygon points={polygon} fill="var(--accent)" fillOpacity={0.25} stroke="var(--accent)" strokeWidth={2} />
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r={3.5} fill="var(--accent)" />
+            <title>{`${p.axis.label}: ${p.raw != null ? p.raw.toFixed(1) : "--"}`}</title>
+            <text x={p.labelX} y={p.labelY - 6} fontSize={11} textAnchor="middle" fill="var(--text-dim)">
+              {p.axis.label}
+            </text>
+            <text x={p.labelX} y={p.labelY + 8} fontSize={12} fontWeight={700} textAnchor="middle" fill="var(--accent)">
+              {p.raw != null ? p.raw.toFixed(1) : "--"}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
   );
 }
 

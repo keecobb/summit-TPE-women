@@ -303,6 +303,8 @@ async function ResultView({ sp }: { sp: SP }) {
             <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.player.current_team} (now)</h3>
             <table>
               <tbody>
+                <StatRow label="GP" value={result.player.games} decimals={0} />
+                <StatRow label="GS" value={result.player.games_started} decimals={0} />
                 <StatRow label="MPG" value={result.current.avg_minutes} />
                 <StatRow label="PPG" value={result.current.ppg} />
                 <StatRow label="RPG" value={result.current.rpg} />
@@ -384,7 +386,14 @@ async function ResultView({ sp }: { sp: SP }) {
           </div>
           <div className="stat-tile">
             <div className="value">{result.player.class_year}</div>
-            <div className="label">Class / {result.player.games} GP this season</div>
+            <div className="label">Class</div>
+          </div>
+          <div className="stat-tile">
+            <div className="value">
+              {result.player.games}
+              {result.player.games_started != null ? ` / ${result.player.games_started}` : ""}
+            </div>
+            <div className="label">GP / GS this season</div>
           </div>
           <div className="stat-tile">
             <div className="value">{formatMinutesSource(result.minutes_source)}</div>
@@ -430,12 +439,19 @@ function plainLanguageNote(result: ProjectionResult): string {
   return "This is a moderate jump in competition level -- a solid estimate, with a bit more natural variation than a same-level comparison would have.";
 }
 
-function StatRow({ label, value, highlight }: { label: string; value: number | undefined; highlight?: boolean }) {
+function StatRow({
+  label, value, highlight, decimals = 1,
+}: {
+  label: string;
+  value: number | null | undefined;
+  highlight?: boolean;
+  decimals?: number;
+}) {
   return (
     <tr>
       <td style={{ fontWeight: 600 }}>{label}</td>
       <td style={highlight ? { color: "var(--accent)", fontWeight: 700, textAlign: "right" } : { textAlign: "right" }}>
-        {value?.toFixed(1) ?? "--"}
+        {value != null ? value.toFixed(decimals) : "--"}
       </td>
     </tr>
   );

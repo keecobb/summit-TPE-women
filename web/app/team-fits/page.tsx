@@ -44,6 +44,8 @@ function fitsSortValue(c: FitCandidate & { fit_score: number }, column: string):
     case "current_team": return c.current_team;
     case "level": return c.level;
     case "class_year": return c.class_year;
+    case "games": return c.games;
+    case "games_started": return c.games_started ?? -1;
     case "fit_score": return c.fit_score;
     case "hoop_score": return c.hoop_score;
     case "confidence": return CONFIDENCE_RANK[c.confidence] ?? -1;
@@ -316,6 +318,8 @@ async function FitsView({ sp }: { sp: SP }) {
                   <SortableTh column="current_team" label="Current team" defaultDir="asc" />
                   <SortableTh column="level" label="Level" defaultDir="asc" />
                   <SortableTh column="class_year" label="Class" defaultDir="asc" />
+                  <SortableTh column="games" label="GP" />
+                  <SortableTh column="games_started" label="GS" />
                   <th>Projected</th>
                   <SortableTh column="hoop_score" label="Proj. Summit Score" />
                   <SortableTh column="fit_score" label="Fit Score" />
@@ -334,6 +338,8 @@ async function FitsView({ sp }: { sp: SP }) {
                       <span className="pill" title={c.level}>{tierAbbrev(c.level)}</span>
                     </td>
                     <td>{c.class_year}</td>
+                    <td>{c.games}</td>
+                    <td>{c.games_started ?? "--"}</td>
                     <td>
                       {Object.entries(c.projected)
                         .filter(([k]) => k !== "minutes")

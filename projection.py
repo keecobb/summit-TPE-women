@@ -197,24 +197,34 @@ def _interp_spread(gap_std):
  
 # ---------- role-based minutes (see calibration note above) ----------
 # Coaches set a player's role at the TARGET team, computed from that
-# team's own current roster's actual minutes distribution -- e.g. "Starter"
-# at a deep, veteran team means something different than "Starter" at a
-# thin roster, and this reflects that instead of using one flat number.
-# Ranks are by avg_minutes among that team's own rotation players (the same
-# >=5 games / >=100 total minutes floor already used for cache eligibility
-# -- see summit_calc.py). manual minutes_override always remains available
-# and always takes priority over a role.
-ROLE_STARTER_COUNT = 5
-ROLE_SIXTH_MAN_RANK = 6
-# Rank 7 through the end of the roster (no fixed cutoff -- a deep bench and
-# a thin one both just run to whatever their own last eligible player is)
-# splits into role_player vs. depth_piece by an actual minutes threshold,
-# not by rank position: anyone still averaging real rotation minutes is a
-# role player regardless of where she ranks on the bench, and anyone below
-# that bar is a depth piece. Matches how a coach actually thinks about a
-# bench -- rank alone doesn't tell you if the 8th player is playing 22
-# minutes a night or 4.
-ROLE_PLAYER_MIN_MINUTES = 20.0
+# team's own current roster's actual games-started / minutes profile --
+# e.g. "Starter" at a deep, veteran team means something different than
+# "Starter" at a thin roster, and this reflects that instead of using one
+# flat number. manual minutes_override always remains available and
+# always takes priority over a role.
+#
+# Classification (phase 11h -- replaced an earlier rank-based version,
+# which ranked the roster by avg_minutes and took a fixed top-5/#6/#7+
+# cut. That produced almost no "Role Player" labels on real rosters,
+# because avg_minutes rank alone doesn't distinguish a part-time starter
+# from a pure bench player. This version uses each player's own real
+# games-started rate instead of a rank position):
+#   - Starter: starts in >= ROLE_STARTER_START_PCT of the games she's
+#     played (not of the team's total games -- her OWN games played).
+#   - Sixth Man: among players who start in < ROLE_SIXTH_MAN_START_PCT of
+#     their own games, the SINGLE one with the highest avg_minutes (the
+#     bench player a coach turns to first). Not a fixed rank -- if two
+#     teams have very different bench depth, "sixth man" still means "the
+#     top bench player," not "whoever happens to be 6th by minutes."
+#   - Depth Piece: not a starter or the sixth man, and averages under
+#     ROLE_DEPTH_PIECE_MAX_MINUTES minutes/game.
+#   - Role Player: everyone else -- meaningful bench minutes, but not the
+#     clear first player off it (e.g. a rotation piece starting 40-60% of
+#     games, or a bench player over the depth-piece minutes floor who
+#     isn't the single highest-minutes non-starter).
+ROLE_STARTER_START_PCT = 0.80
+ROLE_SIXTH_MAN_START_PCT = 0.25
+ROLE_DEPTH_PIECE_MAX_MINUTES = 10.0
 ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
  
 # |strength_gap| / std beyond which a projection is flagged as an extreme
@@ -299,19 +309,52 @@ class ProjectionError(ValueError):
     pass
  
  
+def games_started_by_player(conn, season=None):
+    """player_id -> real games-started count this season, summed live from
+    player_game_logs.started (not precomputed anywhere on `players`).
+    Returns every player who has at least one logged game this season
+    (including a real 0 for someone who played but never started), so a
+    caller can distinguish "started 0 of her real games" (0) from "no game
+    log data at all this season" (missing from the dict entirely -- a
+    zero-game placeholder row, see /players' inclusion-floor note) via
+    plain dict.get(). One query for the whole league, so callers that need
+    this for many players at once (roster/leaderboard listings,
+    find_fits' full candidate pool) do it once instead of once per player.
+    """
+    season = season or _load_meta(conn)["season"]
+    rows = conn.execute(
+        "SELECT player_id, SUM(CASE WHEN started = 1 THEN 1 ELSE 0 END) AS gs "
+        "FROM player_game_logs WHERE season = ? GROUP BY player_id",
+        (season,),
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
 def team_roles(conn, team_id):
     """Computes the 4 role-based minutes values for a team from its own
-    current roster (players meeting the cache's normal games/minutes
-    eligibility floor, ranked by avg_minutes). Returns None fields where a
-    team's roster doesn't have enough eligible players to fill a role
-    (thin rosters, teams with lots of injuries/inactives this season, etc)
+    current roster, using each player's real games-started rate (see the
+    ROLE_STARTER_START_PCT/ROLE_SIXTH_MAN_START_PCT/ROLE_DEPTH_PIECE_MAX_MINUTES
+    block above for the exact rule). Returns None fields where a team's
+    roster doesn't have enough eligible players to fill a role (thin
+    rosters, teams with lots of injuries/inactives this season, etc)
     rather than guessing.
     """
+    season = _load_meta(conn)["season"]
+    gs_by_player = games_started_by_player(conn, season)
+
     rows = conn.execute(
-        "SELECT player_id, name, avg_minutes, hoop_score, thin_sample FROM players WHERE team_id = ? ORDER BY avg_minutes DESC",
+        "SELECT player_id, name, avg_minutes, games, hoop_score, thin_sample FROM players "
+        "WHERE team_id = ? ORDER BY avg_minutes DESC",
         (team_id,),
     ).fetchall()
-    roster = [dict(player_id=r[0], name=r[1], avg_minutes=r[2]) for r in rows]
+    roster = []
+    for r in rows:
+        games_started = gs_by_player.get(r["player_id"])
+        start_pct = (games_started / r["games"]) if (r["games"] and games_started is not None) else None
+        roster.append(dict(
+            player_id=r["player_id"], name=r["name"], avg_minutes=r["avg_minutes"], games=r["games"],
+            games_started=games_started, start_pct=start_pct,
+        ))
 
     # Roster-wide Summit Score average -- only real (non-thin-sample) profiles
     # count, so a handful of zero-game placeholder rows (see /players's
@@ -320,22 +363,41 @@ def team_roles(conn, team_id):
     real_scores = [r["hoop_score"] for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
     roster_avg_summit_score = round(sum(real_scores) / len(real_scores), 1) if real_scores else None
 
-    starters = roster[:ROLE_STARTER_COUNT]
+    # Starter: starts in >= 80% of the games SHE'S played (not the team's
+    # total games -- a player who missed the first half the season to
+    # injury but has started every game since is still a starter).
+    starters = [p for p in roster if p["start_pct"] is not None and p["start_pct"] >= ROLE_STARTER_START_PCT]
+    starter_ids = {p["player_id"] for p in starters}
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
 
-    sixth_man_minutes = None
-    if len(roster) >= ROLE_SIXTH_MAN_RANK:
-        sixth_man_minutes = round(roster[ROLE_SIXTH_MAN_RANK - 1]["avg_minutes"], 1)
+    # Sixth Man: the single highest-avg_minutes player among everyone who
+    # starts in under 25% of her own games -- not a fixed rank. A team
+    # with a deep, low-minutes bench and a team with a thin one both just
+    # get whichever one non-starting player actually plays the most.
+    sixth_man_pool = [
+        p for p in roster
+        if p["player_id"] not in starter_ids and p["start_pct"] is not None
+        and p["start_pct"] < ROLE_SIXTH_MAN_START_PCT and p["avg_minutes"] is not None
+    ]
+    sixth_man = max(sixth_man_pool, key=lambda p: p["avg_minutes"]) if sixth_man_pool else None
+    sixth_man_minutes = round(sixth_man["avg_minutes"], 1) if sixth_man else None
 
-    # Rank 7 through the end of the roster, split by an actual minutes
-    # threshold rather than a fixed rank window -- see ROLE_PLAYER_MIN_MINUTES
-    # above. role_player is real rotation players who still play meaningful
-    # minutes off the bench; depth_piece is genuine end-of-bench spot minutes.
-    # Both are now averages of REAL players (not a formula derived from the
-    # starter average, which role_player used to be).
-    bench = roster[ROLE_SIXTH_MAN_RANK:]
-    role_players = [p for p in bench if p["avg_minutes"] >= ROLE_PLAYER_MIN_MINUTES]
-    depth_players = [p for p in bench if p["avg_minutes"] < ROLE_PLAYER_MIN_MINUTES]
+    # Everyone else: under ROLE_DEPTH_PIECE_MAX_MINUTES MPG -> depth_piece,
+    # otherwise role_player. Players with no computable start_pct or
+    # avg_minutes (zero-game placeholder rows) are excluded from every
+    # bucket -- there's no real data to classify them on.
+    role_players, depth_players = [], []
+    for p in roster:
+        if p["player_id"] in starter_ids:
+            continue
+        if sixth_man is not None and p["player_id"] == sixth_man["player_id"]:
+            continue
+        if p["avg_minutes"] is None:
+            continue
+        if p["avg_minutes"] < ROLE_DEPTH_PIECE_MAX_MINUTES:
+            depth_players.append(p)
+        else:
+            role_players.append(p)
 
     role_player_minutes = None
     role_player_range = None
@@ -348,27 +410,29 @@ def team_roles(conn, team_id):
     if depth_players:
         depth_minutes = round(sum(p["avg_minutes"] for p in depth_players) / len(depth_players), 1)
 
-    # Per-player role labels, in the same rank order as `roster` -- lets a
-    # caller (the Roster tab) show which bucket each individual player
-    # actually fell into, not just the 4 aggregate minutes numbers above.
-    # Same classification the aggregates above are built from: first
-    # ROLE_STARTER_COUNT by avg_minutes are Starter, the next one is Sixth
-    # Man, and everyone after that is Role Player or Depth Piece depending
-    # on whether she clears ROLE_PLAYER_MIN_MINUTES.
+    # Per-player role labels, in the same avg_minutes-descending order as
+    # `roster` -- lets a caller (the Roster tab) show which bucket each
+    # individual player actually fell into, not just the 4 aggregate
+    # minutes numbers above. Built from the exact same buckets above, not
+    # recomputed with separate logic, so the two views can't drift apart.
+    depth_ids = {p["player_id"] for p in depth_players}
+    role_player_ids = {p["player_id"] for p in role_players}
     roster_roles = []
-    for i, p in enumerate(roster):
-        if i < ROLE_STARTER_COUNT:
+    for p in roster:
+        if p["player_id"] in starter_ids:
             role = "Starter"
-        elif i == ROLE_SIXTH_MAN_RANK - 1:
+        elif sixth_man is not None and p["player_id"] == sixth_man["player_id"]:
             role = "Sixth Man"
-        elif p["avg_minutes"] is not None and p["avg_minutes"] >= ROLE_PLAYER_MIN_MINUTES:
+        elif p["player_id"] in depth_ids:
+            role = "Depth Piece"
+        elif p["player_id"] in role_player_ids:
             role = "Role Player"
         else:
-            role = "Depth Piece"
+            role = None  # no real data to classify (zero-game placeholder row)
         roster_roles.append(dict(
             player_id=p["player_id"], name=p["name"],
             avg_minutes=round(p["avg_minutes"], 1) if p["avg_minutes"] is not None else None,
-            role=role,
+            games=p["games"], games_started=p["games_started"], role=role,
         ))
 
     return dict(
@@ -376,16 +440,18 @@ def team_roles(conn, team_id):
         roster_size=len(roster),
         roster_avg_summit_score=roster_avg_summit_score,
         roster_avg_summit_score_count=len(real_scores),
-        starter=dict(minutes=starter_minutes, player_count=len(starters)),
-        sixth_man=dict(minutes=sixth_man_minutes),
+        starter=dict(minutes=starter_minutes, player_count=len(starters),
+                     note=f"real average of every player who starts in {ROLE_STARTER_START_PCT:.0%}+ of the games "
+                          f"she's played this season."),
+        sixth_man=dict(minutes=sixth_man_minutes,
+                        note=f"the single highest-minutes player among everyone who starts in under "
+                             f"{ROLE_SIXTH_MAN_START_PCT:.0%} of her own games -- not a fixed rank."),
         role_player=dict(minutes=role_player_minutes, range=role_player_range, player_count=len(role_players),
-                          note=f"real average of rank #{ROLE_SIXTH_MAN_RANK + 1}-and-later bench players who still "
-                               f"average {ROLE_PLAYER_MIN_MINUTES:.0f}+ minutes/game -- not a formula, and not tied "
-                               f"to a fixed rank window."),
+                          note=f"real average of every non-starter, non-sixth-man player averaging "
+                               f"{ROLE_DEPTH_PIECE_MAX_MINUTES:.0f}+ minutes/game."),
         depth_piece=dict(minutes=depth_minutes, player_count=len(depth_players),
-                          note=f"real average of every rank #{ROLE_SIXTH_MAN_RANK + 1}-and-later bench player under "
-                               f"{ROLE_PLAYER_MIN_MINUTES:.0f} minutes/game -- runs to the end of the roster, not "
-                               f"capped at a fixed rank."),
+                          note=f"real average of every non-starter, non-sixth-man player under "
+                               f"{ROLE_DEPTH_PIECE_MAX_MINUTES:.0f} minutes/game."),
         roster_roles=roster_roles,
     )
  
@@ -524,7 +590,7 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
         player=dict(id=player["player_id"], name=player["name"], position=player["position"],
                     class_year=player["class_year"], current_team=current_team["name"],
                     current_division=player["division"], current_tier=current_team["tier"],
-                    games=player["games"], season=meta["season"]),
+                    games=player["games"], games_started=player.get("games_started"), season=meta["season"]),
         current=dict(ppg=round(player["ppg"], 1), rpg=round(player["rpg"], 1), apg=round(player["apg"], 1),
                      bpg=round(player["bpg"], 1) if player.get("bpg") is not None else None,
                      spg=round(player["spg"], 1) if player.get("spg") is not None else None,
@@ -616,14 +682,20 @@ def project_player(conn, player_id, target_team_id, minutes_override=None, role=
                                f"current-season cache -- can't compute a strength gap.")
  
     meta = _load_meta(conn)
- 
+
+    # Games started -- not a column on `players`, summed live from
+    # player_game_logs the same way team_roles() does. Attached onto
+    # `player` before _core_projection() runs so it flows into the
+    # returned "current" block alongside games/ppg/etc.
+    player["games_started"] = games_started_by_player(conn, meta["season"]).get(player_id)
+
     role_info = None
     if role is not None:
         if role not in ROLE_NAMES:
             raise ProjectionError(f"role must be one of {ROLE_NAMES}, got {role!r}.")
         roles = team_roles(conn, target_team_id)
         role_info = roles[role]
- 
+
     return _core_projection(player, current_team, target_team, meta,
                              minutes_override=minutes_override, role=role, role_info=role_info)
  
@@ -872,6 +944,7 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
 
     meta = _load_meta(conn)
     teams_by_id = _all_teams_by_id(conn)
+    gs_by_player = games_started_by_player(conn, meta["season"])
 
     role_info = None
     if role is not None:
@@ -993,6 +1066,7 @@ def find_fits(conn, team_id, stat=None, stats=None, limit=15, min_games=5, trans
             current_division=player["division"], current_tier=current_team["tier"],
             level=current_team["tier"],
             in_transfer_portal=player.get("in_transfer_portal"),
+            games=player["games"], games_started=gs_by_player.get(player["player_id"]),
             projected=dict(minutes=result["projected"]["minutes"], **projected_stats),
             hoop_score=result["projected"]["hoop_score"],
             confidence=result["confidence"],

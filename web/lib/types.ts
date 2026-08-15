@@ -46,6 +46,11 @@ export interface Player {
   position: string;
   class_year: string;
   games: number;
+  // Not a column on `players` -- summed live from player_game_logs.started
+  // (see games_started_by_player() in projection.py). null means no game
+  // log data at all this season (zero-game placeholder row), distinct
+  // from a real 0 (played but never started).
+  games_started?: number | null;
   ppg: number;
   rpg: number;
   apg: number;
@@ -70,6 +75,12 @@ export interface PlayerDetail extends Player {
   avg_minutes: number;
   ts_pct: number;
   fg_pct: number;
+  // 3-point % / free-throw %, same 0-1-fraction convention as ts_pct/fg_pct
+  // above -- also not columns on `players`, summed live from
+  // player_game_logs. null if she's never attempted one (or zero attempts
+  // on record this season).
+  tfg_pct: number | null;
+  ft_pct: number | null;
   per40_pts: number;
   per40_reb: number;
   per40_ast: number;
@@ -89,23 +100,28 @@ export interface TeamRoles {
   roster_size: number;
   roster_avg_summit_score: number | null;
   roster_avg_summit_score_count: number;
-  starter: { minutes: number | null; player_count: number };
-  sixth_man: { minutes: number | null };
-  // role_player/depth_piece are real averages of actual rank-7-and-later
-  // bench players, split by whether they still average 20+ minutes/game --
-  // not a formula, and not capped at a fixed rank (see projection.py's
-  // team_roles()). minutes/range are null when zero players qualify for
-  // that bucket (e.g. a team with no bench player over the 20 MPG line).
+  // Classification (phase 11h -- real games-started rate, not an
+  // avg_minutes rank): Starter = starts in >=80% of her own games played.
+  // Sixth Man = the single highest-avg_minutes player among everyone who
+  // starts in <25% of her own games. Depth Piece = not a starter/sixth
+  // man and under 10 MPG. Role Player = everyone else. See
+  // projection.py's team_roles() for the full rule.
+  starter: { minutes: number | null; player_count: number; note: string };
+  sixth_man: { minutes: number | null; note: string };
   role_player: { minutes: number | null; range: [number, number] | null; player_count: number; note: string };
   depth_piece: { minutes: number | null; player_count: number; note: string };
   // Same 4-way classification applied to every individual player on the
   // roster, in roster (avg_minutes descending) order -- lets a UI label
   // each player rather than just showing the 4 aggregate numbers above.
+  // role is null only for a zero-game placeholder row with no real data
+  // to classify.
   roster_roles: {
     player_id: number;
     name: string;
     avg_minutes: number | null;
-    role: "Starter" | "Sixth Man" | "Role Player" | "Depth Piece";
+    games: number;
+    games_started: number | null;
+    role: "Starter" | "Sixth Man" | "Role Player" | "Depth Piece" | null;
   }[];
 }
 
@@ -141,6 +157,10 @@ export interface FitCandidate {
   current_tier: string;
   level: string;
   in_transfer_portal: boolean | null;
+  // Her real CURRENT-season games played/started (not projected -- there's
+  // no meaningful "projected games started" for a hypothetical transfer).
+  games: number;
+  games_started: number | null;
   projected: Record<string, number>;
   hoop_score: number;
   confidence: string;
@@ -309,6 +329,7 @@ export interface ProjectionResult {
     current_division: string;
     current_tier: string;
     games: number;
+    games_started: number | null;
     season: string;
   };
   current: Record<string, number>;

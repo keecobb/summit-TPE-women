@@ -244,6 +244,8 @@ async function RosterTab({ id }: { id: string }) {
               <th>Height</th>
               <th>Class</th>
               <th>Role</th>
+              <th>GP</th>
+              <th>GS</th>
               <th>PPG</th>
               <th>RPG</th>
               <th>APG</th>
@@ -260,6 +262,8 @@ async function RosterTab({ id }: { id: string }) {
                 <td>{p.height ?? "--"}</td>
                 <td>{p.class_year}</td>
                 <td>{roleByPlayer.get(p.player_id) ?? "--"}</td>
+                <td>{p.games}</td>
+                <td>{p.games_started ?? "--"}</td>
                 <td>{p.ppg?.toFixed(1)}</td>
                 <td>{p.rpg?.toFixed(1)}</td>
                 <td>{p.apg?.toFixed(1)}</td>

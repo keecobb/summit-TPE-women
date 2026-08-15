@@ -54,8 +54,8 @@ from pydantic import BaseModel
 from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
     back_half_leaderboard, best_single_game_performances, conference_standings, find_fits, game_detail,
-    leaderboard, leap_candidates, opponent_split_leaderboard, player_efficiency_quadrant, player_game_logs,
-    player_splits, player_trajectory, project_batch, project_player, season_jump_leaderboard,
+    games_started_by_player, leaderboard, leap_candidates, opponent_split_leaderboard, player_efficiency_quadrant,
+    player_game_logs, player_splits, player_trajectory, project_batch, project_player, season_jump_leaderboard,
     standout_projections, team_efficiency_quadrant, team_needs, team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
@@ -268,8 +268,18 @@ def list_players(
             LIMIT ? OFFSET ?""",
         params + [limit, offset],
     ).fetchall()
+    # games_started: not a column on `players`, summed live from
+    # player_game_logs (one query for the whole league, not one per row --
+    # see games_started_by_player's docstring). Missing from the map means
+    # no game log data at all this season (zero-game placeholder row),
+    # kept as None rather than 0 so the frontend can show "--" instead of
+    # a misleading "started 0 games."
+    gs_by_player = games_started_by_player(conn)
     conn.close()
-    return [dict(r) for r in rows]
+    result = [dict(r) for r in rows]
+    for d in result:
+        d["games_started"] = gs_by_player.get(d["player_id"])
+    return result
  
  
 @app.get("/players/{player_id}", dependencies=[Depends(require_api_key)])
@@ -313,6 +323,28 @@ def get_player_detail(player_id: int):
         result["national_percentile"] = round(100 * (better + 1) / total, 2) if total else None
     else:
         result["national_percentile"] = None
+
+    # games_started -- not a column on `players`, summed live from
+    # player_game_logs.started. None (not 0) if she has no game log rows
+    # at all this season (zero-game placeholder row) -- see
+    # games_started_by_player's docstring.
+    result["games_started"] = games_started_by_player(conn, result.get("season")).get(player_id)
+
+    # 3FG% / FT% (phase 11h) -- like games_started, not columns on
+    # `players` (only ts_pct/fg_pct are precomputed there). Summed live as
+    # total makes / total attempts across the season (same convention
+    # ts_pct/fg_pct already use, and the same one /leaderboards/players'
+    # tfg_pct/ft_pct use), gated by a >=1-attempt floor so a player who's
+    # never taken a 3 shows null instead of a misleading 0.0%. Both are
+    # 0-1 fractions, same as ts_pct/fg_pct, so the frontend's existing
+    # "* 100 for display" convention applies unchanged.
+    shooting = conn.execute(
+        "SELECT SUM(tfgm) AS tfgm, SUM(tfga) AS tfga, SUM(ftm) AS ftm, SUM(fta) AS fta "
+        "FROM player_game_logs WHERE player_id = ? AND season = ?",
+        (player_id, result.get("season")),
+    ).fetchone()
+    result["tfg_pct"] = (shooting["tfgm"] / shooting["tfga"]) if shooting and shooting["tfga"] else None
+    result["ft_pct"] = (shooting["ftm"] / shooting["fta"]) if shooting and shooting["fta"] else None
 
     conn.close()
     return result

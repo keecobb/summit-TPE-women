@@ -109,6 +109,26 @@ export default function SeasonGameLog({ playerId, season }: { playerId: number; 
                       </tr>
                     ))}
                   </tbody>
+                  <tfoot>
+                    {(() => {
+                      const t = seasonTotals(games);
+                      return (
+                        <tr style={{ fontWeight: 700, borderTop: "2px solid var(--border)" }}>
+                          <td colSpan={2}>Season totals ({games.length} game{games.length === 1 ? "" : "s"})</td>
+                          <td>{t.minutes.toFixed(0)}</td>
+                          <td>{t.points}</td>
+                          <td>{t.rebounds}</td>
+                          <td>{t.assists}</td>
+                          <td>{t.steals}</td>
+                          <td>{t.blocks}</td>
+                          <td>{t.turnovers}</td>
+                          <td>{t.fgm}-{t.fga}</td>
+                          <td>{t.tfgm}-{t.tfga}</td>
+                          <td>{t.ftm}-{t.fta}</td>
+                        </tr>
+                      );
+                    })()}
+                  </tfoot>
                 </table>
               </div>
             )}
@@ -123,4 +143,17 @@ function formatDate(iso: string): string {
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
+}
+
+// Real season sums across every logged game -- plain addition, not derived
+// from any per-game average (which would drift from rounding). Same
+// counting stats already shown per row, just totaled.
+function seasonTotals(games: PlayerGameLogRow[]) {
+  const sum = (key: keyof PlayerGameLogRow) =>
+    games.reduce((acc, g) => acc + (Number(g[key]) || 0), 0);
+  return {
+    minutes: sum("minutes"), points: sum("points"), rebounds: sum("rebounds"), assists: sum("assists"),
+    steals: sum("steals"), blocks: sum("blocks"), turnovers: sum("turnovers"),
+    fgm: sum("fgm"), fga: sum("fga"), tfgm: sum("tfgm"), tfga: sum("tfga"), ftm: sum("ftm"), fta: sum("fta"),
+  };
 }

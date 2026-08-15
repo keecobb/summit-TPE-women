@@ -362,6 +362,40 @@ h2 {
   color: #191008;
 }
 
+/* Small 2-way (or N-way) switch, e.g. "Per Game" / "Per 40" on the player
+   profile's Per-Game Production card -- a segmented control rather than a
+   pair of separate buttons, so the two options read as one control with a
+   single active state. */
+.toggle-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.toggle-btn {
+  padding: 6px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: none;
+  background: var(--bg-panel-2);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.toggle-btn + .toggle-btn {
+  border-left: 1px solid var(--border);
+}
+
+.toggle-btn.active {
+  background: var(--green);
+  color: #fff;
+}
+
+.toggle-btn:hover:not(.active) {
+  color: var(--text);
+}
+
 .card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
