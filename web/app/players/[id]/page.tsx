@@ -18,12 +18,32 @@ import PerGameProductionCard from "@/components/PerGameProductionCard";
 // out-of-sync cached snapshot until the next revalidation, matching the
 // "sometimes some data doesn't show until I refresh" report. See
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup.
+//
+// Phase 11i: `force-dynamic` alone turned out NOT to be a complete fix --
+// it stops this whole route from being served as static HTML (the Full
+// Route Cache), but each individual `apiFetch()` call below still has its
+// own independent Data Cache entry, keyed by URL, that a `revalidate: 60`
+// option lets serve stale for up to 60 real seconds regardless of the
+// route-level setting -- confirmed directly against this app (not just
+// from docs) while re-testing phase 11h's backend changes: after editing
+// api.py, the Roster/Team Fits pages kept showing "--" for the new
+// games_started field for close to a minute before self-correcting, with
+// no browser refresh able to force it sooner. That's the same failure
+// shape as the "Summit Score / per-game production sometimes wrong until
+// I refresh" report -- any time refresh_pipeline.py swaps in new data (or
+// a deploy changes what a response contains), the exact same up-to-60s
+// window opens on every URL that was already warm in the cache. The
+// player's own primary record below is the single source for BOTH the
+// PlayerCard's Summit Score and PerGameProductionCard's stats, so this one
+// fetch is set to `revalidate: 0` (always live -- no Data Cache entry at
+// all) rather than a shorter timer, since this route is already fully
+// dynamic per-request and there's no static-page benefit left to protect.
 export const dynamic = "force-dynamic";
 
 export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
 
-  const player = await apiFetch<PlayerDetail>(`/players/${id}`, { revalidate: 60 });
+  const player = await apiFetch<PlayerDetail>(`/players/${id}`, { revalidate: 0 });
 
   let trajectory: PlayerTrajectory | null = null;
   try {

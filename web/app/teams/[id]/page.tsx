@@ -9,6 +9,15 @@ import RoleStat from "@/components/RoleStat";
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
+//
+// Phase 11i: `force-dynamic` only controls the Full Route Cache -- each
+// `apiFetch()` call below still carries its own independent Data Cache
+// entry, which a `revalidate: 60` option lets serve stale for up to 60
+// real seconds regardless of this route-level setting. The team/roles/
+// roster calls that feed this page's Summit Score, roster avg, and
+// per-player GP/GS/role fields are set to `revalidate: 0` (always live)
+// below for that reason -- see the matching note on the player profile
+// page for how this was confirmed against the running app, not just docs.
 export const dynamic = "force-dynamic";
 
 const TABS = [
@@ -33,7 +42,7 @@ export default async function TeamDetailPage({
 
   let team: Team;
   try {
-    team = await apiFetch<Team>(`/teams/${id}`, { revalidate: 60 });
+    team = await apiFetch<Team>(`/teams/${id}`, { revalidate: 0 });
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) notFound();
     throw e;
@@ -69,7 +78,7 @@ export default async function TeamDetailPage({
 
 async function OverviewTab({ id, team }: { id: string; team: Team }) {
   const [roles, needs] = await Promise.all([
-    apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 60 }),
+    apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 0 }),
     // top_n only controls the length of `weaknesses` below -- full_profile
     // always returns every category regardless, which is what the Team
     // Stat Profile chart uses.
@@ -215,8 +224,8 @@ function TeamProfileChart({ profile }: { profile: TeamNeedCategory[] }) {
 
 async function RosterTab({ id }: { id: string }) {
   const [roster, roles] = await Promise.all([
-    apiFetch<Player[]>("/players", { params: { team_id: id, limit: 50 } }),
-    apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 60 }),
+    apiFetch<Player[]>("/players", { params: { team_id: id, limit: 50 }, revalidate: 0 }),
+    apiFetch<TeamRoles>(`/teams/${id}/roles`, { revalidate: 0 }),
   ]);
 
   if (roster.length === 0) return <p className="empty-state">No players on record for this team.</p>;
