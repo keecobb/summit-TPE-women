@@ -62,10 +62,10 @@ they want more playing time, and mostly get it," which would badly
 overstate minutes if baked into an auto-formula. That's exactly why minutes
 now default to a role-based system anchored to the TARGET team's actual
 current roster (see team_roles() below) instead of a strength-gap formula
--- a coach picking "Starter" or "Sixth Man" is setting the role directly
-from real data about that specific roster, which sidesteps the confound
-entirely. minutes_override (manual entry) always remains available and
-always wins if given.
+-- a coach picking "Solidified Starter" or "Sixth Man" is setting the role
+directly from real data about that specific roster, which sidesteps the
+confound entirely. minutes_override (manual entry) always remains
+available and always wins if given.
  
 ---- v2 additions (this pass) ----
  
@@ -198,19 +198,29 @@ def _interp_spread(gap_std):
 # ---------- role-based minutes (see calibration note above) ----------
 # Coaches set a player's role at the TARGET team, computed from that
 # team's own current roster's actual games-started / minutes profile --
-# e.g. "Starter" at a deep, veteran team means something different than
-# "Starter" at a thin roster, and this reflects that instead of using one
-# flat number. manual minutes_override always remains available and
-# always takes priority over a role.
+# e.g. "Solidified Starter" at a deep, veteran team means something
+# different than "Solidified Starter" at a thin roster, and this reflects
+# that instead of using one flat number. manual minutes_override always
+# remains available and always takes priority over a role.
 #
-# Classification (phase 11h -- replaced an earlier rank-based version,
-# which ranked the roster by avg_minutes and took a fixed top-5/#6/#7+
-# cut. That produced almost no "Role Player" labels on real rosters,
-# because avg_minutes rank alone doesn't distinguish a part-time starter
-# from a pure bench player. This version uses each player's own real
-# games-started rate instead of a rank position):
-#   - Starter: starts in >= ROLE_STARTER_START_PCT of the games she's
-#     played (not of the team's total games -- her OWN games played).
+# Classification (phase 15 -- tightened the start-rate thresholds and
+# renamed the top label from a plain rank-based-sounding "Starter" version
+# in phase 11h. That version required starting >=80% of her own games,
+# which turned out too strict for real rosters: several real, obvious
+# starters who missed a handful of games (injury, a single DNP-coach's
+# decision, a early-season illness) fell just under 80% and got
+# mislabeled Role Player. It also meant some rosters showed 0-2
+# "Starters" even though the team clearly plays a normal starting five --
+# the label just couldn't confirm all 5, since this is a real,
+# confirmable-from-real-data classification, not an assumption that
+# exactly 5 players must always qualify (see /teams/{id}/optimal-lineup
+# below for the tool that always suggests a full, hypothetical 5
+# regardless of what's provable from real starts data). Renamed the label
+# itself to "Solidified Starter" so it's clear these are the players a
+# team's real games-started rate can confirm are locked-in starters, not
+# a forced count of exactly 5):
+#   - Solidified Starter: starts in >= ROLE_STARTER_START_PCT of the games
+#     she's played (not of the team's total games -- her OWN games played).
 #   - Sixth Man: among players who start in < ROLE_SIXTH_MAN_START_PCT of
 #     their own games AND have played in more than
 #     ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT of the TEAM's games this season,
@@ -228,18 +238,30 @@ def _interp_spread(gap_std):
 #     non-starter, non-sixth-man player. Note this is against the TEAM's
 #     total games this season, not the player's own -- unlike the starter/
 #     sixth-man start-rate checks above, which are intentionally against
-#     each player's own games played (see the Starter note below).
-#   - Depth Piece: not a starter or the sixth man, and averages under
-#     ROLE_DEPTH_PIECE_MAX_MINUTES minutes/game.
+#     each player's own games played (see the Solidified Starter note
+#     above).
+#   - Depth Piece: not a solidified starter or the sixth man, and averages
+#     under ROLE_DEPTH_PIECE_MAX_MINUTES minutes/game.
 #   - Role Player: everyone else -- meaningful bench minutes, but not the
 #     clear first player off it (e.g. a rotation piece starting 40-60% of
 #     games, or a bench player over the depth-piece minutes floor who
 #     isn't the single highest-minutes non-starter).
-ROLE_STARTER_START_PCT = 0.80
-ROLE_SIXTH_MAN_START_PCT = 0.25
+ROLE_STARTER_START_PCT = 0.65
+ROLE_SIXTH_MAN_START_PCT = 0.35
 ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT = 0.50
 ROLE_DEPTH_PIECE_MAX_MINUTES = 10.0
 ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
+
+# optimal_lineup()-specific realism gate -- see that function's docstring.
+# A player is only eligible for its Starter/Sixth Man labels if fewer than
+# LINEUP_MAX_OUT_MINUTED_BY + 1 other real-profile teammates average more
+# real minutes/game than she does. Bounds how far the composite-score
+# ranking (Summit Score + production, intentionally minutes-agnostic) can
+# stray from playing-time reality -- e.g. a real case on one roster had a
+# composite-score "Starter" averaging ~10 real minutes/game while 4 real
+# bench players each averaged more than her, which isn't a realistic
+# starter no matter how efficient her limited minutes were.
+LINEUP_MAX_OUT_MINUTED_BY = 3
 
 # role_translation()-specific sample floor -- stricter than the site-wide
 # thin_sample floor (5 games / 100 minutes) used everywhere else. Applying a
@@ -405,15 +427,18 @@ def team_roles(conn, team_id):
     real_scores = [r["hoop_score"] for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
     roster_avg_summit_score = round(sum(real_scores) / len(real_scores), 1) if real_scores else None
 
-    # Starter: starts in >= 80% of the games SHE'S played (not the team's
-    # total games -- a player who missed the first half the season to
-    # injury but has started every game since is still a starter).
+    # Solidified Starter: starts in >= 65% of the games SHE'S played (not
+    # the team's total games -- a player who missed the first half the
+    # season to injury but has started every game since is still a
+    # solidified starter). A team's real roster won't always show exactly
+    # 5 of these -- see the phase-15 comment above the ROLE_* constants for
+    # why that's expected, not a bug.
     starters = [p for p in roster if p["start_pct"] is not None and p["start_pct"] >= ROLE_STARTER_START_PCT]
     starter_ids = {p["player_id"] for p in starters}
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
 
     # Sixth Man: the single highest-avg_minutes player among everyone who
-    # starts in under 25% of her own games AND has played in more than 50%
+    # starts in under 35% of her own games AND has played in more than 50%
     # of the TEAM's games this season -- not a fixed rank. A team with a
     # deep, low-minutes bench and a team with a thin one both just get
     # whichever one non-starting, real-rotation player actually plays the
@@ -470,7 +495,7 @@ def team_roles(conn, team_id):
     roster_roles = []
     for p in roster:
         if p["player_id"] in starter_ids:
-            role = "Starter"
+            role = "Solidified Starter"
         elif sixth_man is not None and p["player_id"] == sixth_man["player_id"]:
             role = "Sixth Man"
         elif p["player_id"] in depth_ids:
@@ -509,12 +534,12 @@ def team_roles(conn, team_id):
 
 
 # Maps team_roles()'s per-player `roster_roles[i]["role"]` label (a display
-# string: "Starter" / "Sixth Man" / "Role Player" / "Depth Piece" / None) back
-# to the ROLE_NAMES key it came from, so role_translation() can tell a caller
-# which of the 4 role cards is "where she actually plays today" without
-# re-deriving the classification a second time.
+# string: "Solidified Starter" / "Sixth Man" / "Role Player" / "Depth Piece"
+# / None) back to the ROLE_NAMES key it came from, so role_translation()
+# can tell a caller which of the 4 role cards is "where she actually plays
+# today" without re-deriving the classification a second time.
 _ROSTER_ROLE_LABEL_TO_NAME = {
-    "Starter": "starter", "Sixth Man": "sixth_man",
+    "Solidified Starter": "starter", "Sixth Man": "sixth_man",
     "Role Player": "role_player", "Depth Piece": "depth_piece",
 }
 
@@ -641,14 +666,33 @@ def optimal_lineup(conn, team_id):
     realistic, playable 5 -- not just the 5 highest composite scores
     regardless of position, which could genuinely be 5 guards. The
     remaining 3 starting spots go to the next-highest composite scores
-    regardless of position. Sixth Man is the next-best player not in the
-    starting 5, no positional requirement -- matching how a real sixth man
-    is picked (instant offense/versatility off the bench). Everyone else
-    ranks straight off the composite score, split into Role Player/Depth
-    Piece by the same ROLE_DEPTH_PIECE_MAX_MINUTES threshold /teams/{id}/roles
-    uses, but evaluated against this function's own projected minutes
-    (below), not real season avg_minutes -- so the label always matches the
-    number shown next to it.
+    regardless of position -- so a 3-guard/2-frontcourt five (common in
+    real women's college basketball, e.g. LSU) or any other mix beyond the
+    2-guard/1-frontcourt floor happens naturally whenever that's who scores
+    best, with no extra logic needed to allow it.
+
+    Realistic-minutes eligibility gate for Starter/Sixth Man (see
+    LINEUP_MAX_OUT_MINUTED_BY): the composite score above is intentionally
+    minutes-agnostic, which is the whole point of this tool vs.
+    /teams/{id}/roles' real-minutes classification -- but taken too far it
+    can crown a highly efficient, barely-used player "Starter" over several
+    real teammates who clearly play more. A player is only eligible for
+    Starter or Sixth Man if fewer than LINEUP_MAX_OUT_MINUTED_BY + 1 other
+    real-profile teammates average more real minutes/game than she does;
+    within the eligible pool, the composite score still decides who's
+    picked (this only trims who's eligible, it doesn't re-rank anyone). If
+    a required slot (a position requirement, or Sixth Man itself) has no
+    eligible candidate left, the pick falls back to the full pool so a
+    lineup can still be suggested -- flagged with a note when that happens.
+
+    Sixth Man is the next-best ELIGIBLE player not in the starting 5, no
+    positional requirement -- matching how a real sixth man is picked
+    (instant offense/versatility off the bench). Everyone else ranks
+    straight off the composite score, split into Role Player/Depth Piece by
+    the same ROLE_DEPTH_PIECE_MAX_MINUTES threshold /teams/{id}/roles uses,
+    but evaluated against this function's own projected minutes (below),
+    not real season avg_minutes -- so the label always matches the number
+    shown next to it.
 
     Every player in the response gets a `minutes` figure, and unlike
     role_translation() (which resolves 4 fixed buckets), this covers the
@@ -727,46 +771,133 @@ def optimal_lineup(conn, team_id):
     # centers inconsistently, and a true F/C swap is normal in basketball,
     # not a fallback worth flagging).
     frontcourt = [p for p in real if p["position"] in ("F", "C")]
+    by_id = {p["player_id"]: p for p in real}
 
-    starters = []
+    def _select(banned_ids):
+        """One attempt at picking the starting 5 + sixth man by composite
+        score + position balance, treating any player_id in banned_ids as
+        a last resort -- only used for a slot if no other candidate is
+        left for it. Returns (starter_ids, sixth_man_id, notes,
+        used_banned) for this attempt.
+        """
+        picked_ids = set()
+        attempt_notes = []
+        used_banned = False
+
+        def _take(pool, n):
+            nonlocal used_banned
+            taken = []
+            for prefer_unbanned in (True, False):
+                for p in pool:
+                    if len(taken) == n:
+                        break
+                    if p["player_id"] in picked_ids:
+                        continue
+                    if prefer_unbanned and p["player_id"] in banned_ids:
+                        continue
+                    taken.append(p)
+                    picked_ids.add(p["player_id"])
+                    if not prefer_unbanned:
+                        used_banned = True
+                if len(taken) == n:
+                    break
+            return taken
+
+        starters_attempt = []
+        frontcourt_pick = _take(frontcourt, 1)
+        if not frontcourt_pick:
+            attempt_notes.append("No Forward or Center on this roster -- the starting 5 below is filled "
+                                  "purely by composite score.")
+        starters_attempt += frontcourt_pick
+
+        guard_picks = _take(guards, 2)
+        if len(guard_picks) < 2:
+            attempt_notes.append(f"Only {len(guard_picks)} real Guard{'s' if len(guard_picks) != 1 else ''} "
+                                  f"on this roster -- the remaining starting "
+                                  f"spot{'s' if 2 - len(guard_picks) != 1 else ''} filled by composite score "
+                                  f"regardless of position.")
+        starters_attempt += guard_picks
+
+        remaining_needed = 5 - len(starters_attempt)
+        starters_attempt += _take(real, remaining_needed)
+        starter_ids_attempt = {p["player_id"] for p in starters_attempt}
+
+        # `real` is already optimizer_score-sorted, so the first non-starter
+        # not in banned_ids is genuinely the next-best REALISTIC player --
+        # exactly matching how a real sixth man is picked.
+        remaining = [p for p in real if p["player_id"] not in starter_ids_attempt]
+        unbanned_remaining = [p for p in remaining if p["player_id"] not in banned_ids]
+        if unbanned_remaining:
+            sixth_attempt = unbanned_remaining[0]
+        elif remaining:
+            sixth_attempt = remaining[0]
+            used_banned = True
+        else:
+            sixth_attempt = None
+        sixth_id_attempt = sixth_attempt["player_id"] if sixth_attempt else None
+
+        return starter_ids_attempt, sixth_id_attempt, attempt_notes, used_banned
+
+    # Realistic-minutes check for Starter/Sixth Man (see
+    # LINEUP_MAX_OUT_MINUTED_BY and the docstring): a real case on one
+    # roster had a composite-score "Starter" averaging ~10 real
+    # minutes/game while 4 real BENCH players (not other starters -- a
+    # deep team's #4 or #5 starter can legitimately have fewer minutes
+    # than her own co-starters) each averaged more than her. Select
+    # normally, check whether any selected Starter/Sixth Man is out-played
+    # in real minutes by more bench (non-selected) players than
+    # LINEUP_MAX_OUT_MINUTED_BY allows, and if so ban the worst offender
+    # and re-select -- repeating until the selection is realistic or every
+    # candidate has been tried (bounded by roster size, so this always
+    # terminates).
+    ineligible_ids = set()
     notes = []
-    picked_ids = set()
+    fallback_used = False
+    starter_ids, sixth_man_id, attempt_notes = set(), None, []
+    for _ in range(len(real) + 1):
+        starter_ids, sixth_man_id, attempt_notes, used_banned = _select(ineligible_ids)
+        selected_ids = starter_ids | ({sixth_man_id} if sixth_man_id else set())
+        # A Starter's "bench" is everyone NOT one of the 5 starters -- which
+        # includes the Sixth Man candidate herself, since a sixth man is by
+        # definition a bench player. The Sixth Man's own "bench" excludes
+        # her too (selected_ids), since she can't be out-played by herself.
+        non_starters = [p for p in real if p["player_id"] not in starter_ids]
+        non_selected = [p for p in real if p["player_id"] not in selected_ids]
+        violators = []
+        for sid in starter_ids:
+            p = by_id[sid]
+            out_by_bench = sum(1 for q in non_starters if q["avg_minutes"] > p["avg_minutes"])
+            if out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
+                violators.append((p, out_by_bench))
+        if sixth_man_id is not None:
+            p = by_id[sixth_man_id]
+            out_by_bench = sum(1 for q in non_selected if q["avg_minutes"] > p["avg_minutes"])
+            if out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
+                violators.append((p, out_by_bench))
+        if not violators:
+            notes = attempt_notes
+            fallback_used = used_banned
+            break
+        worst = max(violators, key=lambda t: t[1])[0]
+        if worst["player_id"] in ineligible_ids:
+            # Already excluded once and still surfacing as a violator --
+            # can only happen once every realistic alternative has been
+            # exhausted (the fallback pass had to re-include her). Accept
+            # this attempt rather than loop forever.
+            notes = attempt_notes
+            fallback_used = True
+            break
+        ineligible_ids.add(worst["player_id"])
+    else:
+        notes = attempt_notes
+        fallback_used = True
 
-    def _take(pool, n):
-        taken = []
-        for p in pool:
-            if p["player_id"] in picked_ids:
-                continue
-            taken.append(p)
-            picked_ids.add(p["player_id"])
-            if len(taken) == n:
-                break
-        return taken
-
-    frontcourt_pick = _take(frontcourt, 1)
-    if not frontcourt_pick:
-        notes.append("No Forward or Center on this roster -- the starting 5 below is filled purely by "
-                      "composite score.")
-    starters += frontcourt_pick
-
-    guard_picks = _take(guards, 2)
-    if len(guard_picks) < 2:
-        notes.append(f"Only {len(guard_picks)} real Guard{'s' if len(guard_picks) != 1 else ''} on this "
-                      f"roster -- the remaining starting spot{'s' if 2 - len(guard_picks) != 1 else ''} "
-                      f"filled by composite score regardless of position.")
-    starters += guard_picks
-
-    remaining_needed = 5 - len(starters)
-    starters += _take(real, remaining_needed)
-    starter_ids = {p["player_id"] for p in starters}
-
-    # `real` is already optimizer_score-sorted and `remaining` preserves
-    # that order (starters removed, nobody re-sorted) -- so remaining[0] is
-    # genuinely the next-best player, exactly matching how a real sixth man
-    # is picked.
-    remaining = [p for p in real if p["player_id"] not in starter_ids]
-    sixth_man = remaining[0] if remaining else None
-    sixth_man_id = sixth_man["player_id"] if sixth_man else None
+    if fallback_used:
+        notes = notes + [
+            f"This roster is thin enough that at least one Starter or Sixth Man slot had to be filled by a "
+            f"player who's out-played in real minutes/game by more than {LINEUP_MAX_OUT_MINUTED_BY} bench "
+            f"players -- no more realistic candidate was left for that spot, so composite score decided instead."
+        ]
 
     # Scale every player's real season avg_minutes by one constant factor so
     # the whole roster's minutes add up to a real game's 200 total -- see
@@ -820,15 +951,20 @@ def optimal_lineup(conn, team_id):
             "(points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
             "Game-by-Game Production Rating chart), both compared only against this team's own roster -- not "
             "the whole league. The starting 5 requires at least 1 Forward or Center (the two are treated as one "
-            "interchangeable frontcourt pool) and at least 2 Guards for a realistic, playable lineup; Sixth Man "
-            "is the next-best player regardless of position. Every player's Minutes below is her real season average "
-            "minutes/game, scaled by one constant factor so the full roster adds up to a real game's 200 total "
-            "player-minutes (5 on the floor x 40 minutes) -- her real relative playing time is preserved, just "
-            "normalized to one game. PPG/RPG/APG/SPG/BPG/TOPG are her real per-40 rates applied to that scaled "
-            "minutes figure; Summit Score/TS%/FG% are rate-based and don't change with minutes, so they're her "
-            "real season values. This is a data-driven suggestion based only on real box-score production, not "
-            "a coaching decision -- it doesn't know about chemistry, matchups, health, or anything off the "
-            "stat sheet."
+            "interchangeable frontcourt pool) and at least 2 Guards for a realistic, playable lineup; the "
+            "remaining 3 starting spots go to the next-best composite scores regardless of position, so a "
+            "3-guard/2-frontcourt five (common in real women's college basketball) happens naturally whenever "
+            "that's who scores best. Sixth Man is the next-best player not in the starting 5, no positional "
+            "requirement. A player is only eligible for Starter or Sixth Man if she isn't out-played in real "
+            f"minutes/game by {LINEUP_MAX_OUT_MINUTED_BY + 1}+ teammates -- an elite composite score in very "
+            "limited minutes doesn't make someone a realistic starter. Every player's Minutes below is her real "
+            "season average minutes/game, scaled by one constant factor so the full roster adds up to a real "
+            "game's 200 total player-minutes (5 on the floor x 40 minutes) -- her real relative playing time is "
+            "preserved, just normalized to one game. PPG/RPG/APG/SPG/BPG/TOPG are her real per-40 rates applied "
+            "to that scaled minutes figure; Summit Score/TS%/FG% are rate-based and don't change with minutes, "
+            "so they're her real season values. This is a data-driven suggestion based only on real box-score "
+            "production, not a coaching decision -- it doesn't know about chemistry, matchups, health, or "
+            "anything off the stat sheet."
         ),
     )
 

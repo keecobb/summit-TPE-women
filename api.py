@@ -157,12 +157,21 @@ def get_team_detail(team_id: int):
 @app.get("/teams/{team_id}/roles", dependencies=[Depends(require_api_key)])
 def get_team_roles(team_id: int):
     """Role-based minutes for this team, computed from its own current
-    roster (Starter/Sixth Man/Role Player/Depth Piece) -- lets a UI show a
-    coach e.g. 'Starter (31.2 min)' as a pickable option before running
-    /project with role=starter, instead of only a free-text minutes field.
-    Also includes `roster_roles`, the same classification applied
-    per-player in roster order, for a UI that wants to label every player
-    on the roster with her role rather than just the 4 aggregate
+    roster (Solidified Starter/Sixth Man/Role Player/Depth Piece) -- lets a
+    UI show a coach e.g. 'Solidified Starter (31.2 min)' as a pickable
+    option before running /project with role=starter, instead of only a
+    free-text minutes field. A player counts as a Solidified Starter once
+    she starts >= 65% of the games she's played (ROLE_STARTER_START_PCT in
+    projection.py); Sixth Man is the single highest-avg-minutes player
+    among those starting under 35% of games. Because that's a real,
+    games-started-rate classification and not a fixed top-5-by-minutes
+    cut, a given team's roster won't always show exactly 5 Solidified
+    Starters -- these are only the confirmed, for-sure ones, which is also
+    why the label says "Solidified" rather than plain "Starter". See the
+    comment block above ROLE_STARTER_START_PCT in projection.py for the
+    full rationale. Also includes `roster_roles`, the same classification
+    applied per-player in roster order, for a UI that wants to label every
+    player on the roster with her role rather than just the 4 aggregate
     numbers."""
     conn = get_conn()
     team = conn.execute("SELECT team_id, name FROM teams WHERE team_id = ?", (team_id,)).fetchone()
@@ -416,17 +425,30 @@ def get_team_needs(
 @app.get("/teams/{team_id}/optimal-lineup", dependencies=[Depends(require_api_key)])
 def get_optimal_lineup(team_id: int):
     """A data-driven suggested rotation for the WHOLE roster (Starter/Sixth
-    Man/Role Player/Depth Piece), ranked by an equal-weighted blend of
-    Summit Score and season-average combined production (points + rebounds
-    + assists + steals + blocks - turnovers per game -- the same formula
-    as the player profile's Game-by-Game Production Rating chart), both
-    compared only against this team's own roster. Position-balanced
-    starting 5 (>= 1 Forward/Center, treated as one interchangeable
-    frontcourt pool; >= 2 Guards). Every player's minutes are her
-    real season average scaled by one constant factor so the full roster
-    adds up to a real game's 200 total player-minutes. See
-    optimal_lineup()'s docstring in projection.py for the full method and
-    its fallback rules on thin/unusual rosters."""
+    Man/Role Player/Depth Piece -- this endpoint's OWN composite-score-based
+    classification, kept deliberately separate from /teams/{team_id}/roles'
+    real games-started-rate classification; this one is not renamed to
+    "Solidified Starter"), ranked by an equal-weighted blend of Summit Score
+    and season-average combined production (points + rebounds + assists +
+    steals + blocks - turnovers per game -- the same formula as the player
+    profile's Game-by-Game Production Rating chart), both compared only
+    against this team's own roster. Position-balanced starting 5 (>= 1
+    Forward/Center, treated as one interchangeable frontcourt pool; >= 2
+    Guards; the remaining 3 spots go strictly by composite score regardless
+    of position, so a 3-Guard/2-Forward-Center five -- e.g. LSU -- is
+    expected, not a bug). Every player's minutes are her real season
+    average scaled by one constant factor so the full roster adds up to a
+    real game's 200 total player-minutes. A Starter or Sixth Man pick is
+    also required to not be out-played, in real avg minutes, by more than
+    LINEUP_MAX_OUT_MINUTED_BY bench players -- a composite-score-selected
+    "Starter" who barely plays in real games while several real bench
+    players log heavier minutes gets passed over in favor of the
+    next-best-scoring, minutes-realistic candidate. On a thin/unusual
+    roster where no positionally-eligible candidate satisfies that check
+    (e.g. a team with only one true Forward/Center on its whole roster),
+    the position requirement wins and the response's `notes` explains the
+    fallback. See optimal_lineup()'s docstring in projection.py for the
+    full method and its fallback rules on thin/unusual rosters."""
     conn = get_conn()
     try:
         return optimal_lineup(conn, team_id)

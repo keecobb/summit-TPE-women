@@ -7,12 +7,16 @@ import type { PlayerGameLogs } from "@/lib/types";
 // see app/api/search/route.ts for the same pattern.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
+  const sport = searchParams.get("sport");
   const playerId = searchParams.get("player_id");
   const season = searchParams.get("season");
+  if (sport !== "women" && sport !== "men") {
+    return NextResponse.json({ error: "Missing or invalid sport." }, { status: 400 });
+  }
   if (!playerId) return NextResponse.json({ error: "player_id required" }, { status: 400 });
 
   try {
-    const data = await apiFetch<PlayerGameLogs>(`/players/${playerId}/game-logs`, {
+    const data = await apiFetch<PlayerGameLogs>(`/${sport}/players/${playerId}/game-logs`, {
       params: { season: season ?? undefined },
       revalidate: 300,
     });

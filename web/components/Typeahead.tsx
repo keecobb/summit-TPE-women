@@ -24,6 +24,7 @@ interface Result {
  *    TPE target-school field, submitted together with role/minutes).
  */
 export default function Typeahead({
+  sport,
   kind,
   placeholder,
   hrefTemplate,
@@ -35,6 +36,7 @@ export default function Typeahead({
   defaultSelectedId,
   defaultSelectedLabel,
 }: {
+  sport: string;
   kind: "players" | "teams";
   placeholder: string;
   /** For mode="navigate": a path containing the literal token "{id}", e.g.
@@ -76,7 +78,7 @@ export default function Typeahead({
     }
     debounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`/api/search?kind=${kind}&q=${encodeURIComponent(query.trim())}`);
+        const res = await fetch(`/api/search?sport=${sport}&kind=${kind}&q=${encodeURIComponent(query.trim())}`);
         const data = await res.json();
         setResults(data.results ?? []);
         setOpen(true);
@@ -88,7 +90,7 @@ export default function Typeahead({
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [query, kind]);
+  }, [query, kind, sport]);
 
   function select(r: Result) {
     setOpen(false);

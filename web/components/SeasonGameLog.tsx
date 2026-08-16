@@ -9,7 +9,7 @@ import type { PlayerGameLogRow } from "@/lib/types";
  * expanded) from the same-origin /api/game-logs proxy -- see that route for
  * why (keeps the real API key server-side).
  */
-export default function SeasonGameLog({ playerId, season }: { playerId: number; season: string }) {
+export default function SeasonGameLog({ playerId, season, sport }: { playerId: number; season: string; sport: string }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [games, setGames] = useState<PlayerGameLogRow[] | null>(null);
@@ -21,7 +21,7 @@ export default function SeasonGameLog({ playerId, season }: { playerId: number; 
     if (next && games === null && !loading) {
       setLoading(true);
       try {
-        const res = await fetch(`/api/game-logs?player_id=${playerId}&season=${encodeURIComponent(season)}`);
+        const res = await fetch(`/api/game-logs?sport=${sport}&player_id=${playerId}&season=${encodeURIComponent(season)}`);
         const data = await res.json();
         if (data.error) setError(data.error);
         else setGames(data.games ?? []);

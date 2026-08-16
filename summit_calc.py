@@ -251,8 +251,34 @@ def normalize_tier(value):
     return TIER_ALIASES.get(value, value)
 
 
-def classify_tier(team_name, conference):
-    if team_name in OUTLIER_HIGH_MAJOR_PROGRAMS:
+def classify_tier(team_name, conference, sport="women"):
+    """Fallback ONLY -- build_cache.py always prefers the Teams sheet's own
+    "School Level" column when it's populated (see that file). This
+    heuristic exists for whenever it isn't.
+
+    `sport` defaults to "women" (this function's original, user-confirmed
+    calibration -- see the module note above). For men's, the same
+    conference-tier groupings are reused (ACC/Big Ten/SEC/Big 12/Big East
+    are unambiguously the power conferences in men's basketball too), but
+    OUTLIER_HIGH_MAJOR_PROGRAMS is NOT applied -- that list (Gonzaga, South
+    Dakota State, Princeton, Florida Gulf Coast) was an explicit, user-
+    specified judgment call about which programs punch above their
+    conference's weight in WOMEN'S hoops specifically (e.g. South Dakota
+    State is not a men's high-major program by any reasonable read), so
+    reusing it for men's would silently misclassify real teams rather than
+    just leaving them at their conference's default tier.
+
+    Known gap, not silently papered over: as of the first men's data pull,
+    every one of the 364 men's teams has a BLANK "School Level" column (0
+    populated), so 100% of men's tier assignments currently come from this
+    fallback -- unlike the women's side, where School Level is fully
+    populated and this function is rarely reached. This is real enough to
+    matter (every level filter/leaderboard on the men's side depends on
+    it) and hasn't been confirmed with the user the way the women's
+    grouping was -- flagged for a real decision, not guessed at silently
+    here."""
+    outliers = OUTLIER_HIGH_MAJOR_PROGRAMS if sport == "women" else set()
+    if team_name in outliers:
         return "High-Major"
     if conference in HIGH_MAJOR_CONFERENCES:
         return "High-Major"

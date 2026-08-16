@@ -46,11 +46,14 @@ Fly doesn't require a GitHub repo -- it deploys straight from your local folder,
 ## Shipping a data refresh later
 
 ```
-python refresh_pipeline.py --path WomensSummitTPE.xlsx   # as you do today, produces a fresh summit_tpe_cache.sqlite
-docker build -t summit-tpe-api .                          # rebuild the image with the new data baked in
+python refresh_pipeline.py --path WomensSummitTPE.xlsx --sport women   # produces summit_tpe_cache_women.sqlite
+python refresh_pipeline.py --path MensSummitTPE.xlsx --sport men       # produces summit_tpe_cache_men.sqlite (once you have men's data)
+docker build -t summit-tpe-api .                                        # rebuild the image with the new data baked in
 # Render: git push (if autoDeploy is on, this alone triggers a redeploy)
 # Fly:    flyctl deploy
 ```
+
+Refresh whichever sport(s) actually changed -- each sport's cache file is independent, so a women's-only data update doesn't require touching the men's file at all (or vice versa). The Docker build only hard-requires `summit_tpe_cache_women.sqlite` to exist (see the Dockerfile's own note) -- `summit_tpe_cache_men.sqlite` is picked up automatically if present.
 
 ## What's NOT in this phase
 

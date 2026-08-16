@@ -9,20 +9,24 @@ import type { Player, Team } from "@/lib/types";
 // never sees the real API key or the real API host.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
+  const sport = searchParams.get("sport");
   const kind = searchParams.get("kind");
   const q = searchParams.get("q")?.trim();
 
+  if (sport !== "women" && sport !== "men") {
+    return NextResponse.json({ results: [], error: "Missing or invalid sport." }, { status: 400 });
+  }
   if (!q || q.length < 2) return NextResponse.json({ results: [] });
 
   try {
     if (kind === "teams") {
-      const teams = await apiFetch<Team[]>("/teams", { params: { search: q, limit: 8 }, revalidate: 60 });
+      const teams = await apiFetch<Team[]>(`/${sport}/teams`, { params: { search: q, limit: 8 }, revalidate: 60 });
       return NextResponse.json({
         results: teams.map((t) => ({ id: t.team_id, label: t.name, sub: `${t.tier} · ${t.conference}` })),
       });
     }
     if (kind === "players") {
-      const players = await apiFetch<Player[]>("/players", { params: { search: q, limit: 8 }, revalidate: 60 });
+      const players = await apiFetch<Player[]>(`/${sport}/players`, { params: { search: q, limit: 8 }, revalidate: 60 });
       return NextResponse.json({
         results: players.map((p) => ({
           id: p.player_id,

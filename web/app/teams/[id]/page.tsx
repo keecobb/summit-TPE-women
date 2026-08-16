@@ -114,8 +114,9 @@ async function OverviewTab({ id, team }: { id: string; team: Team }) {
       <div className="card">
         <h2>Rotation Minutes (This Roster)</h2>
         <p className="section-note">
-          Real minutes-based roles computed from this team&apos;s own current roster -- what &quot;Starter&quot; or
-          &quot;Sixth Man&quot; actually means here.
+          Real minutes-based roles computed from this team&apos;s own current roster -- what &quot;Solidified
+          Starter&quot; or &quot;Sixth Man&quot; actually means here. A team&apos;s real roster won&apos;t always
+          show exactly 5 Solidified Starters -- these are only the confirmed, for-sure ones.
         </p>
         <div className="stat-grid">
           <RoleStat label={roleLabel("starter")} role={roles.starter} />
@@ -235,8 +236,8 @@ async function RosterTab({ id }: { id: string }) {
 
   if (roster.length === 0) return <p className="empty-state">No players on record for this team.</p>;
 
-  // roster_roles is the same Starter/Sixth Man/Role Player/Depth Piece
-  // classification shown in aggregate on the Overview tab's Rotation
+  // roster_roles is the same Solidified Starter/Sixth Man/Role Player/Depth
+  // Piece classification shown in aggregate on the Overview tab's Rotation
   // Minutes card, applied here per player -- matched by player_id, not
   // roster order, since /players and /teams/{id}/roles are two separate
   // fetches.

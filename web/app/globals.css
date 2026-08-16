@@ -134,6 +134,37 @@ a {
   color: var(--gold);
 }
 
+.sport-toggle {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px;
+  flex-shrink: 0;
+}
+
+.sport-toggle-option {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.75);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.sport-toggle-option:hover {
+  color: #fff;
+}
+
+.sport-toggle-option.active {
+  background: var(--gold);
+  color: var(--green);
+}
+
 .theme-toggle {
   display: inline-flex;
   align-items: center;

@@ -121,7 +121,7 @@ export interface TeamRoles {
     avg_minutes: number | null;
     games: number;
     games_started: number | null;
-    role: "Starter" | "Sixth Man" | "Role Player" | "Depth Piece" | null;
+    role: "Solidified Starter" | "Sixth Man" | "Role Player" | "Depth Piece" | null;
   }[];
 }
 
@@ -730,7 +730,7 @@ export const ROLE_NAMES = ["starter", "sixth_man", "role_player", "depth_piece"]
 export type RoleName = (typeof ROLE_NAMES)[number];
 
 const ROLE_LABELS: Record<string, string> = {
-  starter: "Starter",
+  starter: "Solidified Starter",
   sixth_man: "Sixth Man",
   role_player: "Role Player",
   depth_piece: "Depth Piece",

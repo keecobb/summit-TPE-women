@@ -247,7 +247,14 @@ def get_athlete_height(espn_athlete_id):
         data = _get(url, retries=2)
     except EspnError:
         return None
-    return data.get("displayHeight")
+    # BUG FIXED HERE: this used to read data.get("displayHeight") directly.
+    # ESPN's response wraps everything in an "athlete" object --
+    # {"athlete": {..., "displayHeight": "6' 2\""}, "season": ..., ...} --
+    # so the old code was reading a key that never existed at the top
+    # level and silently returned None for every single call. Never
+    # caught because nothing ever exercised this function against a real
+    # missing-height player until scrapers/backfill_height_class.py did.
+    return (data.get("athlete") or {}).get("displayHeight")
  
  
 def split_made_attempted(value):

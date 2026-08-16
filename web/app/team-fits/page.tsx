@@ -185,8 +185,10 @@ async function FitsView({ sp }: { sp: SP }) {
       <div className="card">
         <h2>Current Rotation</h2>
         <p className="section-note">
-          Real minutes-based roles computed from {team.name}&apos;s own current roster -- what &quot;Starter&quot;
-          or &quot;Role Player&quot; actually means here, before you pick one below in the Role to fill dropdown.
+          Real minutes-based roles computed from {team.name}&apos;s own current roster -- what &quot;Solidified
+          Starter&quot; or &quot;Role Player&quot; actually means here, before you pick one below in the Role to
+          fill dropdown. A team&apos;s real roster won&apos;t always show exactly 5 Solidified Starters -- these
+          are only the confirmed, for-sure ones.
         </p>
         <div className="stat-grid">
           <RoleStat label={roleLabel("starter")} role={roles.starter} />

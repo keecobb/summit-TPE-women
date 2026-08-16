@@ -15,9 +15,9 @@ export default async function HomePage() {
   // the rest of the site shows. Small, cheap calls; safe to run on every
   // home page load with the normal 60s revalidate window.
   const [topTeams, topScorers, seasonJump] = await Promise.all([
-    apiFetch<Team[]>("/teams", { params: { limit: 5 } }),
-    apiFetch<PlayerLeaderboard>("/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 5 } }),
-    apiFetch<SeasonJumpLeaderboard>("/leaderboards/season-jump", { params: { min_games: 8, limit: 3 } }),
+    apiFetch<Team[]>("/women/teams", { params: { limit: 5 } }),
+    apiFetch<PlayerLeaderboard>("/women/leaderboards/players", { params: { stat: "ppg", min_games: 10, limit: 5 } }),
+    apiFetch<SeasonJumpLeaderboard>("/women/leaderboards/season-jump", { params: { min_games: 8, limit: 3 } }),
   ]);
 
   return (
@@ -27,18 +27,19 @@ export default async function HomePage() {
         <h1>Summit TPE</h1>
         <p className="subtitle" style={{ maxWidth: 68 + "ch" }}>
           Your home for advanced women&apos;s college basketball team and player statistics, analytics, and
-          transfer projections -- covering all of D1 women&apos;s hoops, with men&apos;s coverage coming soon.
-          Start with <Link href="/tpe">Transfer Projection</Link>: pick a player, pick a target school, and see a
+          transfer projections -- covering all of D1 women&apos;s hoops, with men&apos;s coverage now live too --{" "}
+          <Link href="/men/teams">check out the men&apos;s side</Link>.
+          Start with <Link href="/women/tpe">Transfer Projection</Link>: pick a player, pick a target school, and see a
           real projected stat line based on how actual transfers have played out, not a guess.
         </p>
         <div className="hero-actions">
-          <Link href="/tpe" className="btn btn-primary">
+          <Link href="/women/tpe" className="btn btn-primary">
             Open Transfer Projection
           </Link>
-          <Link href="/team-fits" className="btn">
+          <Link href="/women/team-fits" className="btn">
             Find team fits
           </Link>
-          <Link href="/data" className="btn">
+          <Link href="/women/data" className="btn">
             Browse the data
           </Link>
         </div>
@@ -83,11 +84,11 @@ export default async function HomePage() {
         <p className="section-note">
           A real season-over-season comparison, not a projection -- the players whose Summit Score improved the
           most from last season to this one. See the full list, and the standard Top 5 Teams board, on the{" "}
-          <Link href="/data">Data page</Link>.
+          <Link href="/women/data">Data page</Link>.
         </p>
         <div className="stat-grid">
           {seasonJump.players.slice(0, 3).map((p) => (
-            <Link href={`/players/${p.player_id}`} key={p.player_id} style={{ textDecoration: "none" }}>
+            <Link href={`/women/players/${p.player_id}`} key={p.player_id} style={{ textDecoration: "none" }}>
               <div className="stat-tile">
                 <div className="value" style={{ color: "var(--good)" }}>
                   +{p.hoop_score_change.toFixed(1)}
@@ -102,7 +103,7 @@ export default async function HomePage() {
       </div>
 
       <div className="card-grid">
-        <Link href="/tpe">
+        <Link href="/women/tpe">
           <div className="card">
             <h2>Transfer Projection</h2>
             <p className="subtitle" style={{ marginBottom: 0 }}>
@@ -111,7 +112,7 @@ export default async function HomePage() {
             </p>
           </div>
         </Link>
-        <Link href="/team-fits">
+        <Link href="/women/team-fits">
           <div className="card">
             <h2>Team Fits</h2>
             <p className="subtitle" style={{ marginBottom: 0 }}>
@@ -120,7 +121,7 @@ export default async function HomePage() {
             </p>
           </div>
         </Link>
-        <Link href="/data">
+        <Link href="/women/data">
           <div className="card">
             <h2>Data</h2>
             <p className="subtitle" style={{ marginBottom: 0 }}>

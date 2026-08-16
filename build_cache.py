@@ -1,4 +1,6 @@
-"""Builds summit_tpe_cache.sqlite from WomensSummitTPE.xlsx:
+"""Builds a summit_tpe_cache_<sport>.sqlite from a Summit TPE workbook
+(WomensSummitTPE.xlsx or MensSummitTPE.xlsx -- same column shape, see
+--sport below):
   - teams: one row per current-season team (rating + tier)
   - players: one row per current-season player (season stat profile)
   - team_profile: one row per current-season team, roster-derived category
@@ -11,20 +13,29 @@
   - meta: season label + league mean/std for Rat and for each team_profile
     category (needed to turn a team's raw category rate into "how weak is
     this, relative to the rest of the league").
- 
+
 This is the STATIC half of the transfer calculator -- a player's own
 season stats and a team's own category profile don't change based on what
 matchup you're evaluating, so they're computed once here and cached,
 instead of being recomputed on every API request. The FLUID half (target
 team, minutes, which player(s) you're comparing) is computed live per-
 request by projection.py, reading from this cache.
- 
+
 Re-run this once per season (or whenever the underlying workbook's box
 scores update) to refresh the cache; the API always reads whatever's
-currently in summit_tpe_cache.sqlite.
- 
+currently in the matching summit_tpe_cache_<sport>.sqlite for that sport
+(see api.py's get_conn(sport)).
+
+--sport is required and picks BOTH the tier-classification fallback (see
+classify_tier() in summit_calc.py -- men's and women's conferences aren't
+scored the same way) and the default --out filename, so a plain
+`--path MensSummitTPE.xlsx --sport men` can't accidentally overwrite the
+women's cache (or vice versa) by forgetting --out.
+
 Usage:
-    python build_cache.py --path WomensSummitTPE.xlsx --out summit_tpe_cache.sqlite
+    python build_cache.py --path WomensSummitTPE.xlsx --sport women
+    python build_cache.py --path MensSummitTPE.xlsx --sport men
+    python build_cache.py --path WomensSummitTPE.xlsx --sport women --out summit_tpe_cache_women.sqlite
 """
  
 import argparse
@@ -334,7 +345,7 @@ def pick_latest_season(games_by_season):
     return max(games_by_season, key=lambda s: len(games_by_season[s]))
  
  
-def compute_season_profiles(data, season, sheet_meta=None):
+def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
     """Everything derived from ONE season's games + box scores: team Off/
     Def/Rat/SoS and each player's season stat profile (same math as
     compute_derived_sheets.py). Factored out so it can be run once for the
@@ -572,14 +583,22 @@ def compute_season_profiles(data, season, sheet_meta=None):
             covered_pids.add(pid)
 
     team_rows = []
+    school_level_fallback_count = 0
     for tid, info in data["teams"].items():
         if tid not in rat:
             continue
         # Prefer the explicit "School Level" column from the Teams sheet
         # (user-curated, confirmed to match classify_tier()'s heuristic for
-        # every team in the current workbook) -- fall back to the heuristic
-        # only if a future workbook is missing the column for some team.
-        tier = info.get("school_level") or classify_tier(info["name"], info["conference"])
+        # every team in the current women's workbook) -- fall back to the
+        # heuristic only if a workbook is missing the column, or (as is
+        # currently true for every men's team -- see classify_tier()'s
+        # docstring) has it entirely blank.
+        school_level = info.get("school_level")
+        if school_level:
+            tier = school_level
+        else:
+            tier = classify_tier(info["name"], info["conference"], sport=sport)
+            school_level_fallback_count += 1
         team_rows.append(dict(
             team_id=tid, name=info["name"], division=info["division"], conference=info["conference"],
             tier=tier,
@@ -590,6 +609,7 @@ def compute_season_profiles(data, season, sheet_meta=None):
         team_rows=team_rows, player_rows=player_rows,
         league_mean_rat=league_mean_rat, league_std_rat=league_std_rat,
         thin_count=thin_count, team_boxscore_games=team_boxscore_games,
+        school_level_fallback_count=school_level_fallback_count,
     )
  
  
@@ -681,15 +701,25 @@ def league_profile_stats(team_profile_rows):
  
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--path", required=True)
-    parser.add_argument("--out", default="summit_tpe_cache.sqlite")
+    parser.add_argument("--path", required=True, help="Path to the sport's workbook, e.g. "
+                                                        "WomensSummitTPE.xlsx or MensSummitTPE.xlsx.")
+    parser.add_argument("--sport", required=True, choices=["women", "men"],
+                         help="Which sport this workbook covers. Picks the tier-classification "
+                              "fallback (see classify_tier() in summit_calc.py) and the default "
+                              "--out filename -- women's and men's data must never be pooled into "
+                              "the same cache file (see ARCHITECTURE_HOSTING_PLAN.md's z-score "
+                              "population constraint).")
+    parser.add_argument("--out", default=None, help="Defaults to summit_tpe_cache_<sport>.sqlite "
+                                                      "if not given.")
     args = parser.parse_args()
- 
+    out_path = args.out or f"summit_tpe_cache_{args.sport}.sqlite"
+
     data = load(args.path)
     season = pick_latest_season(data["games_by_season"])
-    print(f"\nCurrent season: {season}")
- 
-    current = compute_season_profiles(data, season, sheet_meta=data["player_sheet_meta"])
+    print(f"\nSport: {args.sport}")
+    print(f"Current season: {season}")
+
+    current = compute_season_profiles(data, season, sheet_meta=data["player_sheet_meta"], sport=args.sport)
     team_rows, player_rows = current["team_rows"], current["player_rows"]
     league_mean_rat, league_std_rat = current["league_mean_rat"], current["league_std_rat"]
     print(f"Rat: n={len(team_rows)} mean={league_mean_rat:.2f} std={league_std_rat:.2f}")
@@ -700,12 +730,19 @@ def main():
     for t in team_rows:
         tier_counts[t["tier"]] += 1
     print(f"Team ratings: {len(team_rows)} (by tier: {dict(tier_counts)})")
- 
+    if current["school_level_fallback_count"]:
+        pct = 100 * current["school_level_fallback_count"] / len(team_rows) if team_rows else 0
+        print(f"  NOTE: {current['school_level_fallback_count']}/{len(team_rows)} teams "
+              f"({pct:.0f}%) had no 'School Level' value on the Teams sheet -- tier for those came "
+              f"from classify_tier()'s conference-based fallback instead (sport={args.sport!r}). "
+              f"See that function's docstring, especially for sport='men' (currently 100% "
+              f"fallback -- not yet confirmed with the user).")
+
     # ---- team category profiles (for /teams/{id}/needs, /teams/{id}/fits) ----
     team_profile_rows = compute_team_profiles(player_rows, current["team_boxscore_games"])
     profile_stats = league_profile_stats(team_profile_rows)
     print(f"Team category profiles: {len(team_profile_rows)}")
- 
+
     # ---- player history across EVERY season (for /players/{id}/trajectory) ----
     print("\nComputing player history across all seasons ...")
     player_history_rows = []
@@ -713,7 +750,7 @@ def main():
         if hseason == season:
             hres = current
         else:
-            hres = compute_season_profiles(data, hseason)
+            hres = compute_season_profiles(data, hseason, sport=args.sport)
         for p in hres["player_rows"]:
             team_name = data["teams"].get(p["team_id"], {}).get("name")
             player_history_rows.append(dict(p, team_name=team_name))
@@ -721,13 +758,14 @@ def main():
     print(f"player_history total: {len(player_history_rows)} rows")
  
     # ---- write sqlite ----
-    print(f"\nWriting {args.out} ...")
-    conn = sqlite3.connect(args.out)
+    print(f"\nWriting {out_path} ...")
+    conn = sqlite3.connect(out_path)
     for tbl in ("teams", "players", "meta", "team_profile", "player_history", "player_game_logs", "games"):
         conn.execute(f"DROP TABLE IF EXISTS {tbl}")
  
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
     meta_rows = [
+        ("sport", args.sport),
         ("season", season),
         ("league_mean_rat", str(league_mean_rat)),
         ("league_std_rat", str(league_std_rat)),
