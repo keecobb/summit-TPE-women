@@ -44,6 +44,16 @@ COPY api.py projection.py summit_calc.py ./
 # to exist yet, matching how api.py itself treats a missing sport cache
 # (503, not a hard crash).
 COPY summit_tpe_cache_*.sqlite ./
+# STOPGAP (2026-08-16): the api.py currently deployed is the older,
+# pre-sport-plumbing version -- it looks for the plain unsuffixed
+# summit_tpe_cache.sqlite (DB_PATH in api.py), not a sport-suffixed name,
+# and the sport rebuild (refresh_pipeline.py --sport women) hasn't been
+# run yet, so only the plain-named file exists on disk. Without this line
+# the wildcard COPY above finds nothing, the image ships with zero cache
+# file, and every page 500s. Remove this line once api.py's sport-aware
+# resolve_db_path()/get_conn(sport) is actually the version deployed --
+# see MENS_SCRAPER_PROGRESS.md phase 22 for that work.
+COPY summit_tpe_cache.sqlite ./
 
 # api.py's own module-level warning already tells you at boot if these
 # are left at their insecure defaults -- set both for real before this
