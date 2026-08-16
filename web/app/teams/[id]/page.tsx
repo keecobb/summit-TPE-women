@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamRoles, TeamNeeds, TeamNeedCategory, Player, TeamSchedule } from "@/lib/types";
+import type { Team, TeamRoles, TeamNeeds, TeamNeedCategory, Player, TeamSchedule, OptimalLineup, OptimalLineupPlayer } from "@/lib/types";
 import { roleLabel } from "@/lib/types";
 import { titleCase } from "@/lib/format";
 import RoleStat from "@/components/RoleStat";
@@ -27,6 +27,7 @@ const TABS = [
   { key: "roster", label: "Roster" },
   { key: "schedule", label: "Schedule" },
   { key: "stats", label: "Stats Breakdown" },
+  { key: "lineup", label: "Lineup" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -74,6 +75,7 @@ export default async function TeamDetailPage({
       {tab === "roster" && <RosterTab id={id} />}
       {tab === "schedule" && <ScheduleTab id={id} />}
       {tab === "stats" && <StatsTab id={id} team={team} />}
+      {tab === "lineup" && <LineupTab id={id} />}
     </div>
   );
 }
@@ -390,6 +392,93 @@ async function StatsTab({ id, team }: { id: string; team: Team }) {
         </table>
       </div>
     </div>
+  );
+}
+
+async function LineupTab({ id }: { id: string }) {
+  let lineup: OptimalLineup;
+  try {
+    lineup = await apiFetch<OptimalLineup>(`/teams/${id}/optimal-lineup`, { revalidate: 0 });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) {
+      return (
+        <p className="empty-state">
+          Not enough players with real season profiles and per-game logs on this roster to suggest a lineup yet.
+        </p>
+      );
+    }
+    throw e;
+  }
+
+  return (
+    <div>
+      <div className="card">
+        <h2>
+          Suggested Starting 5
+          <span
+            className="hint"
+            title="Ranked by an equal-weighted blend of Summit Score and season-average combined production (points + rebounds + assists + steals + blocks - turnovers per game), both compared only against this team's own roster. Requires at least 1 Center (or the best Forward as a fallback) and at least 2 Guards for a realistic lineup."
+          >
+            ?
+          </span>
+        </h2>
+        <p className="section-note">
+          A data-driven suggestion based on real box-score production this season -- not a coaching decision.
+          It doesn&apos;t know about chemistry, matchups, health, or anything off the stat sheet. See{" "}
+          <Link href={`/teams/${id}?tab=roster`}>Roster</Link> for who actually starts today.
+        </p>
+
+        {lineup.notes.length > 0 && (
+          <div className="info-box" style={{ marginBottom: 16 }}>
+            {lineup.notes.map((n, i) => (
+              <p key={i} style={{ margin: i === 0 ? 0 : "6px 0 0" }}>{n}</p>
+            ))}
+          </div>
+        )}
+
+        <div className="card-grid">
+          {lineup.starting_five.map((p) => (
+            <LineupPlayerTile key={p.player_id} player={p} />
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>Sixth Man</h2>
+        <p className="section-note">
+          The next-best player not in the starting 5, no positional requirement -- same instant-offense/versatility
+          role a real sixth man plays.
+        </p>
+        {lineup.sixth_man ? (
+          <div className="card-grid">
+            <LineupPlayerTile player={lineup.sixth_man} />
+          </div>
+        ) : (
+          <p className="empty-state">Not enough remaining players with real data to name a sixth man.</p>
+        )}
+      </div>
+
+      <p className="section-note">{lineup.method_note}</p>
+    </div>
+  );
+}
+
+function LineupPlayerTile({ player }: { player: OptimalLineupPlayer }) {
+  return (
+    <Link href={`/players/${player.player_id}`}>
+      <div className="card">
+        <h3 style={{ margin: "0 0 4px" }}>{player.name}</h3>
+        <p className="section-note" style={{ margin: "0 0 10px" }}>
+          {player.position} &middot; {player.class_year}
+        </p>
+        <div className="stat-grid">
+          <Stat label="Summit Score" value={player.hoop_score} highlight />
+          <Stat label="Production" value={player.avg_production} hint="Season-average points + rebounds + assists + steals + blocks - turnovers per game." />
+          <Stat label="MPG" value={player.avg_minutes} />
+          <Stat label="Fit Score" value={player.optimizer_score} hint="Equal-weighted blend of this team's own Summit Score and Production z-scores -- how this player compares to the rest of THIS roster, not the whole league." />
+        </div>
+      </div>
+    </Link>
   );
 }
 

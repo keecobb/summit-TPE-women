@@ -3,12 +3,13 @@ import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type {
   PlayerDetail, PlayerTrajectory, PlayerTrajectorySeason, PlayerSplits, OpponentTierSplit,
-  PlayerGameLogs, PlayerGameLogRow,
+  PlayerGameLogs, PlayerGameLogRow, RoleTranslation,
 } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 import PlayerCard from "@/components/PlayerCard";
 import PerGameProductionCard from "@/components/PerGameProductionCard";
+import RoleTranslationCard from "@/components/RoleTranslationCard";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static -- this page in
@@ -74,6 +75,16 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
 
+  // Role Translation (phase 12) -- 404s the same way trajectory/splits do
+  // when there's no real hoop_score_raw for her this season (thin_sample
+  // zero-game placeholder row), not an error worth surfacing.
+  let roleTranslation: RoleTranslation | null = null;
+  try {
+    roleTranslation = await apiFetch<RoleTranslation>(`/players/${id}/role-translation`, { revalidate: 0 });
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
   // Best 3 games this season by points + rebounds + assists -- a simple,
   // well-understood combined-production read, computed client-side from the
   // same real per-game rows /players/{id}/game-logs already exposes (no new
@@ -130,6 +141,8 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
       <PlayerCard player={player} />
 
       <PerGameProductionCard player={player} />
+
+      {roleTranslation && <RoleTranslationCard data={roleTranslation} />}
 
       {trajectory && trajectory.seasons.length > 0 && (
         <div className="card">

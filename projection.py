@@ -493,8 +493,231 @@ def team_roles(conn, team_id):
                                f"{ROLE_DEPTH_PIECE_MAX_MINUTES:.0f} minutes/game."),
         roster_roles=roster_roles,
     )
- 
- 
+
+
+# Maps team_roles()'s per-player `roster_roles[i]["role"]` label (a display
+# string: "Starter" / "Sixth Man" / "Role Player" / "Depth Piece" / None) back
+# to the ROLE_NAMES key it came from, so role_translation() can tell a caller
+# which of the 4 role cards is "where she actually plays today" without
+# re-deriving the classification a second time.
+_ROSTER_ROLE_LABEL_TO_NAME = {
+    "Starter": "starter", "Sixth Man": "sixth_man",
+    "Role Player": "role_player", "Depth Piece": "depth_piece",
+}
+
+
+def role_translation(conn, player_id):
+    """Shows what a player's REAL per-40 production (no transfer-model
+    adjustment -- same team, same competition level, nothing changes except
+    which role's typical minutes get applied) would translate to at each of
+    the 4 role-based minutes levels on her OWN CURRENT team, resolved from
+    that team's own real roster via team_roles(). Deliberately NOT built on
+    _core_projection()/project_player() despite the obvious overlap (target
+    team == current team would make strength_gap always exactly 0) --
+    _core_projection()'s production_factor has a real +6% baseline
+    (PRODUCTION_FACTOR_INTERCEPT) calibrated from actual transfers changing
+    schools, which has no business applying to a player who isn't
+    transferring anywhere. Summit Score is a per-40-rate composite (see
+    build_cache.py's compute_season_profiles -- computed from per40 stats,
+    not raw counting totals), so it's minutes-independent by construction
+    and genuinely does not change across roles here -- shown once, not
+    per-role, so this doesn't imply a change that isn't real.
+    """
+    player = get_player(conn, player_id)
+    if player is None:
+        raise ProjectionError(f"No player with id {player_id} in the current-season cache.")
+    if player.get("hoop_score_raw") is None:
+        raise ProjectionError(f"{player.get('name') or 'This player'} has no recorded games this season "
+                               f"-- not enough data to translate her production across roles.")
+
+    team_id = player["team_id"]
+    team = get_team(conn, team_id)
+    if team is None:
+        raise ProjectionError(f"Player's current team (id {team_id}) isn't in the current-season cache.")
+
+    roles_data = team_roles(conn, team_id)
+    current_role_label = next(
+        (r["role"] for r in roles_data["roster_roles"] if r["player_id"] == player_id), None
+    )
+    current_role = _ROSTER_ROLE_LABEL_TO_NAME.get(current_role_label)
+
+    def _at_role(role_info):
+        if role_info.get("minutes") is None:
+            return None
+        m = role_info["minutes"]
+        pts = player["per40_pts"] * m / 40.0
+        reb = player["per40_reb"] * m / 40.0
+        ast = player["per40_ast"] * m / 40.0
+        blk = (player["per40_blk"] * m / 40.0) if player.get("per40_blk") is not None else None
+        stl = (player["per40_stl"] * m / 40.0) if player.get("per40_stl") is not None else None
+        tov = (player["per40_tov"] * m / 40.0) if player.get("per40_tov") is not None else None
+        return dict(
+            minutes=round(m, 1), ppg=round(pts, 1), rpg=round(reb, 1), apg=round(ast, 1),
+            bpg=round(blk, 1) if blk is not None else None,
+            spg=round(stl, 1) if stl is not None else None,
+            topg=round(tov, 1) if tov is not None else None,
+        )
+
+    roles_out = {role: _at_role(roles_data[role]) for role in ROLE_NAMES}
+
+    return dict(
+        player_id=player_id, name=player["name"], team_id=team_id, team_name=team["name"],
+        current_role=current_role,
+        real_avg_minutes=round(player["avg_minutes"], 1) if player.get("avg_minutes") is not None else None,
+        hoop_score=player["hoop_score"],
+        ts_pct=round(player["ts_pct"] * 100, 1) if player.get("ts_pct") is not None else None,
+        fg_pct=round(player["fg_pct"] * 100, 1) if player.get("fg_pct") is not None else None,
+        roles=roles_out,
+        note=("Same team, same competition level -- this shows her real per-40 production applied to each "
+              "role's typical minutes on her own roster (via /teams/{id}/roles), not a transfer projection. "
+              "Summit Score and shooting percentages don't change across roles here since they're rate-based, "
+              "not counting totals -- only the raw per-game counting stats move with minutes."),
+    )
+
+
+def optimal_lineup(conn, team_id):
+    """A data-driven answer to "who SHOULD start" -- as opposed to
+    /teams/{id}/roles' roster_roles, which reflects who ACTUALLY starts
+    (real games-started rate). Ranks every real-profile roster player (no
+    thin_sample placeholders -- nothing real to rank there) by an
+    equal-weighted composite of two team-relative z-scores: Summit Score
+    (hoop_score, the site's overall quality composite) and season-average
+    combined production (points + rebounds + assists + steals + blocks -
+    turnovers per game, live from player_game_logs -- the exact "Production
+    Rating" formula already used on the player profile's Game-by-Game
+    Production Rating chart, averaged across her season here instead of
+    shown per game). Both z-scored against THIS TEAM'S OWN roster, not the
+    whole league -- the question is "who's most valuable on THIS roster,"
+    not "who'd rank well nationally."
+
+    Position-balanced: the starting 5 must include at least 1 true center
+    (falls back to the highest-ranked forward if the roster has no player
+    listed as C at all) and at least 2 guards, so the suggested lineup is a
+    realistic, playable 5 -- not just the 5 highest composite scores
+    regardless of position, which could genuinely be 5 guards. The
+    remaining spots (after the center and 2 guards) go to the next-highest
+    composite scores regardless of position. The sixth man slot has no
+    positional requirement -- the next-best player not in the starting 5,
+    matching how a real sixth man is picked (instant offense/versatility
+    off the bench, not filling a specific hole).
+
+    This is a data-driven suggestion from real box-score production only --
+    it doesn't know about chemistry, matchups, health, or anything off the
+    stat sheet, and it isn't a coaching decision.
+    """
+    season = _load_meta(conn)["season"]
+    team = get_team(conn, team_id)
+    if team is None:
+        raise ProjectionError(f"No team with id {team_id} in the current-season cache.")
+
+    rows = conn.execute(
+        "SELECT player_id, name, position, class_year, avg_minutes, games, hoop_score, thin_sample "
+        "FROM players WHERE team_id = ?", (team_id,)
+    ).fetchall()
+    real = [dict(r) for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
+    if len(real) < 5:
+        raise ProjectionError(
+            f"Not enough players with real season profiles on this roster ({len(real)}) to suggest a "
+            f"5-player lineup."
+        )
+
+    prod_rows = conn.execute(
+        """SELECT player_id,
+                  AVG(points + rebounds + assists + steals + blocks - turnovers) AS avg_production
+           FROM player_game_logs WHERE team_id = ? AND season = ? GROUP BY player_id""",
+        (team_id, season),
+    ).fetchall()
+    prod_by_player = {r["player_id"]: r["avg_production"] for r in prod_rows}
+    for p in real:
+        p["avg_production"] = prod_by_player.get(p["player_id"])
+    real = [p for p in real if p["avg_production"] is not None]
+    if len(real) < 5:
+        raise ProjectionError(
+            f"Not enough players with real per-game logs on this roster ({len(real)}) to suggest a "
+            f"5-player lineup."
+        )
+
+    def _z(vals):
+        mean = statistics.mean(vals)
+        std = (statistics.pstdev(vals) if len(vals) > 1 else 1.0) or 1.0
+        return mean, std
+
+    score_mean, score_std = _z([p["hoop_score"] for p in real])
+    prod_mean, prod_std = _z([p["avg_production"] for p in real])
+    for p in real:
+        z_score = (p["hoop_score"] - score_mean) / score_std
+        z_prod = (p["avg_production"] - prod_mean) / prod_std
+        p["optimizer_score"] = round((z_score + z_prod) / 2, 3)
+
+    real.sort(key=lambda p: p["optimizer_score"], reverse=True)
+
+    guards = [p for p in real if p["position"] == "G"]
+    centers = [p for p in real if p["position"] == "C"]
+    forwards = [p for p in real if p["position"] == "F"]
+
+    starters = []
+    notes = []
+    picked_ids = set()
+
+    def _take(pool, n):
+        taken = []
+        for p in pool:
+            if p["player_id"] in picked_ids:
+                continue
+            taken.append(p)
+            picked_ids.add(p["player_id"])
+            if len(taken) == n:
+                break
+        return taken
+
+    center_pick = _take(centers, 1)
+    if not center_pick:
+        center_pick = _take(forwards, 1)
+        if center_pick:
+            notes.append("No player listed at Center on this roster -- the highest-ranked Forward filled "
+                          "that slot instead.")
+        else:
+            notes.append("No Center or Forward on this roster -- the starting 5 below is filled purely by "
+                          "composite score.")
+    starters += center_pick
+
+    guard_picks = _take(guards, 2)
+    if len(guard_picks) < 2:
+        notes.append(f"Only {len(guard_picks)} real Guard{'s' if len(guard_picks) != 1 else ''} on this "
+                      f"roster -- the remaining starting spot{'s' if 2 - len(guard_picks) != 1 else ''} "
+                      f"filled by composite score regardless of position.")
+    starters += guard_picks
+
+    remaining_needed = 5 - len(starters)
+    starters += _take(real, remaining_needed)
+
+    sixth_man_pick = _take(real, 1)
+    sixth_man = sixth_man_pick[0] if sixth_man_pick else None
+
+    def _out(p):
+        return dict(player_id=p["player_id"], name=p["name"], position=p["position"], class_year=p["class_year"],
+                    hoop_score=p["hoop_score"], avg_production=round(p["avg_production"], 1),
+                    avg_minutes=round(p["avg_minutes"], 1) if p.get("avg_minutes") is not None else None,
+                    optimizer_score=p["optimizer_score"])
+
+    return dict(
+        team_id=team_id, team_name=team["name"],
+        starting_five=[_out(p) for p in starters],
+        sixth_man=_out(sixth_man) if sixth_man else None,
+        notes=notes,
+        method_note=(
+            "Ranked by an equal-weighted blend of Summit Score and season-average combined production "
+            "(points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
+            "Game-by-Game Production Rating chart), both compared only against this team's own roster -- not "
+            "the whole league. The starting 5 requires at least 1 Center (or the best Forward if the roster "
+            "has no true Center) and at least 2 Guards for a realistic, playable lineup; the rest of the "
+            "5 and the Sixth Man slot go to the next-highest scores regardless of position. This is a "
+            "data-driven suggestion based only on real box-score production, not a coaching decision -- it "
+            "doesn't know about chemistry, matchups, health, or anything off the stat sheet."
+        ),
+    )
+
+
 def _core_projection(player, current_team, target_team, meta, minutes_override=None, role=None, role_info=None):
     """The actual projection math, independent of how player/current_team/
     target_team/role_info were fetched -- shared by project_player() (one

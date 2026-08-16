@@ -773,3 +773,65 @@ export interface LeapCandidates {
   candidates_considered: number;
   note: string;
 }
+
+// -------- Role Translation (player profile page, phase 12) --------
+
+// One role's translated per-game line for GET /players/{id}/role-translation
+// -- null when that role isn't resolvable on the player's own current team
+// (see TeamRoles' starter/sixth_man/role_player/depth_piece `minutes` null
+// case, same underlying reason).
+export interface RoleTranslationLine {
+  minutes: number;
+  ppg: number;
+  rpg: number;
+  apg: number;
+  bpg: number | null;
+  spg: number | null;
+  topg: number | null;
+}
+
+export interface RoleTranslation {
+  player_id: number;
+  name: string;
+  team_id: number;
+  team_name: string;
+  // Which of the 4 roles she's actually in today on her real current
+  // roster (via /teams/{id}/roles' roster_roles) -- null if there wasn't
+  // enough data to classify her. Highlight this card in the UI.
+  current_role: RoleName | null;
+  real_avg_minutes: number | null;
+  // Minutes-independent rate composites -- deliberately the SAME across
+  // every role below, not recomputed per role. See projection.py's
+  // role_translation() docstring for why.
+  hoop_score: number;
+  ts_pct: number | null;
+  fg_pct: number | null;
+  roles: Record<RoleName, RoleTranslationLine | null>;
+  note: string;
+}
+
+// -------- Optimal Lineup (team profile page, phase 12) --------
+
+export interface OptimalLineupPlayer {
+  player_id: number;
+  name: string;
+  position: string;
+  class_year: string;
+  hoop_score: number;
+  avg_production: number;
+  avg_minutes: number | null;
+  // Equal-weighted blend of this team's own hoop_score z-score and
+  // avg_production z-score -- team-relative, not a league-wide ranking.
+  optimizer_score: number;
+}
+
+export interface OptimalLineup {
+  team_id: number;
+  team_name: string;
+  starting_five: OptimalLineupPlayer[];
+  sixth_man: OptimalLineupPlayer | null;
+  // Explains any positional-balance fallback that kicked in (e.g. no true
+  // Center on the roster) -- empty array when the lineup filled cleanly.
+  notes: string[];
+  method_note: string;
+}

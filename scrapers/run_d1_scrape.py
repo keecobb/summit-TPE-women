@@ -71,7 +71,7 @@ from scrapers.xlsx_io import (
 # the same day). Not bumped right now since this file itself wasn't
 # touched in that session -- only run_d2_scrape.py/sidearm_client.py
 # were.
-LAST_REVISED = "2026-07-26"
+LAST_REVISED = "2026-08-15"
 
 DEFAULT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "WomensSummitTPE.xlsx")
 DEFAULT_SEASONS = [2024, 2025, 2026]  # ESPN "season" = the year the season ends in
@@ -423,6 +423,19 @@ def process_game(ctx, my_info, season, game):
 
         for player_row in rows:
             if not player_row.get("espn_athlete_id"):
+                continue
+            if player_row.get("did_not_play"):
+                # ESPN's box score keeps listing a player on a team's
+                # roster (with an all-empty stat line) even after they've
+                # transferred away -- confirmed live against a real
+                # transfer's post-move box scores. Writing a
+                # PlayerGameStats row for these inflates Games Played
+                # with games the player never actually appeared in
+                # (found via 4 players whose Games Played exceeded any
+                # real season's game count -- root cause traced to this).
+                # Skipping them here is a one-line fix; get_boxscore()
+                # already parses/returns this flag, it just wasn't being
+                # checked by this loop before.
                 continue
             stats = player_row["raw_stats"]
             fgm, fga = espn.split_made_attempted(stats.get("FG"))

@@ -54,9 +54,10 @@ from pydantic import BaseModel
 from projection import (
     CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
     back_half_leaderboard, best_single_game_performances, conference_standings, find_fits, game_detail,
-    games_started_by_player, leaderboard, leap_candidates, opponent_split_leaderboard, player_efficiency_quadrant,
-    player_game_logs, player_splits, player_trajectory, project_batch, project_player, season_jump_leaderboard,
-    standout_projections, team_efficiency_quadrant, team_needs, team_roles, team_schedule,
+    games_started_by_player, leaderboard, leap_candidates, opponent_split_leaderboard, optimal_lineup,
+    player_efficiency_quadrant, player_game_logs, player_splits, player_trajectory, project_batch, project_player,
+    role_translation, season_jump_leaderboard, standout_projections, team_efficiency_quadrant, team_needs,
+    team_roles, team_schedule,
 )
 from summit_calc import TIER_ABBREV, normalize_tier
  
@@ -368,8 +369,26 @@ def project(
     finally:
         conn.close()
     return result
- 
- 
+
+
+@app.get("/players/{player_id}/role-translation", dependencies=[Depends(require_api_key)])
+def get_role_translation(player_id: int):
+    """What her real per-40 production would translate to at each of the 4
+    role-based minutes levels on her OWN CURRENT team -- a same-team,
+    same-competition-level "what if she played a different role" view,
+    distinct from /project (which changes competition level via a target
+    school). See role_translation()'s docstring in projection.py for why
+    this is deliberately NOT built on the transfer-calibrated projection
+    model."""
+    conn = get_conn()
+    try:
+        return role_translation(conn, player_id)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
 @app.get("/teams/{team_id}/needs", dependencies=[Depends(require_api_key)])
 def get_team_needs(
     team_id: int,
@@ -392,8 +411,27 @@ def get_team_needs(
         raise HTTPException(status_code=404, detail=str(exc))
     finally:
         conn.close()
- 
- 
+
+
+@app.get("/teams/{team_id}/optimal-lineup", dependencies=[Depends(require_api_key)])
+def get_optimal_lineup(team_id: int):
+    """A data-driven suggested starting 5 + sixth man for this team, ranked
+    by an equal-weighted blend of Summit Score and season-average combined
+    production (points + rebounds + assists + steals + blocks - turnovers
+    per game -- the same formula as the player profile's Game-by-Game
+    Production Rating chart), both compared only against this team's own
+    roster. Position-balanced (>= 1 Center, >= 2 Guards in the starting 5).
+    See optimal_lineup()'s docstring in projection.py for the full method
+    and its fallback rules on thin/unusual rosters."""
+    conn = get_conn()
+    try:
+        return optimal_lineup(conn, team_id)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        conn.close()
+
+
 @app.get("/teams/{team_id}/fits", dependencies=[Depends(require_api_key)])
 def get_team_fits(
     team_id: int,
