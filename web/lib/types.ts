@@ -810,28 +810,53 @@ export interface RoleTranslation {
   note: string;
 }
 
-// -------- Optimal Lineup (team profile page, phase 12) --------
+// -------- Optimal Lineup (team profile page, phase 12/13) --------
 
+// One row of GET /teams/{id}/optimal-lineup's `rotation` table (phase 13 --
+// covers the WHOLE roster, not just the starting 5 + sixth man). `minutes`
+// is her real season avg_minutes scaled by one constant factor so the full
+// roster adds up to a real game's 200 total player-minutes -- her real
+// relative playing time is preserved, just normalized to one game.
+// ppg/rpg/apg/spg/bpg/topg are her real per-40 rates applied to that scaled
+// minutes figure (same math as RoleTranslationLine). hoop_score/ts_pct/
+// fg_pct are rate composites that don't change with minutes, so they're her
+// real season values, unscaled.
 export interface OptimalLineupPlayer {
   player_id: number;
   name: string;
   position: string;
   class_year: string;
+  role: "Starter" | "Sixth Man" | "Role Player" | "Depth Piece";
   hoop_score: number;
-  avg_production: number;
-  avg_minutes: number | null;
+  ts_pct: number | null;
+  fg_pct: number | null;
+  minutes: number;
+  ppg: number | null;
+  rpg: number | null;
+  apg: number | null;
+  spg: number | null;
+  bpg: number | null;
+  topg: number | null;
   // Equal-weighted blend of this team's own hoop_score z-score and
   // avg_production z-score -- team-relative, not a league-wide ranking.
+  // This is what `role`/table order is ranked by, NOT `minutes`.
   optimizer_score: number;
 }
 
 export interface OptimalLineup {
   team_id: number;
   team_name: string;
-  starting_five: OptimalLineupPlayer[];
-  sixth_man: OptimalLineupPlayer | null;
-  // Explains any positional-balance fallback that kicked in (e.g. no true
-  // Center on the roster) -- empty array when the lineup filled cleanly.
+  // Sum of every rotation row's `minutes` -- should read very close to
+  // 200.0 (rounding across individually-rounded rows keeps it from landing
+  // exactly on 200.0 every time).
+  total_minutes: number;
+  // Whole roster (every player with a real season profile AND real
+  // per-game logs), ordered by role (Starter > Sixth Man > Role Player >
+  // Depth Piece) then by minutes descending within each role.
+  rotation: OptimalLineupPlayer[];
+  // Explains any positional-balance fallback (e.g. no true Center on the
+  // roster) and/or any roster players excluded for lacking real data --
+  // empty array when nothing needed flagging.
   notes: string[];
   method_note: string;
 }

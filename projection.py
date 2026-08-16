@@ -576,30 +576,54 @@ def role_translation(conn, player_id):
 
 
 def optimal_lineup(conn, team_id):
-    """A data-driven answer to "who SHOULD start" -- as opposed to
-    /teams/{id}/roles' roster_roles, which reflects who ACTUALLY starts
-    (real games-started rate). Ranks every real-profile roster player (no
-    thin_sample placeholders -- nothing real to rank there) by an
-    equal-weighted composite of two team-relative z-scores: Summit Score
-    (hoop_score, the site's overall quality composite) and season-average
-    combined production (points + rebounds + assists + steals + blocks -
-    turnovers per game, live from player_game_logs -- the exact "Production
-    Rating" formula already used on the player profile's Game-by-Game
-    Production Rating chart, averaged across her season here instead of
-    shown per game). Both z-scored against THIS TEAM'S OWN roster, not the
-    whole league -- the question is "who's most valuable on THIS roster,"
-    not "who'd rank well nationally."
+    """A data-driven answer to "who SHOULD start, and how should the whole
+    game's minutes be split" -- as opposed to /teams/{id}/roles'
+    roster_roles, which reflects who ACTUALLY starts (real games-started
+    rate). Ranks every real-profile roster player (no thin_sample
+    placeholders, and only players with at least one real per-game log --
+    nothing to rank without both) by an equal-weighted composite of two
+    team-relative z-scores: Summit Score (hoop_score, the site's overall
+    quality composite) and season-average combined production (points +
+    rebounds + assists + steals + blocks - turnovers per game, live from
+    player_game_logs -- the exact "Production Rating" formula already used
+    on the player profile's Game-by-Game Production Rating chart, averaged
+    across her season here instead of shown per game). Both z-scored
+    against THIS TEAM'S OWN roster, not the whole league -- the question is
+    "who's most valuable on THIS roster," not "who'd rank well nationally."
 
-    Position-balanced: the starting 5 must include at least 1 true center
+    Position-balanced starting 5: must include at least 1 true center
     (falls back to the highest-ranked forward if the roster has no player
     listed as C at all) and at least 2 guards, so the suggested lineup is a
     realistic, playable 5 -- not just the 5 highest composite scores
     regardless of position, which could genuinely be 5 guards. The
-    remaining spots (after the center and 2 guards) go to the next-highest
-    composite scores regardless of position. The sixth man slot has no
-    positional requirement -- the next-best player not in the starting 5,
-    matching how a real sixth man is picked (instant offense/versatility
-    off the bench, not filling a specific hole).
+    remaining 3 starting spots go to the next-highest composite scores
+    regardless of position. Sixth Man is the next-best player not in the
+    starting 5, no positional requirement -- matching how a real sixth man
+    is picked (instant offense/versatility off the bench). Everyone else
+    ranks straight off the composite score, split into Role Player/Depth
+    Piece by the same ROLE_DEPTH_PIECE_MAX_MINUTES threshold /teams/{id}/roles
+    uses, but evaluated against this function's own projected minutes
+    (below), not real season avg_minutes -- so the label always matches the
+    number shown next to it.
+
+    Every player in the response gets a `minutes` figure, and unlike
+    role_translation() (which resolves 4 fixed buckets), this covers the
+    WHOLE roster at once so the minutes can be normalized to add up to a
+    real game's 200 total player-minutes (5 on the floor x 40 minutes).
+    Rather than inventing a new minutes-distribution model, this scales
+    each player's own REAL season avg_minutes by one constant factor
+    (200 / the roster's real total) -- preserves the real, observed
+    relative playing-time order exactly, just rescaled so the table reads
+    as one coherent game instead of independently-averaged season rates
+    that happen to sum to something else (a real roster's own avg_minutes
+    total typically runs a bit over 200 across a full season, from
+    overtime games and midseason roster/rotation changes -- confirmed
+    against real teams during phase 13 testing, e.g. UConn ~211,
+    Air Force ~222). Each player's projected per-game stat line (ppg/rpg/
+    apg/spg/bpg/topg) is then her real per-40 rate applied to that scaled
+    minutes figure -- same math as role_translation(). hoop_score/ts_pct/
+    fg_pct are rate composites and don't change with minutes, so they're
+    shown as her real season values, unscaled.
 
     This is a data-driven suggestion from real box-score production only --
     it doesn't know about chemistry, matchups, health, or anything off the
@@ -611,14 +635,17 @@ def optimal_lineup(conn, team_id):
         raise ProjectionError(f"No team with id {team_id} in the current-season cache.")
 
     rows = conn.execute(
-        "SELECT player_id, name, position, class_year, avg_minutes, games, hoop_score, thin_sample "
+        "SELECT player_id, name, position, class_year, avg_minutes, games, hoop_score, ts_pct, fg_pct, "
+        "per40_pts, per40_reb, per40_ast, per40_blk, per40_stl, per40_tov, thin_sample "
         "FROM players WHERE team_id = ?", (team_id,)
     ).fetchall()
-    real = [dict(r) for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
+    roster_size = len(rows)
+    real = [dict(r) for r in rows
+            if not r["thin_sample"] and r["hoop_score"] is not None and r["avg_minutes"] is not None]
     if len(real) < 5:
         raise ProjectionError(
             f"Not enough players with real season profiles on this roster ({len(real)}) to suggest a "
-            f"5-player lineup."
+            f"lineup."
         )
 
     prod_rows = conn.execute(
@@ -630,11 +657,13 @@ def optimal_lineup(conn, team_id):
     prod_by_player = {r["player_id"]: r["avg_production"] for r in prod_rows}
     for p in real:
         p["avg_production"] = prod_by_player.get(p["player_id"])
+    n_before_prod_filter = len(real)
     real = [p for p in real if p["avg_production"] is not None]
+    excluded_count = roster_size - len(real)
     if len(real) < 5:
         raise ProjectionError(
             f"Not enough players with real per-game logs on this roster ({len(real)}) to suggest a "
-            f"5-player lineup."
+            f"lineup."
         )
 
     def _z(vals):
@@ -690,30 +719,81 @@ def optimal_lineup(conn, team_id):
 
     remaining_needed = 5 - len(starters)
     starters += _take(real, remaining_needed)
+    starter_ids = {p["player_id"] for p in starters}
 
-    sixth_man_pick = _take(real, 1)
-    sixth_man = sixth_man_pick[0] if sixth_man_pick else None
+    # `real` is already optimizer_score-sorted and `remaining` preserves
+    # that order (starters removed, nobody re-sorted) -- so remaining[0] is
+    # genuinely the next-best player, exactly matching how a real sixth man
+    # is picked.
+    remaining = [p for p in real if p["player_id"] not in starter_ids]
+    sixth_man = remaining[0] if remaining else None
+    sixth_man_id = sixth_man["player_id"] if sixth_man else None
+
+    # Scale every player's real season avg_minutes by one constant factor so
+    # the whole roster's minutes add up to a real game's 200 total -- see
+    # the docstring for why a constant scale (not a new distribution model)
+    # is the right call here.
+    total_real_minutes = sum(p["avg_minutes"] for p in real)
+    scale = (200.0 / total_real_minutes) if total_real_minutes > 0 else 1.0
+    for p in real:
+        m = p["avg_minutes"] * scale
+        p["proj_minutes"] = round(m, 1)
+        p["proj_ppg"] = round(p["per40_pts"] * m / 40.0, 1) if p.get("per40_pts") is not None else None
+        p["proj_rpg"] = round(p["per40_reb"] * m / 40.0, 1) if p.get("per40_reb") is not None else None
+        p["proj_apg"] = round(p["per40_ast"] * m / 40.0, 1) if p.get("per40_ast") is not None else None
+        p["proj_bpg"] = round(p["per40_blk"] * m / 40.0, 1) if p.get("per40_blk") is not None else None
+        p["proj_spg"] = round(p["per40_stl"] * m / 40.0, 1) if p.get("per40_stl") is not None else None
+        p["proj_topg"] = round(p["per40_tov"] * m / 40.0, 1) if p.get("per40_tov") is not None else None
+
+    for p in real:
+        if p["player_id"] in starter_ids:
+            p["role"] = "Starter"
+        elif p["player_id"] == sixth_man_id:
+            p["role"] = "Sixth Man"
+        elif p["proj_minutes"] >= ROLE_DEPTH_PIECE_MAX_MINUTES:
+            p["role"] = "Role Player"
+        else:
+            p["role"] = "Depth Piece"
+
+    role_order = {"Starter": 0, "Sixth Man": 1, "Role Player": 2, "Depth Piece": 3}
+    rotation_sorted = sorted(real, key=lambda p: (role_order[p["role"]], -p["proj_minutes"]))
+
+    if excluded_count > 0:
+        notes.append(f"{excluded_count} roster player{'s' if excluded_count != 1 else ''} excluded -- no real "
+                      f"season profile and/or per-game log data on record to project from.")
 
     def _out(p):
-        return dict(player_id=p["player_id"], name=p["name"], position=p["position"], class_year=p["class_year"],
-                    hoop_score=p["hoop_score"], avg_production=round(p["avg_production"], 1),
-                    avg_minutes=round(p["avg_minutes"], 1) if p.get("avg_minutes") is not None else None,
-                    optimizer_score=p["optimizer_score"])
+        return dict(
+            player_id=p["player_id"], name=p["name"], position=p["position"], class_year=p["class_year"],
+            role=p["role"],
+            hoop_score=p["hoop_score"],
+            ts_pct=round(p["ts_pct"] * 100, 1) if p.get("ts_pct") is not None else None,
+            fg_pct=round(p["fg_pct"] * 100, 1) if p.get("fg_pct") is not None else None,
+            minutes=p["proj_minutes"],
+            ppg=p["proj_ppg"], rpg=p["proj_rpg"], apg=p["proj_apg"],
+            spg=p["proj_spg"], bpg=p["proj_bpg"], topg=p["proj_topg"],
+            optimizer_score=p["optimizer_score"],
+        )
 
     return dict(
         team_id=team_id, team_name=team["name"],
-        starting_five=[_out(p) for p in starters],
-        sixth_man=_out(sixth_man) if sixth_man else None,
+        total_minutes=round(sum(p["proj_minutes"] for p in real), 1),
+        rotation=[_out(p) for p in rotation_sorted],
         notes=notes,
         method_note=(
             "Ranked by an equal-weighted blend of Summit Score and season-average combined production "
             "(points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
             "Game-by-Game Production Rating chart), both compared only against this team's own roster -- not "
             "the whole league. The starting 5 requires at least 1 Center (or the best Forward if the roster "
-            "has no true Center) and at least 2 Guards for a realistic, playable lineup; the rest of the "
-            "5 and the Sixth Man slot go to the next-highest scores regardless of position. This is a "
-            "data-driven suggestion based only on real box-score production, not a coaching decision -- it "
-            "doesn't know about chemistry, matchups, health, or anything off the stat sheet."
+            "has no true Center) and at least 2 Guards for a realistic, playable lineup; Sixth Man is the "
+            "next-best player regardless of position. Every player's Minutes below is her real season average "
+            "minutes/game, scaled by one constant factor so the full roster adds up to a real game's 200 total "
+            "player-minutes (5 on the floor x 40 minutes) -- her real relative playing time is preserved, just "
+            "normalized to one game. PPG/RPG/APG/SPG/BPG/TOPG are her real per-40 rates applied to that scaled "
+            "minutes figure; Summit Score/TS%/FG% are rate-based and don't change with minutes, so they're her "
+            "real season values. This is a data-driven suggestion based only on real box-score production, not "
+            "a coaching decision -- it doesn't know about chemistry, matchups, health, or anything off the "
+            "stat sheet."
         ),
     )
 

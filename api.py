@@ -415,14 +415,17 @@ def get_team_needs(
 
 @app.get("/teams/{team_id}/optimal-lineup", dependencies=[Depends(require_api_key)])
 def get_optimal_lineup(team_id: int):
-    """A data-driven suggested starting 5 + sixth man for this team, ranked
-    by an equal-weighted blend of Summit Score and season-average combined
-    production (points + rebounds + assists + steals + blocks - turnovers
-    per game -- the same formula as the player profile's Game-by-Game
-    Production Rating chart), both compared only against this team's own
-    roster. Position-balanced (>= 1 Center, >= 2 Guards in the starting 5).
-    See optimal_lineup()'s docstring in projection.py for the full method
-    and its fallback rules on thin/unusual rosters."""
+    """A data-driven suggested rotation for the WHOLE roster (Starter/Sixth
+    Man/Role Player/Depth Piece), ranked by an equal-weighted blend of
+    Summit Score and season-average combined production (points + rebounds
+    + assists + steals + blocks - turnovers per game -- the same formula
+    as the player profile's Game-by-Game Production Rating chart), both
+    compared only against this team's own roster. Position-balanced
+    starting 5 (>= 1 Center, >= 2 Guards). Every player's minutes are her
+    real season average scaled by one constant factor so the full roster
+    adds up to a real game's 200 total player-minutes. See
+    optimal_lineup()'s docstring in projection.py for the full method and
+    its fallback rules on thin/unusual rosters."""
     conn = get_conn()
     try:
         return optimal_lineup(conn, team_id)

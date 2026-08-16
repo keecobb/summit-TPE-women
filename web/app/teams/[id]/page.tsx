@@ -411,74 +411,84 @@ async function LineupTab({ id }: { id: string }) {
   }
 
   return (
-    <div>
-      <div className="card">
-        <h2>
-          Suggested Starting 5
-          <span
-            className="hint"
-            title="Ranked by an equal-weighted blend of Summit Score and season-average combined production (points + rebounds + assists + steals + blocks - turnovers per game), both compared only against this team's own roster. Requires at least 1 Center (or the best Forward as a fallback) and at least 2 Guards for a realistic lineup."
-          >
-            ?
-          </span>
-        </h2>
-        <p className="section-note">
-          A data-driven suggestion based on real box-score production this season -- not a coaching decision.
-          It doesn&apos;t know about chemistry, matchups, health, or anything off the stat sheet. See{" "}
-          <Link href={`/teams/${id}?tab=roster`}>Roster</Link> for who actually starts today.
-        </p>
+    <div className="card">
+      <h2>
+        Suggested Rotation
+        <span
+          className="hint"
+          title="Ranked by an equal-weighted blend of Summit Score and season-average combined production (points + rebounds + assists + steals + blocks - turnovers per game), both compared only against this team's own roster. Starting 5 requires at least 1 Center (or the best Forward as a fallback) and at least 2 Guards for a realistic lineup; Sixth Man is the next-best player regardless of position."
+        >
+          ?
+        </span>
+      </h2>
+      <p className="section-note">
+        A data-driven suggestion based on real box-score production this season -- not a coaching decision. Minutes
+        are each player&apos;s real season average, scaled so the whole roster adds up to a real game&apos;s{" "}
+        <strong>{lineup.total_minutes.toFixed(1)}</strong> total player-minutes (200 = 5 on the floor x 40 minutes).
+        PPG/RPG/APG/SPG/BPG/TOPG are projected at that scaled minutes figure; Summit Score/TS%/FG% don&apos;t change
+        with minutes, so those are real season values. See <Link href={`/teams/${id}?tab=roster`}>Roster</Link> for
+        who actually starts today.
+      </p>
 
-        {lineup.notes.length > 0 && (
-          <div className="info-box" style={{ marginBottom: 16 }}>
-            {lineup.notes.map((n, i) => (
-              <p key={i} style={{ margin: i === 0 ? 0 : "6px 0 0" }}>{n}</p>
-            ))}
-          </div>
-        )}
-
-        <div className="card-grid">
-          {lineup.starting_five.map((p) => (
-            <LineupPlayerTile key={p.player_id} player={p} />
+      {lineup.notes.length > 0 && (
+        <div className="info-box" style={{ marginBottom: 16 }}>
+          {lineup.notes.map((n, i) => (
+            <p key={i} style={{ margin: i === 0 ? 0 : "6px 0 0" }}>{n}</p>
           ))}
         </div>
+      )}
+
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Name</th>
+              <th>Pos</th>
+              <th>Class</th>
+              <th>Min</th>
+              <th>PPG</th>
+              <th>RPG</th>
+              <th>APG</th>
+              <th>SPG</th>
+              <th>BPG</th>
+              <th>TOPG</th>
+              <th>TS%</th>
+              <th>FG%</th>
+              <th>Summit Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lineup.rotation.map((p) => (
+              <tr key={p.player_id}>
+                <td>
+                  <span className={p.role === "Starter" || p.role === "Sixth Man" ? "pill pill-good" : "pill"}>
+                    {p.role}
+                  </span>
+                </td>
+                <td>
+                  <Link href={`/players/${p.player_id}`}>{p.name}</Link>
+                </td>
+                <td>{p.position}</td>
+                <td>{p.class_year}</td>
+                <td>{p.minutes.toFixed(1)}</td>
+                <td>{p.ppg != null ? p.ppg.toFixed(1) : "--"}</td>
+                <td>{p.rpg != null ? p.rpg.toFixed(1) : "--"}</td>
+                <td>{p.apg != null ? p.apg.toFixed(1) : "--"}</td>
+                <td>{p.spg != null ? p.spg.toFixed(1) : "--"}</td>
+                <td>{p.bpg != null ? p.bpg.toFixed(1) : "--"}</td>
+                <td>{p.topg != null ? p.topg.toFixed(1) : "--"}</td>
+                <td>{p.ts_pct != null ? `${p.ts_pct.toFixed(1)}%` : "--"}</td>
+                <td>{p.fg_pct != null ? `${p.fg_pct.toFixed(1)}%` : "--"}</td>
+                <td>{p.hoop_score.toFixed(1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
-      <div className="card">
-        <h2>Sixth Man</h2>
-        <p className="section-note">
-          The next-best player not in the starting 5, no positional requirement -- same instant-offense/versatility
-          role a real sixth man plays.
-        </p>
-        {lineup.sixth_man ? (
-          <div className="card-grid">
-            <LineupPlayerTile player={lineup.sixth_man} />
-          </div>
-        ) : (
-          <p className="empty-state">Not enough remaining players with real data to name a sixth man.</p>
-        )}
-      </div>
-
-      <p className="section-note">{lineup.method_note}</p>
+      <p className="section-note" style={{ marginTop: 12 }}>{lineup.method_note}</p>
     </div>
-  );
-}
-
-function LineupPlayerTile({ player }: { player: OptimalLineupPlayer }) {
-  return (
-    <Link href={`/players/${player.player_id}`}>
-      <div className="card">
-        <h3 style={{ margin: "0 0 4px" }}>{player.name}</h3>
-        <p className="section-note" style={{ margin: "0 0 10px" }}>
-          {player.position} &middot; {player.class_year}
-        </p>
-        <div className="stat-grid">
-          <Stat label="Summit Score" value={player.hoop_score} highlight />
-          <Stat label="Production" value={player.avg_production} hint="Season-average points + rebounds + assists + steals + blocks - turnovers per game." />
-          <Stat label="MPG" value={player.avg_minutes} />
-          <Stat label="Fit Score" value={player.optimizer_score} hint="Equal-weighted blend of this team's own Summit Score and Production z-scores -- how this player compares to the rest of THIS roster, not the whole league." />
-        </div>
-      </div>
-    </Link>
   );
 }
 

@@ -12,100 +12,40 @@ import PerGameProductionCard from "@/components/PerGameProductionCard";
 import RoleTranslationCard from "@/components/RoleTranslationCard";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
-// Cache/Full Route Cache treating this route as static -- this page in
-// particular has no searchParams usage at all (unlike most other pages
-// here), so under Next's default `dynamic: "auto"` behavior it was the
-// single most likely page on the site to occasionally serve a stale/
-// out-of-sync cached snapshot until the next revalidation, matching the
-// "sometimes some data doesn't show until I refresh" report. See
-// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup.
-//
-// Phase 11i: `force-dynamic` alone turned out NOT to be a complete fix --
-// it stops this whole route from being served as static HTML (the Full
-// Route Cache), but each individual `apiFetch()` call below still has its
-// own independent Data Cache entry, keyed by URL, that a `revalidate: 60`
-// option lets serve stale for up to 60 real seconds regardless of the
-// route-level setting -- confirmed directly against this app (not just
-// from docs) while re-testing phase 11h's backend changes: after editing
-// api.py, the Roster/Team Fits pages kept showing "--" for the new
-// games_started field for close to a minute before self-correcting, with
-// no browser refresh able to force it sooner. That's the same failure
-// shape as the "Summit Score / per-game production sometimes wrong until
-// I refresh" report -- any time refresh_pipeline.py swaps in new data (or
-// a deploy changes what a response contains), the exact same up-to-60s
-// window opens on every URL that was already warm in the cache. The
-// player's own primary record below is the single source for BOTH the
-// PlayerCard's Summit Score and PerGameProductionCard's stats, so this one
-// fetch is set to `revalidate: 0` (always live -- no Data Cache entry at
-// all) rather than a shorter timer, since this route is already fully
-// dynamic per-request and there's no static-page benefit left to protect.
+// Cache/Full Route Cache treating this route as static -- see
+// ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes (phase 11i/11j) for the
+// full writeup on why `revalidate: 0` is used on every fetch below rather
+// than a timer, and why `force-dynamic` alone wasn't a complete fix.
 export const dynamic = "force-dynamic";
 
-export default async function PlayerDetailPage({ params }: { params: Promise<{ id: string }> }) {
+const TABS = [
+  { key: "overview", label: "Overview" },
+  { key: "trends", label: "Season Trends" },
+  { key: "splits", label: "Opponent Splits" },
+  { key: "games", label: "Game Log" },
+] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
+
+// Player profile page (phase 13) -- rebuilt into tabs matching the team
+// profile page's Overview/Roster/Schedule/Stats Breakdown/Lineup pattern.
+// Only the identity header (name, season, thin-sample flag, Project button)
+// lives outside the tabs, same as the team page keeps just its h1/subtitle
+// outside `OverviewTab` et al. Each tab is its own async component that
+// fetches only what it needs, so switching tabs doesn't pull data the
+// active view doesn't use.
+export default async function PlayerDetailPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ tab?: string }>;
+}) {
   const { id } = await params;
+  const sp = await searchParams;
+  const tab: TabKey = (TABS.find((t) => t.key === sp.tab)?.key ?? "overview") as TabKey;
 
   const player = await apiFetch<PlayerDetail>(`/players/${id}`, { revalidate: 0 });
-
-  // Phase 11j: all three fetches below were still on `revalidate: 60` after
-  // phase 11i's fix -- reasoned at the time that up-to-a-minute staleness on
-  // a season trend chart or a splits table wouldn't be user-visible the way
-  // a missing Summit Score is. That reasoning was wrong: the Season by
-  // Season chart (built from `trajectory`, right below) hit the exact same
-  // "shows stale/wrong data until a refresh happens to land after the
-  // cache window" bug phase 11i fixed on the player's primary record.
-  // Everything on this page reads from the same live, pipeline-refreshed
-  // tables, so it's all equally exposed -- set to `revalidate: 0` (always
-  // live) across the board here instead of trying to guess which fields
-  // are "important enough" to be exempt from staleness.
-  let trajectory: PlayerTrajectory | null = null;
-  try {
-    trajectory = await apiFetch<PlayerTrajectory>(`/players/${id}/trajectory`, { revalidate: 0 });
-  } catch (e) {
-    // Trajectory 404s if the player has no multi-season history on record --
-    // not an error worth showing, the current-season card below still renders.
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  }
-
-  let splits: PlayerSplits | null = null;
-  try {
-    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 0 });
-  } catch (e) {
-    // Same as trajectory above -- a thin_sample player with zero games this
-    // season has nothing to split, not an error worth surfacing.
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  }
-
-  // Role Translation (phase 12) -- 404s the same way trajectory/splits do
-  // when there's no real hoop_score_raw for her this season (thin_sample
-  // zero-game placeholder row), not an error worth surfacing.
-  let roleTranslation: RoleTranslation | null = null;
-  try {
-    roleTranslation = await apiFetch<RoleTranslation>(`/players/${id}/role-translation`, { revalidate: 0 });
-  } catch (e) {
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  }
-
-  // Best 3 games this season by points + rebounds + assists -- a simple,
-  // well-understood combined-production read, computed client-side from the
-  // same real per-game rows /players/{id}/game-logs already exposes (no new
-  // backend endpoint needed). Same "zero games -> nothing to show" case as
-  // splits above, not an error. The full chronological list (oldest first)
-  // is also kept for the Game-by-Game Production Rating chart below -- the
-  // API returns most-recent-first, so it's reversed once here for both uses.
-  let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
-  let gamesChronological: PlayerGameLogRow[] = [];
-  try {
-    const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 0 });
-    bestGames = logs.games
-      .map((g) => ({ ...g, combined: g.points + g.rebounds + g.assists }))
-      .sort((a, b) => b.combined - a.combined)
-      .slice(0, 3);
-    gamesChronological = [...logs.games].reverse();
-  } catch (e) {
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  }
-
-  const transfers = trajectory ? countTransfers(trajectory) : 0;
 
   return (
     <div>
@@ -138,75 +78,40 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         </Link>
       </div>
 
+      <div className="tabs">
+        {TABS.map((t) => (
+          <Link key={t.key} href={`/players/${id}?tab=${t.key}`} className={`tab${tab === t.key ? " active" : ""}`}>
+            {t.label}
+          </Link>
+        ))}
+      </div>
+
+      {tab === "overview" && <OverviewTab id={id} player={player} />}
+      {tab === "trends" && <TrendsTab id={id} player={player} />}
+      {tab === "splits" && <SplitsTab id={id} player={player} />}
+      {tab === "games" && <GamesTab id={id} player={player} />}
+    </div>
+  );
+}
+
+async function OverviewTab({ id, player }: { id: string; player: PlayerDetail }) {
+  // Role Translation (phase 12) -- 404s when there's no real hoop_score_raw
+  // for her this season (thin_sample zero-game placeholder row), not an
+  // error worth surfacing.
+  let roleTranslation: RoleTranslation | null = null;
+  try {
+    roleTranslation = await apiFetch<RoleTranslation>(`/players/${id}/role-translation`, { revalidate: 0 });
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  return (
+    <div>
       <PlayerCard player={player} />
 
       <PerGameProductionCard player={player} />
 
       {roleTranslation && <RoleTranslationCard data={roleTranslation} />}
-
-      {trajectory && trajectory.seasons.length > 0 && (
-        <div className="card">
-          <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
-          {trajectory.seasons.length > 1 && (
-            <>
-              <p className="section-note">
-                Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
-                {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
-              </p>
-              <SeasonTrendChart seasons={trajectory.seasons} />
-            </>
-          )}
-          <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Season</th>
-                <th>Team</th>
-                <th>GP</th>
-                <th>MPG</th>
-                <th>PPG</th>
-                <th>RPG</th>
-                <th>APG</th>
-                <th>TS%</th>
-                <th>Summit Score</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trajectory.seasons.map((s, i) => {
-                const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
-                const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
-                return (
-                  <Fragment key={s.season}>
-                    <tr>
-                      <td>{s.season}</td>
-                      <td>
-                        {s.team_name}
-                        {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
-                      </td>
-                      <td>{s.games}</td>
-                      <td>{s.avg_minutes?.toFixed(1)}</td>
-                      <td>{s.ppg?.toFixed(1)}</td>
-                      <td>{s.rpg?.toFixed(1)}</td>
-                      <td>{s.apg?.toFixed(1)}</td>
-                      <td>{s.ts_pct?.toFixed(1)}</td>
-                      <td>
-                        {s.hoop_score?.toFixed(1)}
-                        {s.thin_sample ? (
-                          <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
-                            limited
-                          </span>
-                        ) : null}
-                      </td>
-                    </tr>
-                    <SeasonGameLog playerId={player.player_id} season={s.season} />
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      )}
 
       <div className="card">
         <h2>
@@ -222,45 +127,170 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
         </p>
         <PlayerRadarChart player={player} />
       </div>
+    </div>
+  );
+}
 
-      {splits && splits.total_games > 0 && (
-        <div className="card">
-          <h2>
-            Performance by Opponent Strength
-            <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
-              ?
-            </span>
-          </h2>
-          <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Split</th>
-                  <th>GP</th>
-                  <th>PPG</th>
-                  <th>RPG</th>
-                  <th>APG</th>
-                  <th>SPG</th>
-                  <th>BPG</th>
-                  <th>TOPG</th>
-                  <th>MPG</th>
-                  <th>FG%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {TIERS.map((t) => (
-                  <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
-                ))}
-                <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
-                <SplitRow label="Last 10 games" row={splits.last10} />
-              </tbody>
-            </table>
-          </div>
-          <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
-        </div>
+async function TrendsTab({ id, player }: { id: string; player: PlayerDetail }) {
+  let trajectory: PlayerTrajectory | null = null;
+  try {
+    trajectory = await apiFetch<PlayerTrajectory>(`/players/${id}/trajectory`, { revalidate: 0 });
+  } catch (e) {
+    // Trajectory 404s if the player has no multi-season history on record --
+    // not an error worth showing.
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  if (!trajectory || trajectory.seasons.length === 0) {
+    return <p className="empty-state">No multi-season history on record for this player yet.</p>;
+  }
+
+  const transfers = countTransfers(trajectory);
+
+  return (
+    <div className="card">
+      <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
+      {trajectory.seasons.length > 1 && (
+        <>
+          <p className="section-note">
+            Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
+            {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
+          </p>
+          <SeasonTrendChart seasons={trajectory.seasons} />
+        </>
       )}
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Season</th>
+              <th>Team</th>
+              <th>GP</th>
+              <th>MPG</th>
+              <th>PPG</th>
+              <th>RPG</th>
+              <th>APG</th>
+              <th>TS%</th>
+              <th>Summit Score</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trajectory.seasons.map((s, i) => {
+              const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
+              const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
+              return (
+                <Fragment key={s.season}>
+                  <tr>
+                    <td>{s.season}</td>
+                    <td>
+                      {s.team_name}
+                      {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
+                    </td>
+                    <td>{s.games}</td>
+                    <td>{s.avg_minutes?.toFixed(1)}</td>
+                    <td>{s.ppg?.toFixed(1)}</td>
+                    <td>{s.rpg?.toFixed(1)}</td>
+                    <td>{s.apg?.toFixed(1)}</td>
+                    <td>{s.ts_pct?.toFixed(1)}</td>
+                    <td>
+                      {s.hoop_score?.toFixed(1)}
+                      {s.thin_sample ? (
+                        <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
+                          limited
+                        </span>
+                      ) : null}
+                    </td>
+                  </tr>
+                  <SeasonGameLog playerId={player.player_id} season={s.season} />
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
+async function SplitsTab({ id, player }: { id: string; player: PlayerDetail }) {
+  let splits: PlayerSplits | null = null;
+  try {
+    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 0 });
+  } catch (e) {
+    // A thin_sample player with zero games this season has nothing to
+    // split, not an error worth surfacing.
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  if (!splits || splits.total_games === 0) {
+    return <p className="empty-state">No games logged for {player.name} this season to split by opponent strength.</p>;
+  }
+
+  return (
+    <div className="card">
+      <h2>
+        Performance by Opponent Strength
+        <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
+          ?
+        </span>
+      </h2>
+      <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Split</th>
+              <th>GP</th>
+              <th>PPG</th>
+              <th>RPG</th>
+              <th>APG</th>
+              <th>SPG</th>
+              <th>BPG</th>
+              <th>TOPG</th>
+              <th>MPG</th>
+              <th>FG%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {TIERS.map((t) => (
+              <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
+            ))}
+            <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
+            <SplitRow label="Last 10 games" row={splits.last10} />
+          </tbody>
+        </table>
+      </div>
+      <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
+    </div>
+  );
+}
+
+async function GamesTab({ id, player }: { id: string; player: PlayerDetail }) {
+  // Best 3 games this season by points + rebounds + assists -- a simple,
+  // well-understood combined-production read, computed client-side from the
+  // same real per-game rows /players/{id}/game-logs already exposes (no new
+  // backend endpoint needed). The full chronological list (oldest first) is
+  // also kept for the Game-by-Game Production Rating chart below -- the API
+  // returns most-recent-first, so it's reversed once here for both uses.
+  let bestGames: (PlayerGameLogRow & { combined: number })[] = [];
+  let gamesChronological: PlayerGameLogRow[] = [];
+  try {
+    const logs = await apiFetch<PlayerGameLogs>(`/players/${id}/game-logs`, { params: { season: player.season }, revalidate: 0 });
+    bestGames = logs.games
+      .map((g) => ({ ...g, combined: g.points + g.rebounds + g.assists }))
+      .sort((a, b) => b.combined - a.combined)
+      .slice(0, 3);
+    gamesChronological = [...logs.games].reverse();
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  if (gamesChronological.length === 0) {
+    return <p className="empty-state">No game log on record for {player.name} this season.</p>;
+  }
+
+  return (
+    <div>
       {bestGames.length > 0 && (
         <div className="card">
           <h2>Best 3 Games</h2>
@@ -342,7 +372,6 @@ export default async function PlayerDetailPage({ params }: { params: Promise<{ i
           />
         </div>
       )}
-
     </div>
   );
 }
