@@ -806,7 +806,13 @@ export interface RoleTranslation {
   hoop_score: number;
   ts_pct: number | null;
   fg_pct: number | null;
-  roles: Record<RoleName, RoleTranslationLine | null>;
+  // true when she hasn't cleared role_translation()'s own stricter sample
+  // floor (12+ games AND 100+ minutes -- stricter than the site-wide
+  // thin_sample floor, since scaling a small sample up to a heavier role's
+  // minutes amplifies its noise). `roles` is null in that case -- render
+  // `note` as an explanation instead of the 4 role tiles.
+  insufficient_sample: boolean;
+  roles: Record<RoleName, RoleTranslationLine | null> | null;
   note: string;
 }
 

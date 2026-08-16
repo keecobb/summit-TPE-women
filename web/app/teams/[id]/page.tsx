@@ -416,7 +416,7 @@ async function LineupTab({ id }: { id: string }) {
         Suggested Rotation
         <span
           className="hint"
-          title="Ranked by an equal-weighted blend of Summit Score and season-average combined production (points + rebounds + assists + steals + blocks - turnovers per game), both compared only against this team's own roster. Starting 5 requires at least 1 Center (or the best Forward as a fallback) and at least 2 Guards for a realistic lineup; Sixth Man is the next-best player regardless of position."
+          title="Ranked by an equal-weighted blend of Summit Score and season-average combined production (points + rebounds + assists + steals + blocks - turnovers per game), both compared only against this team's own roster. Starting 5 requires at least 1 Forward or Center (the two are treated as one interchangeable frontcourt pool) and at least 2 Guards for a realistic lineup; Sixth Man is the next-best player regardless of position."
         >
           ?
         </span>
@@ -484,12 +484,37 @@ async function LineupTab({ id }: { id: string }) {
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4} style={{ fontWeight: 700 }}>Team Total</td>
+              <td style={{ fontWeight: 700 }}>{lineup.total_minutes.toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "ppg").toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "rpg").toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "apg").toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "spg").toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "bpg").toFixed(1)}</td>
+              <td style={{ fontWeight: 700 }}>{sumStat(lineup.rotation, "topg").toFixed(1)}</td>
+              <td className="section-note">--</td>
+              <td className="section-note">--</td>
+              <td className="section-note">--</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
 
       <p className="section-note" style={{ marginTop: 12 }}>{lineup.method_note}</p>
     </div>
   );
+}
+
+// Plain sum across the whole rotation table for one projected per-game stat
+// column -- null rows (a role with no per40 rate to project, extremely
+// rare) contribute 0 rather than breaking the total.
+function sumStat(
+  rotation: OptimalLineupPlayer[],
+  key: "ppg" | "rpg" | "apg" | "spg" | "bpg" | "topg"
+): number {
+  return rotation.reduce((sum, p) => sum + (p[key] ?? 0), 0);
 }
 
 function ZScoreHint() {

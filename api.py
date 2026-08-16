@@ -421,7 +421,8 @@ def get_optimal_lineup(team_id: int):
     + assists + steals + blocks - turnovers per game -- the same formula
     as the player profile's Game-by-Game Production Rating chart), both
     compared only against this team's own roster. Position-balanced
-    starting 5 (>= 1 Center, >= 2 Guards). Every player's minutes are her
+    starting 5 (>= 1 Forward/Center, treated as one interchangeable
+    frontcourt pool; >= 2 Guards). Every player's minutes are her
     real season average scaled by one constant factor so the full roster
     adds up to a real game's 200 total player-minutes. See
     optimal_lineup()'s docstring in projection.py for the full method and

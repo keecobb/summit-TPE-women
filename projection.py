@@ -240,6 +240,19 @@ ROLE_SIXTH_MAN_START_PCT = 0.25
 ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT = 0.50
 ROLE_DEPTH_PIECE_MAX_MINUTES = 10.0
 ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
+
+# role_translation()-specific sample floor -- stricter than the site-wide
+# thin_sample floor (5 games / 100 minutes) used everywhere else. Applying a
+# player's per-40 rate to 4 different hypothetical role-minutes levels
+# amplifies a small sample's noise 5-8x (a role player's ~15 real minutes
+# scaled up to a starter's ~30), so a player just barely past the general
+# thin_sample line can still produce a wildly unreliable role translation.
+# Games AND minutes must both clear the floor -- either alone can be
+# misleading (12 games at 5 MPG each is still not a real read on what she'd
+# do at heavier minutes; 100 minutes over 4 blowout-garbage-time games is
+# not a real read either).
+ROLE_TRANSLATION_MIN_GAMES = 12
+ROLE_TRANSLATION_MIN_MINUTES = 100.0
  
 # |strength_gap| / std beyond which a projection is flagged as an extreme
 # mismatch -- not blocked, just labeled, since these are the cases where
@@ -522,6 +535,17 @@ def role_translation(conn, player_id):
     not raw counting totals), so it's minutes-independent by construction
     and genuinely does not change across roles here -- shown once, not
     per-role, so this doesn't imply a change that isn't real.
+
+    Requires ROLE_TRANSLATION_MIN_GAMES games AND ROLE_TRANSLATION_MIN_MINUTES
+    total minutes -- stricter than the site-wide thin_sample floor, since
+    scaling a small sample's per-40 rate up to a heavier role's minutes
+    amplifies its noise (see the constants' own comment for why both
+    conditions, not just one, are required). A player who has SOME real
+    profile (clears the general thin_sample floor enough for hoop_score_raw
+    to exist) but not this stricter floor still gets a 200 response --
+    `insufficient_sample: true`, `roles: null` -- rather than a 404, so the
+    frontend can show her name/current role with an explanatory message
+    instead of just omitting the card outright.
     """
     player = get_player(conn, player_id)
     if player is None:
@@ -540,6 +564,27 @@ def role_translation(conn, player_id):
         (r["role"] for r in roles_data["roster_roles"] if r["player_id"] == player_id), None
     )
     current_role = _ROSTER_ROLE_LABEL_TO_NAME.get(current_role_label)
+
+    base = dict(
+        player_id=player_id, name=player["name"], team_id=team_id, team_name=team["name"],
+        current_role=current_role,
+        real_avg_minutes=round(player["avg_minutes"], 1) if player.get("avg_minutes") is not None else None,
+        hoop_score=player["hoop_score"],
+        ts_pct=round(player["ts_pct"] * 100, 1) if player.get("ts_pct") is not None else None,
+        fg_pct=round(player["fg_pct"] * 100, 1) if player.get("fg_pct") is not None else None,
+    )
+
+    games = player.get("games") or 0
+    total_minutes = player.get("total_minutes") or 0.0
+    if games < ROLE_TRANSLATION_MIN_GAMES or total_minutes < ROLE_TRANSLATION_MIN_MINUTES:
+        return dict(
+            base,
+            insufficient_sample=True,
+            roles=None,
+            note=(f"{player['name']} has not logged enough games or minutes for a true role translation "
+                  f"(needs {ROLE_TRANSLATION_MIN_GAMES}+ games and {ROLE_TRANSLATION_MIN_MINUTES:.0f}+ minutes -- "
+                  f"she has {games} game{'s' if games != 1 else ''} and {total_minutes:.0f} minutes this season)."),
+        )
 
     def _at_role(role_info):
         if role_info.get("minutes") is None:
@@ -561,12 +606,8 @@ def role_translation(conn, player_id):
     roles_out = {role: _at_role(roles_data[role]) for role in ROLE_NAMES}
 
     return dict(
-        player_id=player_id, name=player["name"], team_id=team_id, team_name=team["name"],
-        current_role=current_role,
-        real_avg_minutes=round(player["avg_minutes"], 1) if player.get("avg_minutes") is not None else None,
-        hoop_score=player["hoop_score"],
-        ts_pct=round(player["ts_pct"] * 100, 1) if player.get("ts_pct") is not None else None,
-        fg_pct=round(player["fg_pct"] * 100, 1) if player.get("fg_pct") is not None else None,
+        base,
+        insufficient_sample=False,
         roles=roles_out,
         note=("Same team, same competition level -- this shows her real per-40 production applied to each "
               "role's typical minutes on her own roster (via /teams/{id}/roles), not a transfer projection. "
@@ -591,9 +632,12 @@ def optimal_lineup(conn, team_id):
     against THIS TEAM'S OWN roster, not the whole league -- the question is
     "who's most valuable on THIS roster," not "who'd rank well nationally."
 
-    Position-balanced starting 5: must include at least 1 true center
-    (falls back to the highest-ranked forward if the roster has no player
-    listed as C at all) and at least 2 guards, so the suggested lineup is a
+    Position-balanced starting 5: must include at least 1 Forward/Center
+    (the two are treated as one interchangeable "frontcourt" pool -- a
+    roster's own Forward/Center labeling is often blurry in practice, e.g.
+    a combo four/five listed either way depending on the workbook, so
+    requiring specifically a `C` would wrongly flag a normal frontcourt as
+    a "fallback" case) and at least 2 guards, so the suggested lineup is a
     realistic, playable 5 -- not just the 5 highest composite scores
     regardless of position, which could genuinely be 5 guards. The
     remaining 3 starting spots go to the next-highest composite scores
@@ -639,7 +683,6 @@ def optimal_lineup(conn, team_id):
         "per40_pts, per40_reb, per40_ast, per40_blk, per40_stl, per40_tov, thin_sample "
         "FROM players WHERE team_id = ?", (team_id,)
     ).fetchall()
-    roster_size = len(rows)
     real = [dict(r) for r in rows
             if not r["thin_sample"] and r["hoop_score"] is not None and r["avg_minutes"] is not None]
     if len(real) < 5:
@@ -657,9 +700,7 @@ def optimal_lineup(conn, team_id):
     prod_by_player = {r["player_id"]: r["avg_production"] for r in prod_rows}
     for p in real:
         p["avg_production"] = prod_by_player.get(p["player_id"])
-    n_before_prod_filter = len(real)
     real = [p for p in real if p["avg_production"] is not None]
-    excluded_count = roster_size - len(real)
     if len(real) < 5:
         raise ProjectionError(
             f"Not enough players with real per-game logs on this roster ({len(real)}) to suggest a "
@@ -681,8 +722,11 @@ def optimal_lineup(conn, team_id):
     real.sort(key=lambda p: p["optimizer_score"], reverse=True)
 
     guards = [p for p in real if p["position"] == "G"]
-    centers = [p for p in real if p["position"] == "C"]
-    forwards = [p for p in real if p["position"] == "F"]
+    # Forward and Center are treated as one interchangeable frontcourt pool
+    # -- see the docstring for why (real rosters label combo forwards/
+    # centers inconsistently, and a true F/C swap is normal in basketball,
+    # not a fallback worth flagging).
+    frontcourt = [p for p in real if p["position"] in ("F", "C")]
 
     starters = []
     notes = []
@@ -699,16 +743,11 @@ def optimal_lineup(conn, team_id):
                 break
         return taken
 
-    center_pick = _take(centers, 1)
-    if not center_pick:
-        center_pick = _take(forwards, 1)
-        if center_pick:
-            notes.append("No player listed at Center on this roster -- the highest-ranked Forward filled "
-                          "that slot instead.")
-        else:
-            notes.append("No Center or Forward on this roster -- the starting 5 below is filled purely by "
-                          "composite score.")
-    starters += center_pick
+    frontcourt_pick = _take(frontcourt, 1)
+    if not frontcourt_pick:
+        notes.append("No Forward or Center on this roster -- the starting 5 below is filled purely by "
+                      "composite score.")
+    starters += frontcourt_pick
 
     guard_picks = _take(guards, 2)
     if len(guard_picks) < 2:
@@ -758,10 +797,6 @@ def optimal_lineup(conn, team_id):
     role_order = {"Starter": 0, "Sixth Man": 1, "Role Player": 2, "Depth Piece": 3}
     rotation_sorted = sorted(real, key=lambda p: (role_order[p["role"]], -p["proj_minutes"]))
 
-    if excluded_count > 0:
-        notes.append(f"{excluded_count} roster player{'s' if excluded_count != 1 else ''} excluded -- no real "
-                      f"season profile and/or per-game log data on record to project from.")
-
     def _out(p):
         return dict(
             player_id=p["player_id"], name=p["name"], position=p["position"], class_year=p["class_year"],
@@ -784,9 +819,9 @@ def optimal_lineup(conn, team_id):
             "Ranked by an equal-weighted blend of Summit Score and season-average combined production "
             "(points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
             "Game-by-Game Production Rating chart), both compared only against this team's own roster -- not "
-            "the whole league. The starting 5 requires at least 1 Center (or the best Forward if the roster "
-            "has no true Center) and at least 2 Guards for a realistic, playable lineup; Sixth Man is the "
-            "next-best player regardless of position. Every player's Minutes below is her real season average "
+            "the whole league. The starting 5 requires at least 1 Forward or Center (the two are treated as one "
+            "interchangeable frontcourt pool) and at least 2 Guards for a realistic, playable lineup; Sixth Man "
+            "is the next-best player regardless of position. Every player's Minutes below is her real season average "
             "minutes/game, scaled by one constant factor so the full roster adds up to a real game's 200 total "
             "player-minutes (5 on the floor x 40 minutes) -- her real relative playing time is preserved, just "
             "normalized to one game. PPG/RPG/APG/SPG/BPG/TOPG are her real per-40 rates applied to that scaled "

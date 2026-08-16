@@ -20,9 +20,8 @@ export const dynamic = "force-dynamic";
 
 const TABS = [
   { key: "overview", label: "Overview" },
-  { key: "trends", label: "Season Trends" },
+  { key: "stats", label: "Stats Overview" },
   { key: "splits", label: "Opponent Splits" },
-  { key: "games", label: "Game Log" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -87,9 +86,8 @@ export default async function PlayerDetailPage({
       </div>
 
       {tab === "overview" && <OverviewTab id={id} player={player} />}
-      {tab === "trends" && <TrendsTab id={id} player={player} />}
+      {tab === "stats" && <StatsOverviewTab id={id} player={player} />}
       {tab === "splits" && <SplitsTab id={id} player={player} />}
-      {tab === "games" && <GamesTab id={id} player={player} />}
     </div>
   );
 }
@@ -131,7 +129,7 @@ async function OverviewTab({ id, player }: { id: string; player: PlayerDetail })
   );
 }
 
-async function TrendsTab({ id, player }: { id: string; player: PlayerDetail }) {
+async function StatsOverviewTab({ id, player }: { id: string; player: PlayerDetail }) {
   let trajectory: PlayerTrajectory | null = null;
   try {
     trajectory = await apiFetch<PlayerTrajectory>(`/players/${id}/trajectory`, { revalidate: 0 });
@@ -141,131 +139,6 @@ async function TrendsTab({ id, player }: { id: string; player: PlayerDetail }) {
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
 
-  if (!trajectory || trajectory.seasons.length === 0) {
-    return <p className="empty-state">No multi-season history on record for this player yet.</p>;
-  }
-
-  const transfers = countTransfers(trajectory);
-
-  return (
-    <div className="card">
-      <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
-      {trajectory.seasons.length > 1 && (
-        <>
-          <p className="section-note">
-            Trend: <strong>{trajectory.trend}</strong> ({trajectory.avg_hoop_score_change_per_season > 0 ? "+" : ""}
-            {trajectory.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory.trend_note}
-          </p>
-          <SeasonTrendChart seasons={trajectory.seasons} />
-        </>
-      )}
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Season</th>
-              <th>Team</th>
-              <th>GP</th>
-              <th>MPG</th>
-              <th>PPG</th>
-              <th>RPG</th>
-              <th>APG</th>
-              <th>TS%</th>
-              <th>Summit Score</th>
-            </tr>
-          </thead>
-          <tbody>
-            {trajectory.seasons.map((s, i) => {
-              const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
-              const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
-              return (
-                <Fragment key={s.season}>
-                  <tr>
-                    <td>{s.season}</td>
-                    <td>
-                      {s.team_name}
-                      {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
-                    </td>
-                    <td>{s.games}</td>
-                    <td>{s.avg_minutes?.toFixed(1)}</td>
-                    <td>{s.ppg?.toFixed(1)}</td>
-                    <td>{s.rpg?.toFixed(1)}</td>
-                    <td>{s.apg?.toFixed(1)}</td>
-                    <td>{s.ts_pct?.toFixed(1)}</td>
-                    <td>
-                      {s.hoop_score?.toFixed(1)}
-                      {s.thin_sample ? (
-                        <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
-                          limited
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                  <SeasonGameLog playerId={player.player_id} season={s.season} />
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-async function SplitsTab({ id, player }: { id: string; player: PlayerDetail }) {
-  let splits: PlayerSplits | null = null;
-  try {
-    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 0 });
-  } catch (e) {
-    // A thin_sample player with zero games this season has nothing to
-    // split, not an error worth surfacing.
-    if (!(e instanceof ApiError && e.status === 404)) throw e;
-  }
-
-  if (!splits || splits.total_games === 0) {
-    return <p className="empty-state">No games logged for {player.name} this season to split by opponent strength.</p>;
-  }
-
-  return (
-    <div className="card">
-      <h2>
-        Performance by Opponent Strength
-        <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
-          ?
-        </span>
-      </h2>
-      <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Split</th>
-              <th>GP</th>
-              <th>PPG</th>
-              <th>RPG</th>
-              <th>APG</th>
-              <th>SPG</th>
-              <th>BPG</th>
-              <th>TOPG</th>
-              <th>MPG</th>
-              <th>FG%</th>
-            </tr>
-          </thead>
-          <tbody>
-            {TIERS.map((t) => (
-              <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
-            ))}
-            <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
-            <SplitRow label="Last 10 games" row={splits.last10} />
-          </tbody>
-        </table>
-      </div>
-      <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
-    </div>
-  );
-}
-
-async function GamesTab({ id, player }: { id: string; player: PlayerDetail }) {
   // Best 3 games this season by points + rebounds + assists -- a simple,
   // well-understood combined-production read, computed client-side from the
   // same real per-game rows /players/{id}/game-logs already exposes (no new
@@ -285,12 +158,79 @@ async function GamesTab({ id, player }: { id: string; player: PlayerDetail }) {
     if (!(e instanceof ApiError && e.status === 404)) throw e;
   }
 
-  if (gamesChronological.length === 0) {
-    return <p className="empty-state">No game log on record for {player.name} this season.</p>;
+  const hasTrajectory = !!trajectory && trajectory.seasons.length > 0;
+  if (!hasTrajectory && gamesChronological.length === 0) {
+    return <p className="empty-state">No season history or game log on record for {player.name} yet.</p>;
   }
+
+  const transfers = trajectory ? countTransfers(trajectory) : 0;
 
   return (
     <div>
+      {hasTrajectory && (
+        <div className="card">
+          <h2>Season by season {transfers > 0 && <span className="pill pill-warn">{transfers} transfer{transfers > 1 ? "s" : ""} on record</span>}</h2>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Season</th>
+                  <th>Team</th>
+                  <th>GP</th>
+                  <th>MPG</th>
+                  <th>PPG</th>
+                  <th>RPG</th>
+                  <th>APG</th>
+                  <th>TS%</th>
+                  <th>Summit Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trajectory!.seasons.map((s, i) => {
+                  const prevTeam = i > 0 ? trajectory!.seasons[i - 1].team_name : null;
+                  const isTransferSeason = prevTeam !== null && prevTeam !== s.team_name;
+                  return (
+                    <Fragment key={s.season}>
+                      <tr>
+                        <td>{s.season}</td>
+                        <td>
+                          {s.team_name}
+                          {isTransferSeason && <span className="pill pill-warn" style={{ marginLeft: 8 }}>transferred in</span>}
+                        </td>
+                        <td>{s.games}</td>
+                        <td>{s.avg_minutes?.toFixed(1)}</td>
+                        <td>{s.ppg?.toFixed(1)}</td>
+                        <td>{s.rpg?.toFixed(1)}</td>
+                        <td>{s.apg?.toFixed(1)}</td>
+                        <td>{s.ts_pct?.toFixed(1)}</td>
+                        <td>
+                          {s.hoop_score?.toFixed(1)}
+                          {s.thin_sample ? (
+                            <span className="pill pill-warn" style={{ marginLeft: 6 }} title="Limited sample that season -- below the games/minutes floor for a full profile.">
+                              limited
+                            </span>
+                          ) : null}
+                        </td>
+                      </tr>
+                      <SeasonGameLog playerId={player.player_id} season={s.season} />
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {trajectory!.seasons.length > 1 && (
+            <>
+              <p className="section-note" style={{ marginTop: 16 }}>
+                Trend: <strong>{trajectory!.trend}</strong> ({trajectory!.avg_hoop_score_change_per_season > 0 ? "+" : ""}
+                {trajectory!.avg_hoop_score_change_per_season.toFixed(1)} Summit Score/season) &middot; {trajectory!.trend_note}
+              </p>
+              <SeasonTrendChart seasons={trajectory!.seasons} />
+            </>
+          )}
+        </div>
+      )}
+
       {bestGames.length > 0 && (
         <div className="card">
           <h2>Best 3 Games</h2>
@@ -372,6 +312,59 @@ async function GamesTab({ id, player }: { id: string; player: PlayerDetail }) {
           />
         </div>
       )}
+    </div>
+  );
+}
+
+async function SplitsTab({ id, player }: { id: string; player: PlayerDetail }) {
+  let splits: PlayerSplits | null = null;
+  try {
+    splits = await apiFetch<PlayerSplits>(`/players/${id}/splits`, { revalidate: 0 });
+  } catch (e) {
+    // A thin_sample player with zero games this season has nothing to
+    // split, not an error worth surfacing.
+    if (!(e instanceof ApiError && e.status === 404)) throw e;
+  }
+
+  if (!splits || splits.total_games === 0) {
+    return <p className="empty-state">No games logged for {player.name} this season to split by opponent strength.</p>;
+  }
+
+  return (
+    <div className="card">
+      <h2>
+        Performance by Opponent Strength
+        <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
+          ?
+        </span>
+      </h2>
+      <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Split</th>
+              <th>GP</th>
+              <th>PPG</th>
+              <th>RPG</th>
+              <th>APG</th>
+              <th>SPG</th>
+              <th>BPG</th>
+              <th>TOPG</th>
+              <th>MPG</th>
+              <th>FG%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {TIERS.map((t) => (
+              <SplitRow key={t} label={`vs. ${t} (${tierAbbrev(t)})`} row={splits!.by_opponent_tier[t]} />
+            ))}
+            <SplitRow label="vs. Top 50 nationally" row={splits.vs_top50} />
+            <SplitRow label="Last 10 games" row={splits.last10} />
+          </tbody>
+        </table>
+      </div>
+      <p className="section-note" style={{ marginTop: 10 }}>{splits.vs_top50_note}</p>
     </div>
   );
 }

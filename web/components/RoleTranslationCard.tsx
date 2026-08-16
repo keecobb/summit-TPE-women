@@ -1,5 +1,13 @@
 import type { RoleName, RoleTranslation, RoleTranslationLine } from "@/lib/types";
-import { ROLE_NAMES, roleLabel } from "@/lib/types";
+import { roleLabel } from "@/lib/types";
+
+// Display order for this card specifically -- Starter, Role Player, Sixth
+// Man, Depth Piece. Deliberately separate from lib/types.ts's ROLE_NAMES
+// (starter/sixth_man/role_player/depth_piece), which also drives the role
+// dropdowns on the Transfer Projection and Team Fits pages -- changing
+// ROLE_NAMES itself would reorder those dropdowns too, which nobody asked
+// for. This card's own order lives here, local to the one place it applies.
+const DISPLAY_ORDER: RoleName[] = ["starter", "role_player", "sixth_man", "depth_piece"];
 
 // Player profile page (phase 12) -- "how would she translate into a
 // different role on her CURRENT team." Same team, same competition level,
@@ -28,20 +36,26 @@ export default function RoleTranslationCard({ data }: { data: RoleTranslation })
         current role is highlighted below.
       </p>
 
-      <div className="stat-grid" style={{ maxWidth: 480, marginBottom: 16 }}>
-        <Stat label="Real MPG" value={data.real_avg_minutes} />
-        <Stat label="Summit Score" value={data.hoop_score} highlight />
-        <Stat label="TS%" value={data.ts_pct} />
-        <Stat label="FG%" value={data.fg_pct} />
-      </div>
+      {data.insufficient_sample || !data.roles ? (
+        <p className="empty-state">{data.note}</p>
+      ) : (
+        <>
+          <div className="stat-grid" style={{ maxWidth: 480, marginBottom: 16 }}>
+            <Stat label="Real MPG" value={data.real_avg_minutes} />
+            <Stat label="Summit Score" value={data.hoop_score} highlight />
+            <Stat label="TS%" value={data.ts_pct} />
+            <Stat label="FG%" value={data.fg_pct} />
+          </div>
 
-      <div className="card-grid">
-        {ROLE_NAMES.map((role) => (
-          <RoleTranslationTile key={role} role={role} line={data.roles[role]} isCurrent={data.current_role === role} />
-        ))}
-      </div>
+          <div className="card-grid">
+            {DISPLAY_ORDER.map((role) => (
+              <RoleTranslationTile key={role} role={role} line={data.roles![role]} isCurrent={data.current_role === role} />
+            ))}
+          </div>
 
-      <p className="section-note" style={{ marginTop: 12 }}>{data.note}</p>
+          <p className="section-note" style={{ marginTop: 12 }}>{data.note}</p>
+        </>
+      )}
     </div>
   );
 }
