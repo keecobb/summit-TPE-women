@@ -41,7 +41,7 @@ export default async function GameDetailPage({
         {game.conference_game ? " · Conference game" : ""}
       </p>
       <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
-        Full box scores for both teams, most-productive scorer first -- click any player to jump to her profile.
+        Full box scores for both teams, most-productive scorer first -- click any player to jump to their profile.
       </p>
 
       <div className="card" style={{ maxWidth: 480 }}>

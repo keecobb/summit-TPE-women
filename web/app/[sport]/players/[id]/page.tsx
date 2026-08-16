@@ -57,15 +57,15 @@ export default async function PlayerDetailPage({
       </p>
       <p className="section-note" style={{ marginTop: -8, marginBottom: 20, maxWidth: "68ch" }}>
         Real season production first, then how it splits against tougher/weaker opponents and how it&apos;s
-        trended over time. Want to see what she&apos;d project to at a different school? Use the button below to
-        send her straight into Transfer Projection.
+        trended over time. Want to see what they&apos;d project to at a different school? Use the button below to
+        send them straight into Transfer Projection.
       </p>
 
       {player.thin_sample ? (
         <div className="info-box">
           Limited {player.season} sample: {player.games} game{player.games === 1 ? "" : "s"}
           {player.total_minutes != null ? `, ${player.total_minutes} total minutes` : ""} on record this season
-          -- below the usual floor for a full profile (5 games / 100 minutes). She&apos;s shown here because
+          -- below the usual floor for a full profile (5 games / 100 minutes). They&apos;re shown here because
           every rostered player should be findable, but treat the numbers below as a small, noisier sample
           rather than a full-season read.
         </div>
@@ -94,8 +94,8 @@ export default async function PlayerDetailPage({
 
 async function OverviewTab({ sport, id, player }: { sport: string; id: string; player: PlayerDetail }) {
   // Role Translation (phase 12) -- 404s when there's no real hoop_score_raw
-  // for her this season (thin_sample zero-game placeholder row), not an
-  // error worth surfacing.
+  // for this player this season (thin_sample zero-game placeholder row),
+  // not an error worth surfacing.
   let roleTranslation: RoleTranslation | null = null;
   try {
     roleTranslation = await apiFetch<RoleTranslation>(`/${sport}/players/${id}/role-translation`, { revalidate: 0 });
@@ -114,16 +114,16 @@ async function OverviewTab({ sport, id, player }: { sport: string; id: string; p
       <div className="card">
         <h2>
           Key Stats
-          <span className="hint" title="Each axis is scaled to a fixed, sensible ceiling for a women's college season (not a percentile or a comparison to other players), purely so the shape stays readable. The real number is always printed at each point.">
+          <span className="hint" title={`Each axis is scaled to a fixed, sensible ceiling for a ${sport === "men" ? "men's" : "women's"} college season (not a percentile or a comparison to other players), purely so the shape stays readable. The real number is always printed at each point.`}>
             ?
           </span>
         </h2>
         <p className="section-note">
           Not a percentile and not a comparison against the rest of the league -- each axis is capped at a fixed,
-          realistic ceiling for a women&apos;s college season (e.g. 28 PPG, 14 RPG, 70% TS), purely so the shape
-          stays readable at a glance. The real number is always printed at every point.
+          realistic ceiling for a {sport === "men" ? "men's" : "women's"} college season ({radarCeilingSummary(sport)}),
+          purely so the shape stays readable at a glance. The real number is always printed at every point.
         </p>
-        <PlayerRadarChart player={player} />
+        <PlayerRadarChart player={player} sport={sport} />
       </div>
     </div>
   );
@@ -334,7 +334,7 @@ async function SplitsTab({ sport, id, player }: { sport: string; id: string; pla
     <div className="card">
       <h2>
         Performance by Opponent Strength
-        <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just her last 10 games. Not a projection.">
+        <span className="hint" title="Real per-game production, split by how strong the opponent was -- each tier of opponent, the nation's 50 highest-rated teams regardless of tier, and just their last 10 games. Not a projection.">
           ?
         </span>
       </h2>
@@ -456,31 +456,52 @@ function SeasonTrendChart({ seasons }: { seasons: PlayerTrajectorySeason[] }) {
 // Fixed per-axis scaling ceilings, used only to lay each stat out on a 0-1
 // radius so the polygon has a legible shape -- NOT percentiles or a
 // comparison against other players (that would need a separate query this
-// chart doesn't need). Chosen as a realistic high-end for a women's
-// college season per stat. TOPG is inverted (fewer turnovers reaches
-// further out) since it's the one stat here where lower is better. The
-// real value is always printed at the vertex regardless of how the axis
-// is scaled, so the scaling choice never hides the actual number.
-const RADAR_AXES: { key: string; label: string; max: number; invert?: boolean; value: (p: PlayerDetail) => number | null }[] = [
-  { key: "ppg", label: "PPG", max: 28, value: (p) => p.ppg },
-  { key: "rpg", label: "RPG", max: 14, value: (p) => p.rpg },
-  { key: "apg", label: "APG", max: 9, value: (p) => p.apg },
-  { key: "spg", label: "SPG", max: 4, value: (p) => p.spg },
-  { key: "bpg", label: "BPG", max: 4, value: (p) => p.bpg },
-  { key: "topg", label: "TOPG", max: 5.5, invert: true, value: (p) => p.topg },
-  { key: "ts_pct", label: "TS%", max: 70, value: (p) => (p.ts_pct != null ? p.ts_pct * 100 : null) },
-];
+// chart doesn't need). Chosen as a realistic high-end per stat, separately
+// calibrated for each sport since men's and women's college scoring/pace/
+// shooting rates run meaningfully different -- reusing one sport's ceilings
+// for the other would make an elite player's polygon look artificially
+// small (or an average player's look artificially huge) relative to the
+// axis. TOPG is inverted (fewer turnovers reaches further out) since it's
+// the one stat here where lower is better. The real value is always
+// printed at the vertex regardless of how the axis is scaled, so the
+// scaling choice never hides the actual number.
+const RADAR_CEILINGS: Record<string, { ppg: number; rpg: number; apg: number; spg: number; bpg: number; topg: number; ts_pct: number }> = {
+  women: { ppg: 28, rpg: 14, apg: 9, spg: 4, bpg: 4, topg: 5.5, ts_pct: 70 },
+  men: { ppg: 26, rpg: 13, apg: 8.5, spg: 3.5, bpg: 3.5, topg: 5, ts_pct: 70 },
+};
+
+function radarAxes(sport: string): { key: string; label: string; max: number; invert?: boolean; value: (p: PlayerDetail) => number | null }[] {
+  const c = RADAR_CEILINGS[sport] ?? RADAR_CEILINGS.women;
+  return [
+    { key: "ppg", label: "PPG", max: c.ppg, value: (p) => p.ppg },
+    { key: "rpg", label: "RPG", max: c.rpg, value: (p) => p.rpg },
+    { key: "apg", label: "APG", max: c.apg, value: (p) => p.apg },
+    { key: "spg", label: "SPG", max: c.spg, value: (p) => p.spg },
+    { key: "bpg", label: "BPG", max: c.bpg, value: (p) => p.bpg },
+    { key: "topg", label: "TOPG", max: c.topg, invert: true, value: (p) => p.topg },
+    { key: "ts_pct", label: "TS%", max: c.ts_pct, value: (p) => (p.ts_pct != null ? p.ts_pct * 100 : null) },
+  ];
+}
+
+// Short plain-language summary of a sport's radar ceilings, for the Key
+// Stats card's intro paragraph -- kept in sync with RADAR_CEILINGS above by
+// deriving straight from it rather than a separately hand-written string.
+function radarCeilingSummary(sport: string): string {
+  const c = RADAR_CEILINGS[sport] ?? RADAR_CEILINGS.women;
+  return `e.g. ${c.ppg} PPG, ${c.rpg} RPG, ${c.ts_pct}% TS`;
+}
 
 // Simple SVG radar/spider chart -- one axis per key stat above, a filled
 // polygon connecting this player's real values, 4 reference rings behind
 // it (25/50/75/100% of each axis's ceiling) so the shape reads at a
 // glance. Same plain-SVG-with-<title>-tooltips approach as SeasonTrendChart
 // above, no client-side JS needed.
-function PlayerRadarChart({ player }: { player: PlayerDetail }) {
+function PlayerRadarChart({ player, sport }: { player: PlayerDetail; sport: string }) {
   const size = 360;
   const center = size / 2;
   const radius = 110;
   const labelOffset = 34;
+  const RADAR_AXES = radarAxes(sport);
   const n = RADAR_AXES.length;
   const angleFor = (i: number) => (Math.PI * 2 * i) / n - Math.PI / 2;
 
@@ -553,9 +574,9 @@ function PlayerRadarChart({ player }: { player: PlayerDetail }) {
   );
 }
 
-// A single game's overall two-way production in one number: everything she
-// contributed (points/rebounds/assists/steals/blocks) minus what she gave
-// back (turnovers) -- a rougher, wider-range "how good was this game as a
+// A single game's overall two-way production in one number: everything a
+// player contributed (points/rebounds/assists/steals/blocks) minus what
+// they gave back (turnovers) -- a rougher, wider-range "how good was this game as a
 // whole" read than points alone, closer to a box-score gestalt than a single
 // counting stat.
 function productionRating(g: PlayerGameLogRow): number {

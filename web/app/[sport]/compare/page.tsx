@@ -50,7 +50,7 @@ const TEAM_STAT_ORDER = [
 const TEAM_STAT_LOWER_IS_BETTER = new Set(["per40_tov"]);
 const TEAM_STAT_IS_PCT = new Set(["ts_pct", "fg_pct"]);
 
-function ModeTabs({ sport, mode }: { sport: string; mode: "players" | "teams" }) {
+function ModeTabs({ mode, sport }: { mode: "players" | "teams"; sport: string }) {
   return (
     <div className="tabs" style={{ marginBottom: 20 }}>
       <Link href={`/${sport}/compare`} className={`tab${mode === "players" ? " active" : ""}`}>
@@ -75,12 +75,12 @@ export default async function ComparePage({
   const mode: "players" | "teams" = sp.mode === "teams" ? "teams" : "players";
 
   if (mode === "teams") {
-    if (!sp.team1 || !sp.team2) return <TeamPickerView sport={sport} sp={sp} />;
-    return <TeamResultView sport={sport} sp={sp} />;
+    if (!sp.team1 || !sp.team2) return <TeamPickerView sp={sp} sport={sport} />;
+    return <TeamResultView sp={sp} sport={sport} />;
   }
 
   if (!sp.player1 || !sp.player2) {
-    return <PickerView sport={sport} sp={sp} />;
+    return <PickerView sp={sp} sport={sport} />;
   }
 
   let p1: PlayerDetail, p2: PlayerDetail;
@@ -94,7 +94,7 @@ export default async function ComparePage({
       return (
         <div>
           <h1>Compare Players</h1>
-          <ModeTabs sport={sport} mode="players" />
+          <ModeTabs mode="players" sport={sport} />
           <div className="error-box">{e.message}</div>
           <p style={{ marginTop: 20 }}>
             <Link href={`/${sport}/compare`}>&larr; Start over</Link>
@@ -108,7 +108,7 @@ export default async function ComparePage({
   return (
     <div>
       <h1>Compare Players</h1>
-      <ModeTabs sport={sport} mode="players" />
+      <ModeTabs mode="players" sport={sport} />
       <p className="subtitle">
         {p1.season} season, per-game unless noted. Higher is bolded for every row (lower is better for TOPG, not
         bolded specially -- read that one the other way).
@@ -168,7 +168,7 @@ export default async function ComparePage({
   );
 }
 
-async function PickerView({ sport, sp }: { sport: string; sp: SP }) {
+async function PickerView({ sp, sport }: { sp: SP; sport: string }) {
   let player1: PlayerDetail | null = null;
   if (sp.player1) {
     try {
@@ -181,7 +181,7 @@ async function PickerView({ sport, sp }: { sport: string; sp: SP }) {
   return (
     <div>
       <h1>Compare Players</h1>
-      <ModeTabs sport={sport} mode="players" />
+      <ModeTabs mode="players" sport={sport} />
       <p className="subtitle">Pick two players to see their current-season stats side by side.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
         Search by name for each player, pick from the dropdown, then submit -- every row is real production
@@ -228,7 +228,7 @@ async function PickerView({ sport, sp }: { sport: string; sp: SP }) {
   );
 }
 
-async function TeamResultView({ sport, sp }: { sport: string; sp: SP }) {
+async function TeamResultView({ sp, sport }: { sp: SP; sport: string }) {
   let t1: Team, t2: Team, needs1: TeamNeeds, needs2: TeamNeeds, roles1: TeamRoles, roles2: TeamRoles;
   try {
     [t1, t2, needs1, needs2, roles1, roles2] = await Promise.all([
@@ -244,7 +244,7 @@ async function TeamResultView({ sport, sp }: { sport: string; sp: SP }) {
       return (
         <div>
           <h1>Compare Teams</h1>
-          <ModeTabs sport={sport} mode="teams" />
+          <ModeTabs mode="teams" sport={sport} />
           <div className="error-box">{e.message}</div>
           <p style={{ marginTop: 20 }}>
             <Link href={`/${sport}/compare?mode=teams`}>&larr; Start over</Link>
@@ -261,7 +261,7 @@ async function TeamResultView({ sport, sp }: { sport: string; sp: SP }) {
   return (
     <div>
       <h1>Compare Teams</h1>
-      <ModeTabs sport={sport} mode="teams" />
+      <ModeTabs mode="teams" sport={sport} />
       <p className="subtitle">
         Current season, real team averages unless noted. Higher is bolded for every stat row (lower is better
         for Turnovers, not bolded specially -- read that one the other way).
@@ -369,7 +369,7 @@ async function TeamResultView({ sport, sp }: { sport: string; sp: SP }) {
   );
 }
 
-async function TeamPickerView({ sport, sp }: { sport: string; sp: SP }) {
+async function TeamPickerView({ sp, sport }: { sp: SP; sport: string }) {
   let team1: Team | null = null;
   if (sp.team1) {
     try {
@@ -382,7 +382,7 @@ async function TeamPickerView({ sport, sp }: { sport: string; sp: SP }) {
   return (
     <div>
       <h1>Compare Teams</h1>
-      <ModeTabs sport={sport} mode="teams" />
+      <ModeTabs mode="teams" sport={sport} />
       <p className="subtitle">Pick two teams to see their ratings and real season averages side by side.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
         Search by name for each team, pick from the dropdown, then submit -- Rating, SOS, and every team-average

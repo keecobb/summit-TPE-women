@@ -91,7 +91,7 @@ export default async function DataPage({
     // One call, sort=all -- the backend computes all 6 rankings (PPG/RPG/
     // APG/TS%/MPG/TOPG) from a single full-season scan/aggregation instead
     // of redoing that scan once per stat. An earlier version of this made 4
-    // separate back-half calls (one per stat) to fix the "same girls in
+    // separate back-half calls (one per stat) to fix the "same players in
     // every section" bug -- correct in isolation, but it roughly doubled
     // this page's slowest, most expensive backend call and was enough
     // added latency to time the whole page out in production. sort=all
@@ -384,7 +384,7 @@ export default async function DataPage({
       <div className="card">
         <h2>
           Who Performs Best Against High-Major Competition
-          <span className="hint" title="Real per-game scoring specifically in games played against High-Major opponents this season -- not a projection, not a season average. Each player's own team's level is noted next to her name.">
+          <span className="hint" title="Real per-game scoring specifically in games played against High-Major opponents this season -- not a projection, not a season average. Each player's own team's level is noted next to their name.">
             ?
           </span>
         </h2>
@@ -441,7 +441,7 @@ export default async function DataPage({
       <div className="card">
         <h2>
           Best Back Half of the Season
-          <span className="hint" title="Each player's own games are split at the midpoint of HER games played this season (not the calendar midpoint), then compared -- a missed-games stretch early in the year doesn't skew this the way splitting by calendar date would.">
+          <span className="hint" title="Each player's own games are split at the midpoint of THEIR games played this season (not the calendar midpoint), then compared -- a missed-games stretch early in the year doesn't skew this the way splitting by calendar date would.">
             ?
           </span>
         </h2>
@@ -463,7 +463,6 @@ export default async function DataPage({
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
             <BackHalfChangeChart
-              sport={sport}
               title="PPG change"
               sub={`Top movers -- first half → second half (min. ${backHalfAll.min_games_per_half} games each half)`}
               players={backHalfAll.by_sort.ppg}
@@ -471,9 +470,9 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_ppg}
               getSecond={(p) => p.second_half_ppg}
               unit="PPG"
+              sport={sport}
             />
             <BackHalfChangeChart
-              sport={sport}
               title="RPG change"
               sub="Top movers, rebounds per game"
               players={backHalfAll.by_sort.rpg}
@@ -481,9 +480,9 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_rpg}
               getSecond={(p) => p.second_half_rpg}
               unit="RPG"
+              sport={sport}
             />
             <BackHalfChangeChart
-              sport={sport}
               title="APG change"
               sub="Top movers, assists per game"
               players={backHalfAll.by_sort.apg}
@@ -491,9 +490,9 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_apg}
               getSecond={(p) => p.second_half_apg}
               unit="APG"
+              sport={sport}
             />
             <BackHalfChangeChart
-              sport={sport}
               title="TS% change"
               sub="Top movers, true shooting % (needs 8+ true-shot attempts in a half to compute)"
               players={backHalfAll.by_sort.ts}
@@ -501,9 +500,9 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_ts_pct as number}
               getSecond={(p) => p.second_half_ts_pct as number}
               unit="TS%"
+              sport={sport}
             />
             <BackHalfChangeChart
-              sport={sport}
               title="MPG change"
               sub="Top movers, minutes per game -- whose role is trending up"
               players={backHalfAll.by_sort.mpg}
@@ -511,9 +510,9 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_mpg}
               getSecond={(p) => p.second_half_mpg}
               unit="MPG"
+              sport={sport}
             />
             <BackHalfChangeChart
-              sport={sport}
               title="TOPG improvement"
               sub="Biggest drop in turnovers per game -- most improved ball security"
               players={backHalfAll.by_sort.topg}
@@ -521,6 +520,7 @@ export default async function DataPage({
               getFirst={(p) => p.first_half_topg}
               getSecond={(p) => p.second_half_topg}
               unit="TOPG"
+              sport={sport}
             />
           </div>
         )}
@@ -547,7 +547,7 @@ function StandoutTable({ data, sport }: { data: StandoutsLeaderboard; sport: str
             </th>
             <th>
               Proj. Min
-              <span className="hint" title="Each player's own auto-projected minutes at the synthetic target's strength (her current minutes, scaled for the level jump) -- not a specific target team's rotation, since the target here is a synthetic average team, not a real roster.">
+              <span className="hint" title="Each player's own auto-projected minutes at the synthetic target's strength (their current minutes, scaled for the level jump) -- not a specific target team's rotation, since the target here is a synthetic average team, not a real roster.">
                 ?
               </span>
             </th>

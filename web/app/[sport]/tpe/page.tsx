@@ -46,13 +46,13 @@ async function StartView({ sp, sport }: { sp: SP; sport: string }) {
       <p className="subtitle">Find the player you want to project -- search by name, or browse a team's roster.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 24, maxWidth: "68ch" }}>
         This is a 3-step flow: find a player below, pick a target school (plus an optional role or exact
-        minutes) on the next screen, then see her projected stat line side by side with what she's doing
+        minutes) on the next screen, then see their projected stat line side by side with what they're doing
         today. The projection is grounded in how real transfers at a comparable strength gap have actually
         played out, not a hand-picked formula -- every result includes a confidence read and a real range,
         not just one number.
       </p>
 
-      <FlowSteps steps={["Find a player", "Pick her target school", "See the projection"]} />
+      <FlowSteps steps={["Find a player", "Pick their target school", "See the projection"]} />
 
       <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 32 }}>
         <div className="card">

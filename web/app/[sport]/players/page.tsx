@@ -69,8 +69,8 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
       <p className="subtitle">Search the current player pool. Sorted by Summit Score.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
         Filter by name, position, class, and/or a height range, then click any column header to sort by that
-        stat instead. Click a player&apos;s name to open her full profile -- season splits, trajectory, and
-        (once she has enough games on record) her best games of the year.
+        stat instead. Click a player&apos;s name to open their full profile -- season splits, trajectory, and
+        (once they have enough games on record) their best games of the year.
       </p>
 
       <FilterForm className="filter-form" action={`/${sport}/players`}>
@@ -194,7 +194,7 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
             <p className="section-note">
               &quot;Did not log any stats this season&quot; = on the roster but no games/box-score data on
               record this season (redshirt, season-long injury, never got off the bench, etc.) -- still
-              findable/on her team&apos;s roster, just nothing to average.
+              findable/on their team&apos;s roster, just nothing to average.
             </p>
           )}
 

@@ -9,10 +9,10 @@ import { roleLabel } from "@/lib/types";
 // for. This card's own order lives here, local to the one place it applies.
 const DISPLAY_ORDER: RoleName[] = ["starter", "role_player", "sixth_man", "depth_piece"];
 
-// Player profile page (phase 12) -- "how would she translate into a
-// different role on her CURRENT team." Same team, same competition level,
-// just her real per-40 rates applied to each role's typical minutes on her
-// own roster (via /teams/{id}/roles). Deliberately NOT a transfer
+// Player profile page (phase 12) -- "how would this player translate into a
+// different role on their CURRENT team." Same team, same competition level,
+// just their real per-40 rates applied to each role's typical minutes on
+// their own roster (via /teams/{id}/roles). Deliberately NOT a transfer
 // projection -- see role_translation()'s docstring in projection.py for
 // why /project's model doesn't apply here. Summit Score/TS%/FG% are
 // rate-based composites that don't change across roles, so they're shown
@@ -25,14 +25,14 @@ export default function RoleTranslationCard({ data }: { data: RoleTranslation })
         Role Translation
         <span
           className="hint"
-          title="Not a transfer projection -- this is her own real per-40 production, applied to what each role typically plays on her own current roster. Same team, same competition level."
+          title="Not a transfer projection -- this is their own real per-40 production, applied to what each role typically plays on their own current roster. Same team, same competition level."
         >
           ?
         </span>
       </h2>
       <p className="section-note">
         How {data.name.split(" ")[0]}&apos;s real production would look in each of this roster&apos;s 4
-        minutes-based roles, on {data.team_name} specifically -- not a projection to a new school. Her real
+        minutes-based roles, on {data.team_name} specifically -- not a projection to a new school. Their real
         current role is highlighted below.
       </p>
 
@@ -74,7 +74,7 @@ function RoleTranslationTile({
     >
       <h3 style={{ margin: "0 0 4px", display: "flex", alignItems: "center", gap: 8 }}>
         {roleLabel(role)}
-        {isCurrent && <span className="pill pill-good">her role today</span>}
+        {isCurrent && <span className="pill pill-good">their role today</span>}
       </h3>
       {line ? (
         <>

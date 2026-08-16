@@ -48,7 +48,7 @@ export default async function TeamsPage({
   // to be assigned across the WHOLE league first, then looked up for
   // whichever (possibly filtered) subset is on screen. Ranking only the
   // filtered rows would silently relabel e.g. the #1 Low-Major team as
-  // "Net Rank 1" instead of wherever she actually sits nationally.
+  // "Net Rank 1" instead of wherever it actually sits nationally.
   const [teams, allTeams, conferences] = await Promise.all([
     apiFetch<Team[]>(`/${sport}/teams`, { params: { search: sp.search, tier: sp.tier, conference: sp.conference, limit: 500 } }),
     apiFetch<Team[]>(`/${sport}/teams`, { params: { limit: 500 }, revalidate: 60 }),
