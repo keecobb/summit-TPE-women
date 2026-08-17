@@ -22,12 +22,20 @@ import RoleStat from "@/components/RoleStat";
 // to leave cached. Every fetch below is now `revalidate: 0` (always live).
 export const dynamic = "force-dynamic";
 
+// "lineup" (LineupTab, below) is intentionally NOT in this list right now --
+// pulled from public view while the suggested-rotation logic is reworked
+// (a live sweep found it could suggest a starting five that scores fewer
+// points than the team's actual current starters; see
+// ARCHITECTURE_HOSTING_PLAN.md for the full writeup). LineupTab and its
+// backing API call are left in the code, just unreachable -- `tab` below
+// falls back to "overview" for anyone with an old `?tab=lineup` link, and
+// the guarded render block further down never matches, so there's a single
+// place to re-add the tab once the fix is verified.
 const TABS = [
   { key: "overview", label: "Overview" },
   { key: "roster", label: "Roster" },
   { key: "schedule", label: "Schedule" },
   { key: "stats", label: "Stats Breakdown" },
-  { key: "lineup", label: "Lineup" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -92,7 +100,6 @@ export default async function TeamDetailPage({
       {tab === "roster" && <RosterTab sport={sport} id={id} />}
       {tab === "schedule" && <ScheduleTab sport={sport} id={id} />}
       {tab === "stats" && <StatsTab sport={sport} id={id} team={team} />}
-      {tab === "lineup" && <LineupTab sport={sport} id={id} />}
     </div>
   );
 }

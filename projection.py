@@ -266,6 +266,25 @@ ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
 # starter no matter how efficient her limited minutes were.
 LINEUP_MAX_OUT_MINUTED_BY = 3
 
+# optimal_lineup()-specific games-availability floor for Starter/Sixth Man
+# eligibility -- same value and idea as team_roles()'s
+# ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT (a separate constant since it's scoped
+# to a different function), applied here for the same reason: the
+# composite optimizer_score ranks by real PER-GAME rate only, so it can't
+# tell "elite in limited action" from "elite over a full season" -- a
+# player who missed most of the team's real games can still rank #1 by
+# composite score, win a Starter slot, and then have her own projected
+# minutes/points heavily discounted anyway (since those are based on total
+# minutes / the TEAM's games, not her own), which both benches a real
+# every-game starter for a mostly-absent one AND doesn't even convert the
+# high-composite-score player's talent into much projected production
+# either -- a real case (13-of-32-games-played but a 93.7 Summit Score)
+# confirmed this exact double-loss during a full-league sweep. A player
+# under this floor is treated as a violator by the same ban-and-retry loop
+# LINEUP_MAX_OUT_MINUTED_BY already uses, not a hard pre-filter -- so she's
+# still eligible if literally nobody else qualifies for a slot.
+LINEUP_MIN_TEAM_GAMES_PCT = 0.50
+
 # optimal_lineup()-specific ranking weight -- how much of optimizer_score
 # comes from a player's real season-average production (points + rebounds +
 # assists + steals + blocks - turnovers per game) vs. her Summit Score
@@ -280,6 +299,25 @@ LINEUP_MAX_OUT_MINUTED_BY = 3
 # near-identical production shouldn't be a coin flip), just no longer able
 # to override a genuine production gap the way a 50/50 blend could.
 PRODUCTION_WEIGHT = 0.75
+
+# optimal_lineup()-specific position-floor fallback tiers, tried in order.
+# (min_guards, min_forwards) for the starting 5 -- the 5th (and any other
+# spot past a floor) always goes to whichever remaining real-profile player
+# of ANY position has the next-highest optimizer_score. (2, 2) is the
+# preferred, realistic default (matching how real rotations are built --
+# see the docstring). But a hard position floor and "never suggest a
+# rotation that scores fewer points than this team's actual current
+# starting five" (a direct, explicit requirement -- a suggestion that
+# scores less isn't actually maximizing anything) can genuinely conflict:
+# a team that's really built and currently winning with 4 real Guards and
+# 1 Forward will always score less under a forced 2-Forward five if its
+# 2nd-best Forward is far weaker than its 3rd/4th-best Guard. When the
+# (2, 2) tier's suggestion would project below that real baseline,
+# optimal_lineup() falls back to (2, 1) -- still requires a real Forward,
+# so it doesn't suggest an unrealistic all-Guard five -- and only drops to
+# (0, 0) (pure composite score, any position) if even that still falls
+# short. Each relaxation is flagged with a note explaining why.
+LINEUP_POSITION_TIERS = ((2, 2), (2, 1), (0, 0))
 
 # role_translation()-specific sample floor -- stricter than the site-wide
 # thin_sample floor (5 games / 100 minutes) used everywhere else. Applying a
@@ -692,6 +730,37 @@ def role_translation(conn, player_id):
     )
 
 
+def _actual_current_starters_ppg(conn, team_id, season, team_games):
+    """Combined real ppg of this team's actual current starting five -- the
+    same team_start_pct >= ROLE_STARTER_START_PCT "Solidified Starter"
+    definition team_roles() uses (started in 65%+ of the TEAM's real games
+    this season, not just her own). optimal_lineup() uses this as a
+    real-world floor so a suggested rotation is never allowed to project
+    fewer points than what this team is already doing on the court right
+    now -- see LINEUP_POSITION_TIERS for how a suggestion that would fall
+    short gets relaxed instead. Returns None if there's no games-started
+    data for this team, or nobody clears the threshold (no stable current
+    five to compare against, e.g. a team with heavy in-season lineup churn)
+    -- nothing real to hold a suggestion to in that case.
+    """
+    if team_games <= 0:
+        return None
+    gs_by_player = games_started_by_player(conn, season)
+    rows = conn.execute(
+        "SELECT player_id, ppg FROM players WHERE team_id = ? AND games > 0", (team_id,)
+    ).fetchall()
+    total = 0.0
+    found_any = False
+    for r in rows:
+        gs = gs_by_player.get(r["player_id"])
+        if gs is None:
+            continue
+        if (gs / team_games) >= ROLE_STARTER_START_PCT:
+            total += r["ppg"] or 0.0
+            found_any = True
+    return total if found_any else None
+
+
 def optimal_lineup(conn, team_id):
     """A data-driven answer to "who SHOULD start, and how should the whole
     game's minutes be split" -- as opposed to /teams/{id}/roles'
@@ -714,31 +783,54 @@ def optimal_lineup(conn, team_id):
     for the full reasoning.
 
     Position-balanced starting 5: must include at least 2 real Guards and
-    at least 2 real Forwards, with the 5th spot going to whichever scores
-    higher between the best remaining Forward or the best available Center
-    -- producing a G/G/F/F/F five when the best option left is a 3rd
-    Forward, or a G/G/F/F/C five when a Center outscores the 3rd Forward,
-    matching how real women's college rotations are actually built (Center
-    isn't given its own separate floor -- a team with no real Center on the
-    roster, or whose best remaining frontcourt player happens to be a
-    Forward, still gets a fully valid five this way). If the roster doesn't
-    have 2 real Guards and/or 2 real Forwards, the shortfall is filled by
-    the next-highest composite scores regardless of position (flagged with
-    a note) rather than failing to suggest a lineup at all.
+    at least 2 real Forwards, with the 5th (and any other spot past those
+    floors) going to whichever remaining real-profile player -- ANY
+    position, including a 3rd Guard -- has the next-highest composite
+    score. That produces a G/G/F/F/F five when the best option left is a
+    3rd Forward, a G/G/F/F/C five when a Center outscores the 3rd Forward,
+    or a G/G/G/F/F five when a 3rd Guard outscores them both, matching how
+    real college rotations are actually built (Center isn't given its own
+    separate floor -- a team with no real Center on the roster, or whose
+    best remaining option happens to be a Guard or Forward, still gets a
+    fully valid five this way). If the roster doesn't have 2 real Guards
+    and/or 2 real Forwards, the shortfall is filled the same way (flagged
+    with a note) rather than failing to suggest a lineup at all.
+
+    This 2-Guard/2-Forward floor is a realism PREFERENCE, not an absolute
+    -- it yields to a stricter, explicit requirement: this function never
+    suggests a rotation that projects to score fewer points than this
+    team's actual current starting five already does (see
+    _actual_current_starters_ppg and LINEUP_POSITION_TIERS). A team that's
+    genuinely built and currently winning with 4 real Guards and 1 Forward
+    will always score less under a forced 2nd Forward if that Forward is
+    far weaker than the team's 3rd/4th-best Guard -- suggesting that
+    lineup anyway wouldn't be "maximizing team output," it'd be
+    maximizing position-chart realism at the expense of the actual goal.
+    So when the realistic (2, 2) floor would fall short of the team's real
+    current total, the position requirement relaxes in tiers -- (2, 1),
+    then (0, 0) -- stopping at the first tier that reaches or beats the
+    real baseline, each relaxation flagged with a note explaining why.
 
     Realistic-minutes eligibility gate for Starter/Sixth Man (see
-    LINEUP_MAX_OUT_MINUTED_BY): the composite score above is intentionally
-    minutes-agnostic, which is the whole point of this tool vs.
-    /teams/{id}/roles' real-minutes classification -- but taken too far it
-    can crown a highly efficient, barely-used player "Starter" over several
-    real teammates who clearly play more. A player is only eligible for
-    Starter or Sixth Man if fewer than LINEUP_MAX_OUT_MINUTED_BY + 1 other
-    real-profile teammates average more real minutes/game than she does;
-    within the eligible pool, the composite score still decides who's
-    picked (this only trims who's eligible, it doesn't re-rank anyone). If
-    a required slot (a position requirement, or Sixth Man itself) has no
-    eligible candidate left, the pick falls back to the full pool so a
-    lineup can still be suggested -- flagged with a note when that happens.
+    LINEUP_MAX_OUT_MINUTED_BY and LINEUP_MIN_TEAM_GAMES_PCT): the composite
+    score above is intentionally minutes-agnostic, which is the whole
+    point of this tool vs. /teams/{id}/roles' real-minutes classification
+    -- but taken too far it can crown a highly efficient, barely-used
+    player "Starter" over several real teammates who clearly play more, OR
+    crown someone who was excellent in a small slice of the season (missed
+    most of the team's real games to injury, a midseason transfer, etc.)
+    over an every-game contributor. A player is only eligible for Starter
+    or Sixth Man if BOTH: fewer than LINEUP_MAX_OUT_MINUTED_BY + 1 other
+    real-profile teammates average more real minutes/game than she does,
+    AND she's played in at least LINEUP_MIN_TEAM_GAMES_PCT of the team's
+    real games this season (not just her own -- the same "against the
+    team's games, not her own" idea team_roles() already uses for Sixth
+    Man). Within the eligible pool, the composite score still decides
+    who's picked (this only trims who's eligible, it doesn't re-rank
+    anyone). If a required slot (a position requirement, or Sixth Man
+    itself) has no eligible candidate left, the pick falls back to the
+    full pool so a lineup can still be suggested -- flagged with a note
+    when that happens.
 
     Sixth Man is the next-best ELIGIBLE player not in the starting 5, no
     positional requirement -- matching how a real sixth man is picked
@@ -863,22 +955,46 @@ def optimal_lineup(conn, team_id):
 
     real.sort(key=lambda p: p["optimizer_score"], reverse=True)
 
+    # Each player's minutes basis is her total real minutes divided by the
+    # TEAM's games this season, not her own -- see the docstring (phase 18)
+    # for why this replaced the old avg_minutes-based constant scale. Falls
+    # back to her own avg_minutes if team_games or total_minutes somehow
+    # isn't available, rather than dividing by zero. Computed here (before
+    # starter selection, not after) since it's purely a function of the
+    # whole roster, not of who ends up in the starting 5 -- the
+    # tier-fallback comparison below needs every candidate's proj_ppg
+    # already in hand to know whether a given tier's suggestion actually
+    # reaches this team's real current scoring.
+    for p in real:
+        tm = p.get("total_minutes")
+        if team_games > 0 and tm is not None:
+            p["team_rate_minutes"] = tm / team_games
+        else:
+            p["team_rate_minutes"] = p["avg_minutes"]
+
+    total_team_rate_minutes = sum(p["team_rate_minutes"] for p in real)
+    scale = (200.0 / total_team_rate_minutes) if total_team_rate_minutes > 0 else 1.0
+    for p in real:
+        m = p["team_rate_minutes"] * scale
+        p["proj_minutes"] = round(m, 1)
+        p["proj_ppg"] = round(p["per40_pts"] * m / 40.0, 1) if p.get("per40_pts") is not None else None
+        p["proj_rpg"] = round(p["per40_reb"] * m / 40.0, 1) if p.get("per40_reb") is not None else None
+        p["proj_apg"] = round(p["per40_ast"] * m / 40.0, 1) if p.get("per40_ast") is not None else None
+        p["proj_bpg"] = round(p["per40_blk"] * m / 40.0, 1) if p.get("per40_blk") is not None else None
+        p["proj_spg"] = round(p["per40_stl"] * m / 40.0, 1) if p.get("per40_stl") is not None else None
+        p["proj_topg"] = round(p["per40_tov"] * m / 40.0, 1) if p.get("per40_tov") is not None else None
+
     guards = [p for p in real if p["position"] == "G"]
     forwards = [p for p in real if p["position"] == "F"]
-    # The 5th starting spot is either a 3rd Forward or a single Center,
-    # whichever scores higher -- see the docstring for the G/G/F/F/F vs.
-    # G/G/F/F/C shapes this produces. Kept as one pool (not split into
-    # "3rd forward" vs. "center" candidates) so _take() naturally picks
-    # whichever position scores higher, with no extra comparison logic
-    # needed here.
-    frontcourt_extra = [p for p in real if p["position"] in ("F", "C")]
     by_id = {p["player_id"]: p for p in real}
 
-    def _select(banned_ids):
+    def _select(banned_ids, min_guards, min_forwards):
         """One attempt at picking the starting 5 + sixth man by composite
         score + position balance, treating any player_id in banned_ids as
         a last resort -- only used for a slot if no other candidate is
-        left for it. Returns (starter_ids, sixth_man_id, notes,
+        left for it. `min_guards`/`min_forwards` set this attempt's
+        position floors -- see LINEUP_POSITION_TIERS for why this isn't
+        always (2, 2). Returns (starter_ids, sixth_man_id, notes,
         used_banned) for this attempt.
         """
         picked_ids = set()
@@ -905,34 +1021,29 @@ def optimal_lineup(conn, team_id):
             return taken
 
         starters_attempt = []
-        guard_picks = _take(guards, 2)
-        if len(guard_picks) < 2:
+        guard_picks = _take(guards, min_guards)
+        if len(guard_picks) < min_guards:
             attempt_notes.append(f"Only {len(guard_picks)} real Guard{'s' if len(guard_picks) != 1 else ''} "
                                   f"on this roster -- the remaining starting "
-                                  f"spot{'s' if 2 - len(guard_picks) != 1 else ''} filled by composite score "
-                                  f"regardless of position.")
+                                  f"spot{'s' if min_guards - len(guard_picks) != 1 else ''} filled by composite "
+                                  f"score regardless of position.")
         starters_attempt += guard_picks
 
-        forward_picks = _take(forwards, 2)
-        if len(forward_picks) < 2:
+        forward_picks = _take(forwards, min_forwards)
+        if len(forward_picks) < min_forwards:
             attempt_notes.append(f"Only {len(forward_picks)} real Forward{'s' if len(forward_picks) != 1 else ''} "
                                   f"on this roster -- the remaining starting "
-                                  f"spot{'s' if 2 - len(forward_picks) != 1 else ''} filled by composite score "
-                                  f"regardless of position.")
+                                  f"spot{'s' if min_forwards - len(forward_picks) != 1 else ''} filled by "
+                                  f"composite score regardless of position.")
         starters_attempt += forward_picks
 
-        # 5th spot: the single best remaining Forward or Center (a 3rd
-        # Forward, or a Center, whichever scores higher -- see docstring).
-        fifth_pick = _take(frontcourt_extra, 1)
-        starters_attempt += fifth_pick
-        if not fifth_pick:
-            if not frontcourt_extra:
-                attempt_notes.append("No Forward or Center on this roster -- the starting 5 below is filled "
-                                      "purely by composite score.")
-            else:
-                attempt_notes.append("No Forward or Center left for the 5th starting spot after filling the "
-                                      "Guard/Forward floors -- filled by composite score regardless of position.")
-
+        # Any starting spot(s) left -- whether because the floors above are
+        # smaller than 5 by design (a relaxed tier) or because the roster
+        # came up short of a floor -- go to the single next-highest
+        # composite score of ANY position still available. This is what
+        # lets a 3rd Guard win a flexible spot over a weak 3rd/4th Forward
+        # when that's genuinely what scores best (the G/G/G/F/F shape),
+        # not just a 3rd Forward or a Center.
         remaining_needed = 5 - len(starters_attempt)
         starters_attempt += _take(real, remaining_needed)
         starter_ids_attempt = {p["player_id"] for p in starters_attempt}
@@ -964,79 +1075,118 @@ def optimal_lineup(conn, team_id):
     # LINEUP_MAX_OUT_MINUTED_BY allows, and if so ban the worst offender
     # and re-select -- repeating until the selection is realistic or every
     # candidate has been tried (bounded by roster size, so this always
-    # terminates).
-    ineligible_ids = set()
+    # terminates). Wrapped in _run_tier() so this identical retry logic
+    # runs at every LINEUP_POSITION_TIERS floor below.
+    def _run_tier(min_guards, min_forwards):
+        ineligible_ids = set()
+        tier_notes = []
+        tier_fallback_used = False
+        tier_starter_ids, tier_sixth_man_id, attempt_notes = set(), None, []
+        for _ in range(len(real) + 1):
+            tier_starter_ids, tier_sixth_man_id, attempt_notes, used_banned = _select(
+                ineligible_ids, min_guards, min_forwards)
+            selected_ids = tier_starter_ids | ({tier_sixth_man_id} if tier_sixth_man_id else set())
+            # A Starter's "bench" is everyone NOT one of the 5 starters --
+            # which includes the Sixth Man candidate herself, since a sixth
+            # man is by definition a bench player. The Sixth Man's own
+            # "bench" excludes her too (selected_ids), since she can't be
+            # out-played by herself.
+            non_starters = [p for p in real if p["player_id"] not in tier_starter_ids]
+            non_selected = [p for p in real if p["player_id"] not in selected_ids]
+            def _games_short(p):
+                # True if `p` hasn't played in enough of the TEAM's real
+                # games this season to be a realistic Starter/Sixth Man --
+                # see LINEUP_MIN_TEAM_GAMES_PCT. Treated as an automatic,
+                # maximal violation (so the ban-and-retry loop always
+                # prioritizes clearing this over a real-minutes gap) rather
+                # than folded into the out_by_bench count.
+                if team_games <= 0 or p.get("games") is None:
+                    return False
+                return (p["games"] / team_games) < LINEUP_MIN_TEAM_GAMES_PCT
+
+            violators = []
+            for sid in tier_starter_ids:
+                p = by_id[sid]
+                out_by_bench = sum(1 for q in non_starters if q["avg_minutes"] > p["avg_minutes"])
+                if _games_short(p):
+                    violators.append((p, LINEUP_MAX_OUT_MINUTED_BY + 1))
+                elif out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
+                    violators.append((p, out_by_bench))
+            if tier_sixth_man_id is not None:
+                p = by_id[tier_sixth_man_id]
+                out_by_bench = sum(1 for q in non_selected if q["avg_minutes"] > p["avg_minutes"])
+                if _games_short(p):
+                    violators.append((p, LINEUP_MAX_OUT_MINUTED_BY + 1))
+                elif out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
+                    violators.append((p, out_by_bench))
+            if not violators:
+                tier_notes = attempt_notes
+                tier_fallback_used = used_banned
+                break
+            worst = max(violators, key=lambda t: t[1])[0]
+            if worst["player_id"] in ineligible_ids:
+                # Already excluded once and still surfacing as a violator --
+                # can only happen once every realistic alternative has been
+                # exhausted (the fallback pass had to re-include her).
+                # Accept this attempt rather than loop forever.
+                tier_notes = attempt_notes
+                tier_fallback_used = True
+                break
+            ineligible_ids.add(worst["player_id"])
+        else:
+            tier_notes = attempt_notes
+            tier_fallback_used = True
+        return tier_starter_ids, tier_sixth_man_id, tier_notes, tier_fallback_used
+
+    # Try each LINEUP_POSITION_TIERS floor in order, accepting the first
+    # one whose suggested five projects to at least this team's actual
+    # current starting five's real scoring (see
+    # _actual_current_starters_ppg). A team with no stable real current
+    # five (actual_baseline is None) has nothing to hold a suggestion to,
+    # so the realistic (2, 2) default is used as-is.
+    actual_baseline = _actual_current_starters_ppg(conn, team_id, season, team_games)
+    starter_ids = sixth_man_id = None
     notes = []
     fallback_used = False
-    starter_ids, sixth_man_id, attempt_notes = set(), None, []
-    for _ in range(len(real) + 1):
-        starter_ids, sixth_man_id, attempt_notes, used_banned = _select(ineligible_ids)
-        selected_ids = starter_ids | ({sixth_man_id} if sixth_man_id else set())
-        # A Starter's "bench" is everyone NOT one of the 5 starters -- which
-        # includes the Sixth Man candidate herself, since a sixth man is by
-        # definition a bench player. The Sixth Man's own "bench" excludes
-        # her too (selected_ids), since she can't be out-played by herself.
-        non_starters = [p for p in real if p["player_id"] not in starter_ids]
-        non_selected = [p for p in real if p["player_id"] not in selected_ids]
-        violators = []
-        for sid in starter_ids:
-            p = by_id[sid]
-            out_by_bench = sum(1 for q in non_starters if q["avg_minutes"] > p["avg_minutes"])
-            if out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
-                violators.append((p, out_by_bench))
-        if sixth_man_id is not None:
-            p = by_id[sixth_man_id]
-            out_by_bench = sum(1 for q in non_selected if q["avg_minutes"] > p["avg_minutes"])
-            if out_by_bench > LINEUP_MAX_OUT_MINUTED_BY:
-                violators.append((p, out_by_bench))
-        if not violators:
-            notes = attempt_notes
-            fallback_used = used_banned
+    tier_used = 0
+    final_suggested_total = None
+    for tier_idx, (min_g, min_f) in enumerate(LINEUP_POSITION_TIERS):
+        t_starter_ids, t_sixth_man_id, t_notes, t_fallback = _run_tier(min_g, min_f)
+        suggested_total = sum((by_id[pid].get("proj_ppg") or 0.0) for pid in t_starter_ids)
+        is_last_tier = tier_idx == len(LINEUP_POSITION_TIERS) - 1
+        if actual_baseline is None or suggested_total >= actual_baseline - 0.05 or is_last_tier:
+            starter_ids, sixth_man_id, notes, fallback_used = t_starter_ids, t_sixth_man_id, t_notes, t_fallback
+            tier_used = tier_idx
+            final_suggested_total = suggested_total
             break
-        worst = max(violators, key=lambda t: t[1])[0]
-        if worst["player_id"] in ineligible_ids:
-            # Already excluded once and still surfacing as a violator --
-            # can only happen once every realistic alternative has been
-            # exhausted (the fallback pass had to re-include her). Accept
-            # this attempt rather than loop forever.
-            notes = attempt_notes
-            fallback_used = True
-            break
-        ineligible_ids.add(worst["player_id"])
-    else:
-        notes = attempt_notes
-        fallback_used = True
+
+    if actual_baseline is not None and tier_used > 0:
+        min_g, min_f = LINEUP_POSITION_TIERS[tier_used]
+        if final_suggested_total >= actual_baseline - 0.05:
+            notes = notes + [
+                f"The standard position-balanced five (2+ real Guards, 2+ real Forwards) would have projected "
+                f"below this team's actual current starting five's real scoring ({actual_baseline:.1f} ppg) -- "
+                f"the position requirement was relaxed to {min_g}+ Guard{'s' if min_g != 1 else ''}/{min_f}+ "
+                f"Forward{'s' if min_f != 1 else ''} to reach it instead, since a suggestion is never allowed "
+                f"to project fewer points than what this team is already doing on the court."
+            ]
+        else:
+            notes = notes + [
+                f"Even filling the starting 5 purely by composite score (no position requirement) still "
+                f"projects below this team's actual current starting five's real scoring "
+                f"({final_suggested_total:.1f} projected vs. {actual_baseline:.1f} actual) -- this roster's "
+                f"real per-40 rates and team-rate minutes can't reach that total under this projection method; "
+                f"shown as the best achievable suggestion."
+            ]
 
     if fallback_used:
         notes = notes + [
             f"This roster is thin enough that at least one Starter or Sixth Man slot had to be filled by a "
             f"player who's out-played in real minutes/game by more than {LINEUP_MAX_OUT_MINUTED_BY} bench "
-            f"players -- no more realistic candidate was left for that spot, so composite score decided instead."
+            f"players, or who's played in fewer than {int(LINEUP_MIN_TEAM_GAMES_PCT * 100)}% of the team's real "
+            f"games this season -- no more realistic candidate was left for that spot, so composite score "
+            f"decided instead."
         ]
-
-    # Each player's minutes basis is her total real minutes divided by the
-    # TEAM's games this season, not her own -- see the docstring (phase 18)
-    # for why this replaced the old avg_minutes-based constant scale. Falls
-    # back to her own avg_minutes if team_games or total_minutes somehow
-    # isn't available, rather than dividing by zero.
-    for p in real:
-        tm = p.get("total_minutes")
-        if team_games > 0 and tm is not None:
-            p["team_rate_minutes"] = tm / team_games
-        else:
-            p["team_rate_minutes"] = p["avg_minutes"]
-
-    total_team_rate_minutes = sum(p["team_rate_minutes"] for p in real)
-    scale = (200.0 / total_team_rate_minutes) if total_team_rate_minutes > 0 else 1.0
-    for p in real:
-        m = p["team_rate_minutes"] * scale
-        p["proj_minutes"] = round(m, 1)
-        p["proj_ppg"] = round(p["per40_pts"] * m / 40.0, 1) if p.get("per40_pts") is not None else None
-        p["proj_rpg"] = round(p["per40_reb"] * m / 40.0, 1) if p.get("per40_reb") is not None else None
-        p["proj_apg"] = round(p["per40_ast"] * m / 40.0, 1) if p.get("per40_ast") is not None else None
-        p["proj_bpg"] = round(p["per40_blk"] * m / 40.0, 1) if p.get("per40_blk") is not None else None
-        p["proj_spg"] = round(p["per40_stl"] * m / 40.0, 1) if p.get("per40_stl") is not None else None
-        p["proj_topg"] = round(p["per40_tov"] * m / 40.0, 1) if p.get("per40_tov") is not None else None
 
     for p in real:
         if p["player_id"] in starter_ids:
@@ -1075,15 +1225,20 @@ def optimal_lineup(conn, team_id):
             f"Game-by-Game Production Rating chart) and Summit Score ({int((1 - PRODUCTION_WEIGHT) * 100)}%), both compared "
             "only against this team's own roster -- not the whole league -- and weighted toward production so a "
             "genuinely higher-producing player is never ranked below a teammate who only posts a higher "
-            "efficiency-based Summit Score. The starting 5 requires at least 2 real Guards and at least 2 real "
-            "Forwards; the 5th spot goes to whichever scores higher between the best remaining Forward or the "
-            "best available Center, producing a G/G/F/F/F five or a G/G/F/F/C five depending on which one "
-            "scores best -- matching how real women's college rotations are actually built. If the roster is "
-            "short a required Guard or Forward, that spot is filled by the next-best composite score regardless "
-            "of position instead. Sixth Man is the next-best player not in the starting 5, no positional "
+            "efficiency-based Summit Score. The starting 5 prefers at least 2 real Guards and at least 2 real "
+            "Forwards; the 5th (and any other) spot goes to whichever remaining real-profile player -- any "
+            "position, including a 3rd Guard -- scores highest, producing a G/G/F/F/F, G/G/F/F/C, or G/G/G/F/F "
+            "five depending on which one scores best -- matching how real college rotations are actually built. "
+            "This position preference yields to a stricter rule: a suggestion is never allowed to project fewer "
+            "points than this team's actual current starting five already scores -- if the position-balanced "
+            "five would fall short of that real total, the position requirement relaxes (fewer required "
+            "Forwards, then no position requirement at all) until the suggestion reaches it or no combination "
+            "can, flagged with a note either way. Sixth Man is the next-best player not in the starting 5, no positional "
             "requirement. A player is only eligible for Starter or Sixth Man if they aren't out-played in real "
-            f"minutes/game by {LINEUP_MAX_OUT_MINUTED_BY + 1}+ teammates -- an elite composite score in very "
-            "limited minutes doesn't make someone a realistic starter. Every player's Minutes below is their "
+            f"minutes/game by {LINEUP_MAX_OUT_MINUTED_BY + 1}+ teammates, and have played in at least "
+            f"{int(LINEUP_MIN_TEAM_GAMES_PCT * 100)}% of the team's real games this season -- an elite composite "
+            "score in very limited minutes or a small slice of the season doesn't make someone a realistic "
+            "starter. Every player's Minutes below is their "
             "real total minutes divided by the TEAM's games this season (not their own games played), then "
             "squared up so the full roster adds up to a real game's 200 total player-minutes (5 on the floor x "
             "40 minutes) -- a player who suited up all season lands at essentially their real average minutes, "
