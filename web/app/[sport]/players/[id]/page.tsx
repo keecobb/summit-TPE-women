@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import type {
   PlayerDetail, PlayerTrajectory, PlayerTrajectorySeason, PlayerSplits, OpponentTierSplit,
@@ -45,7 +46,32 @@ export default async function PlayerDetailPage({
   const sp = await searchParams;
   const tab: TabKey = (TABS.find((t) => t.key === sp.tab)?.key ?? "overview") as TabKey;
 
-  const player = await apiFetch<PlayerDetail>(`/${sport}/players/${id}`, { revalidate: 0 });
+  // Catching this inline (instead of letting it bubble up to app/error.tsx
+  // uncaught) is what actually gets a useful message in front of the
+  // visitor -- Next.js redacts an uncaught Server Component render error
+  // in production down to a generic "Minified React error #441" digest
+  // message with no real detail, which is what was showing up here before.
+  // Rendering the error directly in this page's own JSX sidesteps that
+  // entirely, matching the pattern already used on the Compare and Team
+  // detail pages.
+  let player: PlayerDetail;
+  try {
+    player = await apiFetch<PlayerDetail>(`/${sport}/players/${id}`, { revalidate: 0 });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) notFound();
+    if (e instanceof ApiError) {
+      return (
+        <div>
+          <h1>Couldn&apos;t load this player</h1>
+          <div className="error-box">{e.message}</div>
+          <p style={{ marginTop: 20 }}>
+            <Link href={`/${sport}/players`}>&larr; Back to Players</Link>
+          </p>
+        </div>
+      );
+    }
+    throw e;
+  }
 
   return (
     <div>

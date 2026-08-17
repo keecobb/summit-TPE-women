@@ -36,7 +36,11 @@ type Params = Record<string, string | number | boolean | undefined | (string | n
  */
 export async function apiFetch<T>(
   path: string,
-  { params, revalidate = 60 }: { params?: Params; revalidate?: number } = {}
+  {
+    params,
+    revalidate = 60,
+    timeoutMs = 9000,
+  }: { params?: Params; revalidate?: number; timeoutMs?: number } = {}
 ): Promise<T> {
   if (!API_URL) {
     throw new ApiError(0, "SUMMIT_TPE_API_URL is not configured on this deployment.");
@@ -55,13 +59,36 @@ export async function apiFetch<T>(
     }
   }
 
-  const res = await fetch(url.toString(), {
-    headers: API_KEY ? { "X-API-Key": API_KEY } : {},
-    // Short revalidation window rather than fully static -- the live
-    // cache behind the API can change after a refresh_pipeline.py run
-    // at any time, with no deploy/restart of this site needed to see it.
-    next: { revalidate },
-  });
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+      // Short revalidation window rather than fully static -- the live
+      // cache behind the API can change after a refresh_pipeline.py run
+      // at any time, with no deploy/restart of this site needed to see it.
+      next: { revalidate },
+      // Fail fast with a clear, user-facing reason instead of hanging
+      // until the hosting platform's own function-execution limit kills
+      // the request (which can take far longer than a visitor will wait,
+      // and produces an opaque redacted error in production -- see the
+      // try/catch in the player/team detail pages, which is what actually
+      // surfaces this message to the browser instead of it being stripped
+      // out as an uncaught Server Component render error). The most common
+      // real-world trigger for a genuinely slow response here is Render's
+      // API waking back up from an idle spin-down (free/starter tiers spin
+      // down after ~15 minutes idle, and a cold start can take 30-60+
+      // seconds) -- if this fires often, check the Render service's plan.
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new ApiError(
+        504,
+        "The Summit TPE API is taking longer than usual to respond -- it may be waking back up after sitting idle. Give it a few seconds and try again."
+      );
+    }
+    throw new ApiError(0, "Couldn't reach the Summit TPE API. Check your connection and try again.");
+  }
 
   if (!res.ok) {
     let detail = res.statusText;

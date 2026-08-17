@@ -220,6 +220,11 @@ a {
   color: #fff;
   cursor: pointer;
   font-size: 1.1rem;
+  /* Pushes the hamburger to the right edge of the header row on mobile
+     (the only width this is ever visible at -- display:none above hides
+     it at desktop) instead of sitting right next to the brand mark on the
+     left with empty space on the right. */
+  margin-left: auto;
 }
 
 main {

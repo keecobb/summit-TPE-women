@@ -63,8 +63,18 @@ export default function MobileNav() {
   // Teams listing instead of risking a 404 or, worse, silently landing on
   // an unrelated team/player that happens to reuse the same numeric id.
   const currentSection = segments[1];
+  const onHomePage = segments.length === 1;
   const onBareSectionPage = segments.length === 2 && SPORT_SECTIONS.includes(currentSection as (typeof SPORT_SECTIONS)[number]);
-  const otherSportHref = onBareSectionPage ? `/${otherSport}/${currentSection}` : `/${otherSport}/teams`;
+  // Home page (exactly /{sport}, no section segment) switches sport and
+  // stays on the home page -- previously fell through to the generic
+  // "unknown page shape" fallback below and got sent to the Teams listing
+  // instead, since segments.length === 1 never matched onBareSectionPage's
+  // length === 2 check.
+  const otherSportHref = onHomePage
+    ? `/${otherSport}`
+    : onBareSectionPage
+      ? `/${otherSport}/${currentSection}`
+      : `/${otherSport}/teams`;
 
   return (
     <>

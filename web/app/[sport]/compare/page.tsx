@@ -50,6 +50,25 @@ const TEAM_STAT_ORDER = [
 const TEAM_STAT_LOWER_IS_BETTER = new Set(["per40_tov"]);
 const TEAM_STAT_IS_PCT = new Set(["ts_pct", "fg_pct"]);
 
+// Search-box hint text is sport-specific -- a women's example on the men's
+// page (or vice versa) both reads like men's is an afterthought AND, for
+// the player fields specifically, is an actually-wrong example (that
+// player doesn't exist in the men's pool at all, since the two sports
+// never share a player population -- see ARCHITECTURE_HOSTING_PLAN.md's
+// separate-cache-per-sport constraint). Same pattern as tpe/page.tsx's
+// SPORT_HINT_PLAYER. Men's names are deliberately duplicated across the
+// two player fields rather than invented -- Cameron Boozer is the one
+// men's player name that's actually been verified as real/searchable
+// against this project's live data (see phase 18); a second, different
+// verified name can replace the duplicate once one's confirmed the same
+// way. Duke/Michigan are both confirmed real, distinct men's programs
+// (see phase 16's verification pass), so team hints don't have this
+// same one-name limitation.
+const SPORT_HINT_PLAYER_1: Record<string, string> = { women: "Bruna Anguera", men: "Cameron Boozer" };
+const SPORT_HINT_PLAYER_2: Record<string, string> = { women: "Audi Crooks", men: "Cameron Boozer" };
+const SPORT_HINT_TEAM_1: Record<string, string> = { women: "South Carolina", men: "Duke" };
+const SPORT_HINT_TEAM_2: Record<string, string> = { women: "UCLA", men: "Michigan" };
+
 function ModeTabs({ mode, sport }: { mode: "players" | "teams"; sport: string }) {
   return (
     <div className="tabs" style={{ marginBottom: 20 }}>
@@ -199,7 +218,7 @@ async function PickerView({ sp, sport }: { sp: SP; sport: string }) {
               sport={sport}
               kind="players"
               inputId="player1-search"
-              placeholder="e.g. Bruna Anguera"
+              placeholder={`e.g. ${SPORT_HINT_PLAYER_1[sport] ?? SPORT_HINT_PLAYER_1.women}`}
               mode="select"
               hiddenName="player1"
               required
@@ -213,7 +232,7 @@ async function PickerView({ sp, sport }: { sp: SP; sport: string }) {
               sport={sport}
               kind="players"
               inputId="player2-search"
-              placeholder="e.g. Audi Crooks"
+              placeholder={`e.g. ${SPORT_HINT_PLAYER_2[sport] ?? SPORT_HINT_PLAYER_2.women}`}
               mode="select"
               hiddenName="player2"
               required
@@ -401,7 +420,7 @@ async function TeamPickerView({ sp, sport }: { sp: SP; sport: string }) {
               sport={sport}
               kind="teams"
               inputId="team1-search"
-              placeholder="e.g. South Carolina"
+              placeholder={`e.g. ${SPORT_HINT_TEAM_1[sport] ?? SPORT_HINT_TEAM_1.women}`}
               mode="select"
               hiddenName="team1"
               required
@@ -415,7 +434,7 @@ async function TeamPickerView({ sp, sport }: { sp: SP; sport: string }) {
               sport={sport}
               kind="teams"
               inputId="team2-search"
-              placeholder="e.g. UCLA"
+              placeholder={`e.g. ${SPORT_HINT_TEAM_2[sport] ?? SPORT_HINT_TEAM_2.women}`}
               mode="select"
               hiddenName="team2"
               required

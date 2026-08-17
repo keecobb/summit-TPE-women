@@ -43,11 +43,28 @@ export default async function TeamDetailPage({
   const sp = await searchParams;
   const tab: TabKey = (TABS.find((t) => t.key === sp.tab)?.key ?? "overview") as TabKey;
 
+  // Catching this inline (rather than only handling the 404 case and
+  // re-throwing everything else) is what actually gets a useful message in
+  // front of the visitor for a timeout/5xx -- an uncaught Server Component
+  // render error gets redacted by Next.js in production down to a generic
+  // "Minified React error #441" digest message with no real detail, which
+  // is what a slow/failed team fetch was showing up as before.
   let team: Team;
   try {
     team = await apiFetch<Team>(`/${sport}/teams/${id}`, { revalidate: 0 });
   } catch (e) {
     if (e instanceof ApiError && e.status === 404) notFound();
+    if (e instanceof ApiError) {
+      return (
+        <div>
+          <h1>Couldn&apos;t load this team</h1>
+          <div className="error-box">{e.message}</div>
+          <p style={{ marginTop: 20 }}>
+            <Link href={`/${sport}/teams`}>&larr; Back to Teams</Link>
+          </p>
+        </div>
+      );
+    }
     throw e;
   }
 
