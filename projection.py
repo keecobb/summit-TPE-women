@@ -219,8 +219,11 @@ def _interp_spread(gap_std):
 # itself to "Solidified Starter" so it's clear these are the players a
 # team's real games-started rate can confirm are locked-in starters, not
 # a forced count of exactly 5):
-#   - Solidified Starter: starts in >= ROLE_STARTER_START_PCT of the games
-#     she's played (not of the team's total games -- her OWN games played).
+#   - Solidified Starter: starts in >= ROLE_STARTER_START_PCT of the TEAM's
+#     games this season (phase 18 -- changed from her own games played; see
+#     the comment above the `starters` filter below for the real cases that
+#     motivated this and why scoring against the team's real season length
+#     fixes both).
 #   - Sixth Man: among players who start in < ROLE_SIXTH_MAN_START_PCT of
 #     their own games AND have played in more than
 #     ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT of the TEAM's games this season,
@@ -415,9 +418,10 @@ def team_roles(conn, team_id):
     for r in rows:
         games_started = gs_by_player.get(r["player_id"])
         start_pct = (games_started / r["games"]) if (r["games"] and games_started is not None) else None
+        team_start_pct = (games_started / team_games) if (team_games and games_started is not None) else None
         roster.append(dict(
             player_id=r["player_id"], name=r["name"], avg_minutes=r["avg_minutes"], games=r["games"],
-            games_started=games_started, start_pct=start_pct,
+            games_started=games_started, start_pct=start_pct, team_start_pct=team_start_pct,
         ))
 
     # Roster-wide Summit Score average -- only real (non-thin-sample) profiles
@@ -427,13 +431,30 @@ def team_roles(conn, team_id):
     real_scores = [r["hoop_score"] for r in rows if not r["thin_sample"] and r["hoop_score"] is not None]
     roster_avg_summit_score = round(sum(real_scores) / len(real_scores), 1) if real_scores else None
 
-    # Solidified Starter: starts in >= 65% of the games SHE'S played (not
-    # the team's total games -- a player who missed the first half the
-    # season to injury but has started every game since is still a
-    # solidified starter). A team's real roster won't always show exactly
-    # 5 of these -- see the phase-15 comment above the ROLE_* constants for
-    # why that's expected, not a bug.
-    starters = [p for p in roster if p["start_pct"] is not None and p["start_pct"] >= ROLE_STARTER_START_PCT]
+    # Solidified Starter: starts in >= ROLE_STARTER_START_PCT of the TEAM's
+    # games this season (phase 18 -- changed from her own games played,
+    # which is what let a short, since-ended run of starts still read as
+    # "solidified" all season long. Real case: a player started the first 6
+    # games of a 31-game season, at a 100% start rate in the games she
+    # played, then got hurt and never played again -- 6/31 = 19% of the
+    # team's actual season, but her OWN-games start rate stayed 100% since
+    # that denominator only ever counted the 6 games she suited up for. A
+    # second real case showed the same root problem from the other
+    # direction: a team that changed its starting five partway through the
+    # season had 6 different players each clear a 65%+ OWN-games start
+    # rate, because each was a real starter only within their own limited
+    # window -- reading as 6 "solidified" starters despite no single lineup
+    # of 5 ever actually holding for most of the year. Scoring against the
+    # team's real season length instead of each player's own window fixes
+    # both at once, with no separate floor constant needed: a real,
+    # current, season-long starter clears 65% of the team's actual games
+    # played; a short run, hurt-and-done, or mid-season lineup swap
+    # doesn't). A team's real roster won't always show exactly 5 of these --
+    # see the phase-15 comment above the ROLE_* constants for why that's
+    # expected, not a bug (a team could legitimately have a genuine
+    # midseason starting-lineup change with 6+ players each starting 65%+
+    # of the full season, though this is now rare).
+    starters = [p for p in roster if p["team_start_pct"] is not None and p["team_start_pct"] >= ROLE_STARTER_START_PCT]
     starter_ids = {p["player_id"] for p in starters}
     starter_minutes = round(sum(p["avg_minutes"] for p in starters) / len(starters), 1) if starters else None
 
@@ -516,11 +537,11 @@ def team_roles(conn, team_id):
         roster_avg_summit_score=roster_avg_summit_score,
         roster_avg_summit_score_count=len(real_scores),
         starter=dict(minutes=starter_minutes, player_count=len(starters),
-                     note=f"real average of every player who starts in {ROLE_STARTER_START_PCT:.0%}+ of the games "
-                          f"she's played this season."),
+                     note=f"real average of every player who has started in {ROLE_STARTER_START_PCT:.0%}+ of the "
+                          f"TEAM's games this season."),
         sixth_man=dict(minutes=sixth_man_minutes,
                         note=f"the single highest-minutes player among everyone who starts in under "
-                             f"{ROLE_SIXTH_MAN_START_PCT:.0%} of her own games and has played in more than "
+                             f"{ROLE_SIXTH_MAN_START_PCT:.0%} of their own games and has played in more than "
                              f"{ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT:.0%} of the team's games this season -- "
                              f"not a fixed rank."),
         role_player=dict(minutes=role_player_minutes, range=role_player_range, player_count=len(role_players),
@@ -577,7 +598,7 @@ def role_translation(conn, player_id):
         raise ProjectionError(f"No player with id {player_id} in the current-season cache.")
     if player.get("hoop_score_raw") is None:
         raise ProjectionError(f"{player.get('name') or 'This player'} has no recorded games this season "
-                               f"-- not enough data to translate her production across roles.")
+                               f"-- not enough data to translate their production across roles.")
 
     team_id = player["team_id"]
     team = get_team(conn, team_id)
@@ -608,7 +629,7 @@ def role_translation(conn, player_id):
             roles=None,
             note=(f"{player['name']} has not logged enough games or minutes for a true role translation "
                   f"(needs {ROLE_TRANSLATION_MIN_GAMES}+ games and {ROLE_TRANSLATION_MIN_MINUTES:.0f}+ minutes -- "
-                  f"she has {games} game{'s' if games != 1 else ''} and {total_minutes:.0f} minutes this season)."),
+                  f"they have {games} game{'s' if games != 1 else ''} and {total_minutes:.0f} minutes this season)."),
         )
 
     def _at_role(role_info):
@@ -634,8 +655,8 @@ def role_translation(conn, player_id):
         base,
         insufficient_sample=False,
         roles=roles_out,
-        note=("Same team, same competition level -- this shows her real per-40 production applied to each "
-              "role's typical minutes on her own roster (via /teams/{id}/roles), not a transfer projection. "
+        note=("Same team, same competition level -- this shows their real per-40 production applied to each "
+              "role's typical minutes on their own roster (via /teams/{id}/roles), not a transfer projection. "
               "Summit Score and shooting percentages don't change across roles here since they're rate-based, "
               "not counting totals -- only the raw per-game counting stats move with minutes."),
     )
@@ -698,20 +719,48 @@ def optimal_lineup(conn, team_id):
     role_translation() (which resolves 4 fixed buckets), this covers the
     WHOLE roster at once so the minutes can be normalized to add up to a
     real game's 200 total player-minutes (5 on the floor x 40 minutes).
-    Rather than inventing a new minutes-distribution model, this scales
-    each player's own REAL season avg_minutes by one constant factor
-    (200 / the roster's real total) -- preserves the real, observed
-    relative playing-time order exactly, just rescaled so the table reads
-    as one coherent game instead of independently-averaged season rates
-    that happen to sum to something else (a real roster's own avg_minutes
-    total typically runs a bit over 200 across a full season, from
-    overtime games and midseason roster/rotation changes -- confirmed
-    against real teams during phase 13 testing, e.g. UConn ~211,
-    Air Force ~222). Each player's projected per-game stat line (ppg/rpg/
-    apg/spg/bpg/topg) is then her real per-40 rate applied to that scaled
-    minutes figure -- same math as role_translation(). hoop_score/ts_pct/
-    fg_pct are rate composites and don't change with minutes, so they're
-    shown as her real season values, unscaled.
+
+    (Phase 18 -- replaced the original constant-scale approach, which used
+    to scale every player's own real-season avg_minutes (total_minutes /
+    HER OWN games played) by one shared factor, 200 / the roster's real
+    avg_minutes total. That total typically runs noticeably over 200 across
+    a full season (confirmed against real teams during phase 13 testing,
+    e.g. UConn ~211, Air Force ~222) -- from overtime games, but mostly
+    from midseason roster/rotation changes: a player who only suited up for
+    half the season still has her avg_minutes computed only over the games
+    SHE played, so a deep roster's individual season averages sum to well
+    more than one real game's 200 minutes even though no single real game
+    ever has more than 5 players out there for 200 total. The shared scale
+    factor that resulted was consistently below 1, which meant almost every
+    rotation player's projected minutes -- and, since PPG/RPG/etc. are her
+    real per-40 rate applied to those minutes, her whole projected stat
+    line -- came out BELOW her real season average, even for a team's best,
+    most-used players. That's backwards for a tool whose whole point is
+    suggesting how to maximize team output.
+
+    The fix: each player's minutes basis is now her total real minutes
+    divided by the TEAM's games this season (not her own games played) --
+    the same "against the team's real games, not her own" idea
+    ROLE_SIXTH_MAN_MIN_TEAM_GAMES_PCT already uses in team_roles(), applied
+    here to the minutes math itself. Summed across every player who
+    suited up, total minutes played this season is (team_games * 200) by
+    construction -- 5 players x 40 minutes, every real game -- so summing
+    this team-rate basis across the real-profile roster lands very close
+    to 200 on its own, instead of the ~5-10% over 200 a sum of individual
+    own-games averages typically runs. A small residual scale (still
+    200 / that sum) squares the total up exactly, but it now starts from a
+    baseline near 1 instead of one that's structurally low -- so a player
+    who suited up for essentially the whole season gets projected minutes
+    at essentially her real average (not below it), while a player who
+    was only around for part of the season (hurt, transferred in/out
+    midseason) is correctly discounted rather than credited a full share
+    of 200 minutes she didn't actually earn all season.)
+
+    Each player's projected per-game stat line (ppg/rpg/apg/spg/bpg/topg)
+    is then her real per-40 rate applied to that minutes figure -- same
+    math as role_translation(). hoop_score/ts_pct/fg_pct are rate
+    composites and don't change with minutes, so they're shown as her real
+    season values, unscaled.
 
     This is a data-driven suggestion from real box-score production only --
     it doesn't know about chemistry, matchups, health, or anything off the
@@ -722,9 +771,19 @@ def optimal_lineup(conn, team_id):
     if team is None:
         raise ProjectionError(f"No team with id {team_id} in the current-season cache.")
 
+    # Team's real games played this season -- same "distinct game_ids in
+    # player_game_logs" convention team_roles() uses (see that function's
+    # comment for why this beats the `games` schedule table), needed below
+    # for the team-rate minutes basis.
+    team_games_row = conn.execute(
+        "SELECT COUNT(DISTINCT game_id) FROM player_game_logs WHERE team_id = ? AND season = ?",
+        (team_id, season),
+    ).fetchone()
+    team_games = team_games_row[0] if team_games_row else 0
+
     rows = conn.execute(
-        "SELECT player_id, name, position, class_year, avg_minutes, games, hoop_score, ts_pct, fg_pct, "
-        "per40_pts, per40_reb, per40_ast, per40_blk, per40_stl, per40_tov, thin_sample "
+        "SELECT player_id, name, position, class_year, avg_minutes, total_minutes, games, hoop_score, ts_pct, "
+        "fg_pct, per40_pts, per40_reb, per40_ast, per40_blk, per40_stl, per40_tov, thin_sample "
         "FROM players WHERE team_id = ?", (team_id,)
     ).fetchall()
     real = [dict(r) for r in rows
@@ -899,14 +958,22 @@ def optimal_lineup(conn, team_id):
             f"players -- no more realistic candidate was left for that spot, so composite score decided instead."
         ]
 
-    # Scale every player's real season avg_minutes by one constant factor so
-    # the whole roster's minutes add up to a real game's 200 total -- see
-    # the docstring for why a constant scale (not a new distribution model)
-    # is the right call here.
-    total_real_minutes = sum(p["avg_minutes"] for p in real)
-    scale = (200.0 / total_real_minutes) if total_real_minutes > 0 else 1.0
+    # Each player's minutes basis is her total real minutes divided by the
+    # TEAM's games this season, not her own -- see the docstring (phase 18)
+    # for why this replaced the old avg_minutes-based constant scale. Falls
+    # back to her own avg_minutes if team_games or total_minutes somehow
+    # isn't available, rather than dividing by zero.
     for p in real:
-        m = p["avg_minutes"] * scale
+        tm = p.get("total_minutes")
+        if team_games > 0 and tm is not None:
+            p["team_rate_minutes"] = tm / team_games
+        else:
+            p["team_rate_minutes"] = p["avg_minutes"]
+
+    total_team_rate_minutes = sum(p["team_rate_minutes"] for p in real)
+    scale = (200.0 / total_team_rate_minutes) if total_team_rate_minutes > 0 else 1.0
+    for p in real:
+        m = p["team_rate_minutes"] * scale
         p["proj_minutes"] = round(m, 1)
         p["proj_ppg"] = round(p["per40_pts"] * m / 40.0, 1) if p.get("per40_pts") is not None else None
         p["proj_rpg"] = round(p["per40_reb"] * m / 40.0, 1) if p.get("per40_reb") is not None else None
@@ -955,16 +1022,18 @@ def optimal_lineup(conn, team_id):
             "remaining 3 starting spots go to the next-best composite scores regardless of position, so a "
             "3-guard/2-frontcourt five (common in real women's college basketball) happens naturally whenever "
             "that's who scores best. Sixth Man is the next-best player not in the starting 5, no positional "
-            "requirement. A player is only eligible for Starter or Sixth Man if she isn't out-played in real "
+            "requirement. A player is only eligible for Starter or Sixth Man if they aren't out-played in real "
             f"minutes/game by {LINEUP_MAX_OUT_MINUTED_BY + 1}+ teammates -- an elite composite score in very "
-            "limited minutes doesn't make someone a realistic starter. Every player's Minutes below is her real "
-            "season average minutes/game, scaled by one constant factor so the full roster adds up to a real "
-            "game's 200 total player-minutes (5 on the floor x 40 minutes) -- her real relative playing time is "
-            "preserved, just normalized to one game. PPG/RPG/APG/SPG/BPG/TOPG are her real per-40 rates applied "
-            "to that scaled minutes figure; Summit Score/TS%/FG% are rate-based and don't change with minutes, "
-            "so they're her real season values. This is a data-driven suggestion based only on real box-score "
-            "production, not a coaching decision -- it doesn't know about chemistry, matchups, health, or "
-            "anything off the stat sheet."
+            "limited minutes doesn't make someone a realistic starter. Every player's Minutes below is their "
+            "real total minutes divided by the TEAM's games this season (not their own games played), then "
+            "squared up so the full roster adds up to a real game's 200 total player-minutes (5 on the floor x "
+            "40 minutes) -- a player who suited up all season lands at essentially their real average minutes, "
+            "not below it, while a player who missed real time (injury, midseason transfer) is correctly "
+            "discounted rather than credited a full share of minutes they didn't play all season. PPG/RPG/APG/"
+            "SPG/BPG/TOPG are their real per-40 rates applied to that minutes figure; Summit Score/TS%/FG% are "
+            "rate-based and don't change with minutes, so they're their real season values. This is a "
+            "data-driven suggestion based only on real box-score production, not a coaching decision -- it "
+            "doesn't know about chemistry, matchups, health, or anything off the stat sheet."
         ),
     )
 
@@ -1710,8 +1779,8 @@ def leap_candidates(conn, team_id, role=None, minutes=None, limit=8, min_games=5
         candidates=chosen,
         candidates_considered=len(candidates),
         note=(
-            "Ranked by the jump between each candidate's CURRENT Summit Score and her PROJECTED Summit "
-            "Score if she transferred to this team in this role -- not by raw projected value, so this "
+            "Ranked by the jump between each candidate's CURRENT Summit Score and their PROJECTED Summit "
+            "Score if they transferred to this team in this role -- not by raw projected value, so this "
             "surfaces the biggest statistical step-ups, not just whoever's already elite. No more than "
             f"{MAX_PER_SCHOOL} candidates from the same current school are allowed into the pool, so this "
             "doesn't turn into the same 2-3 programs' rosters every time. Sampled from the top pool of "
@@ -2066,7 +2135,7 @@ def season_jump_leaderboard(conn, season_from=None, season_to=None, min_games=5,
 
     return dict(
         season_from=season_from, season_to=season_to, min_games=min_games,
-        note=(f"Compares each player's real {season_from} season to her real {season_to} season (both must "
+        note=(f"Compares each player's real {season_from} season to their real {season_to} season (both must "
               f"clear {min_games} games and a full, non-limited-sample profile) -- ranked by the change in "
               f"Summit Score, biggest jump first. `transferred` flags a player whose team changed between "
               f"the two seasons (the jump could be a real transfer, or just a big year-over-year improvement "
@@ -2304,7 +2373,7 @@ def standout_projections(conn, level, target_level="High-Major", min_games=8, li
         ),
         projected_minutes_note=(
             "projected_minutes is each player's own auto-projected minutes at the synthetic target's "
-            "strength (her current minutes, scaled for the level jump) -- no role or target-roster minutes "
+            "strength (their current minutes, scaled for the level jump) -- no role or target-roster minutes "
             "were applied, since the target here is a synthetic average team, not a real roster with its "
             "own rotation to slot into."
         ),
@@ -2786,7 +2855,7 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, min_games=15, 
         ))
 
     common_note = (
-        "Each player's own games are split at the midpoint of HER games played this season (not the "
+        "Each player's own games are split at the midpoint of THEIR games played this season (not the "
         "calendar midpoint). A missed-games injury early in the year doesn't skew this the way splitting "
         "by calendar date would. First/second-half PPG, RPG, APG, TS%, MPG, and TOPG are all shown on "
         f"every row for context regardless of which stat is driving a given ranking. TS% needs at least "
@@ -2825,7 +2894,7 @@ def back_half_leaderboard(conn, level=None, min_games_per_half=5, min_games=15, 
     return dict(
         level_filter=level, season=season, min_games_per_half=min_games_per_half,
         min_games=min_games, min_mpg=min_mpg, sort=sort,
-        note=f"{common_note} This list is ranked by {stat_label} change from her first half to her second half.",
+        note=f"{common_note} This list is ranked by {stat_label} change from their first half to their second half.",
         players=_ranked(sort),
     )
 

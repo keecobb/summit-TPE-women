@@ -11,7 +11,15 @@ import ThemeToggle from "./ThemeToggle";
 // browse -- unlike a /teams/{id} or /players/{id} detail page, a bare
 // listing page has no sport-specific ID embedded in the path, so it's never
 // a dead link in the other sport.
-const SPORT_SECTIONS = ["tpe", "team-fits", "compare", "data", "players", "teams", "conferences"] as const;
+// "glossary"/"about"/"contact" are content-identical across sports (see
+// app/[sport]/about|contact|glossary/page.tsx) but still live under the
+// [sport]/ segment so the URL always carries the current sport -- without
+// that, navigating to one of these reset the nav's sport context back to
+// women's on your next click (see ARCHITECTURE_HOSTING_PLAN.md's phase 16
+// follow-up).
+const SPORT_SECTIONS = [
+  "tpe", "team-fits", "compare", "data", "players", "teams", "conferences", "glossary", "about", "contact",
+] as const;
 
 const LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
   { section: "tpe", label: "Transfer Projection" },
@@ -23,10 +31,10 @@ const LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
   // { section: "conferences", label: "Conferences" }, // hidden for now -- pages still live, just unlinked
 ];
 
-const STATIC_LINKS: { href: string; label: string }[] = [
-  { href: "/glossary", label: "Glossary" },
-  { href: "/about", label: "About" },
-  { href: "/contact", label: "Contact" },
+const STATIC_LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
+  { section: "glossary", label: "Glossary" },
+  { section: "about", label: "About" },
+  { section: "contact", label: "Contact" },
 ];
 
 // Client component only for the small bit of interactivity (open/close on
@@ -37,12 +45,11 @@ export default function MobileNav() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
-  // Path shape is either /{sport}/{section}/... (sport-scoped) or a static
-  // top-level route like /about that has no sport segment at all. Default
-  // to "women" when there's no sport segment in the current path (matches
-  // the home page staying hardcoded to women's, per
-  // ARCHITECTURE_HOSTING_PLAN.md), so the nav always has a sensible sport
-  // to link into rather than a broken/undefined one.
+  // Every real page on the site now lives under /{sport}/... (including
+  // home, about, contact, and glossary -- see ARCHITECTURE_HOSTING_PLAN.md's
+  // phase 16 follow-up), so this should always find a sport segment in
+  // practice. The "women" default only matters for a legacy pre-split
+  // route (e.g. a bare /teams bookmark) that hasn't redirected yet.
   const segments = pathname.split("/").filter(Boolean);
   const currentSport = segments[0] === "women" || segments[0] === "men" ? segments[0] : "women";
   const otherSport = currentSport === "women" ? "men" : "women";
@@ -61,35 +68,47 @@ export default function MobileNav() {
 
   return (
     <>
-      <div className={`links${open ? " open" : ""}`}>
-        {LINKS.map((l) => (
-          <Link key={l.section} href={`/${currentSport}/${l.section}`} onClick={() => setOpen(false)}>
-            {l.label}
-          </Link>
-        ))}
-        {STATIC_LINKS.map((l) => (
-          <Link key={l.href} href={l.href} onClick={() => setOpen(false)}>
-            {l.label}
-          </Link>
-        ))}
+      {/* .nav-panel wraps the links, sport toggle, and theme toggle together
+          -- on desktop it's `display: contents` (see globals.css) so its
+          children flow directly in the header's flex row exactly as before.
+          On mobile, this whole panel collapses behind the hamburger instead
+          of just the link list, so the collapsed header only shows the
+          brand + hamburger -- previously the sport toggle and theme toggle
+          stayed visible in the header row at every width, crowding it next
+          to the brand mark and hamburger button even before the menu opened. */}
+      <div className={`nav-panel${open ? " open" : ""}`}>
+        <div className="nav-panel-controls">
+          <div className="sport-toggle" role="group" aria-label="Choose sport">
+            <Link
+              href={currentSport === "women" ? pathname : otherSportHref}
+              className={`sport-toggle-option${currentSport === "women" ? " active" : ""}`}
+              aria-current={currentSport === "women" ? "page" : undefined}
+            >
+              Women&apos;s
+            </Link>
+            <Link
+              href={currentSport === "men" ? pathname : otherSportHref}
+              className={`sport-toggle-option${currentSport === "men" ? " active" : ""}`}
+              aria-current={currentSport === "men" ? "page" : undefined}
+            >
+              Men&apos;s
+            </Link>
+          </div>
+          <ThemeToggle />
+        </div>
+        <div className="links">
+          {LINKS.map((l) => (
+            <Link key={l.section} href={`/${currentSport}/${l.section}`} onClick={() => setOpen(false)}>
+              {l.label}
+            </Link>
+          ))}
+          {STATIC_LINKS.map((l) => (
+            <Link key={l.section} href={`/${currentSport}/${l.section}`} onClick={() => setOpen(false)}>
+              {l.label}
+            </Link>
+          ))}
+        </div>
       </div>
-      <div className="sport-toggle" role="group" aria-label="Choose sport">
-        <Link
-          href={currentSport === "women" ? pathname : otherSportHref}
-          className={`sport-toggle-option${currentSport === "women" ? " active" : ""}`}
-          aria-current={currentSport === "women" ? "page" : undefined}
-        >
-          Women&apos;s
-        </Link>
-        <Link
-          href={currentSport === "men" ? pathname : otherSportHref}
-          className={`sport-toggle-option${currentSport === "men" ? " active" : ""}`}
-          aria-current={currentSport === "men" ? "page" : undefined}
-        >
-          Men&apos;s
-        </Link>
-      </div>
-      <ThemeToggle />
       <button
         type="button"
         className="nav-toggle"

@@ -6,6 +6,7 @@ import type {
   PlayerGameLogs, PlayerGameLogRow, RoleTranslation,
 } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
+import type { Tier } from "@/lib/types";
 import SeasonGameLog from "@/components/SeasonGameLog";
 import PlayerCard from "@/components/PlayerCard";
 import PerGameProductionCard from "@/components/PerGameProductionCard";
@@ -109,8 +110,6 @@ async function OverviewTab({ sport, id, player }: { sport: string; id: string; p
 
       <PerGameProductionCard player={player} />
 
-      {roleTranslation && <RoleTranslationCard data={roleTranslation} />}
-
       <div className="card">
         <h2>
           Key Stats
@@ -125,6 +124,8 @@ async function OverviewTab({ sport, id, player }: { sport: string; id: string; p
         </p>
         <PlayerRadarChart player={player} sport={sport} />
       </div>
+
+      {roleTranslation && <RoleTranslationCard data={roleTranslation} />}
     </div>
   );
 }
@@ -339,6 +340,9 @@ async function SplitsTab({ sport, id, player }: { sport: string; id: string; pla
         </span>
       </h2>
       <p className="section-note">{splits.season} season, {splits.total_games} games logged.</p>
+
+      <SplitsTrendChart splits={splits} />
+
       <div className="table-scroll">
         <table>
           <thead>
@@ -393,6 +397,103 @@ function SplitRow({ label, row }: { label: string; row: OpponentTierSplit | null
       <td>{row.avg_minutes.toFixed(1)}</td>
       <td>{row.fg_pct != null ? `${row.fg_pct.toFixed(1)}%` : "--"}</td>
     </tr>
+  );
+}
+
+// Performance-vs-opponent-strength line chart -- one line per stat (PPG/
+// RPG/APG), plotted across the tiers this player has real games against,
+// ordered strongest opponent to weakest (TIERS is already High-Major ->
+// Mid-Major -> Low-Major) so the shape reads left-to-right as "tougher
+// competition" to "weaker competition," same idea as the reference layout
+// this was modeled after. Only uses by_opponent_tier (not vs_top50/last10,
+// which are different cuts, not more points on the same strength gradient).
+// Same plain-SVG-with-<title>-tooltips pattern as SeasonTrendChart above --
+// each stat is scaled to its OWN max across the plotted tiers (same idea as
+// ProjectionCompareChart's per-row scaling) since PPG/RPG/APG sit on very
+// different numeric ranges and a shared scale would flatten RPG/APG to
+// almost nothing next to PPG.
+function SplitsTrendChart({ splits }: { splits: PlayerSplits }) {
+  const points = TIERS
+    .map((tier) => ({ tier, row: splits.by_opponent_tier[tier] }))
+    .filter((p): p is { tier: Tier; row: OpponentTierSplit } => p.row != null);
+
+  if (points.length < 2) {
+    return (
+      <p className="section-note" style={{ marginBottom: 20 }}>
+        Not enough opponent-tier variety in this season&apos;s games to chart a performance trend -- see the
+        table below for what is on record.
+      </p>
+    );
+  }
+
+  const width = 560;
+  const height = 220;
+  const padX = 50;
+  const padTop = 56;
+  const padBottom = 34;
+  const stepX = points.length > 1 ? (width - padX * 2) / (points.length - 1) : 0;
+
+  // Note: --accent IS --gold (see globals.css), so PPG and APG must not
+  // both pull from that pair or their lines/labels render identically and
+  // overlap illegibly wherever the two series cross. Three genuinely
+  // distinct tones from the site's green/gold system: gold (PPG), the
+  // brighter brand green (RPG), the deeper brand green (APG).
+  const series: { key: string; label: string; color: string; get: (r: OpponentTierSplit) => number }[] = [
+    { key: "ppg", label: "PPG", color: "var(--gold)", get: (r) => r.avg_points },
+    { key: "rpg", label: "RPG", color: "var(--good)", get: (r) => r.avg_rebounds },
+    { key: "apg", label: "APG", color: "var(--green)", get: (r) => r.avg_assists },
+  ];
+
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <svg width="100%" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Performance vs opponent strength">
+        {series.map((s, si) => {
+          const values = points.map((p) => s.get(p.row));
+          const max = Math.max(...values, 0.0001);
+          const coords = points.map((p, i) => {
+            const v = s.get(p.row);
+            const x = padX + i * stepX;
+            const y = height - padBottom - (v / max) * (height - padTop - padBottom);
+            return { x, y, v, tier: p.tier };
+          });
+          const path = coords.map((c, i) => `${i === 0 ? "M" : "L"} ${c.x.toFixed(1)} ${c.y.toFixed(1)}`).join(" ");
+          // Each series' value labels are offset by a different amount above
+          // its point (si * 13px) -- 3 independently-scaled series can still
+          // land at nearly the same y for a given tier, and with only 2 hues
+          // in the site's palette (see the series color comment above),
+          // stacking the labels vertically instead of overlapping them in
+          // place is what actually keeps all 3 numbers legible.
+          const labelOffset = 10 + si * 17;
+          return (
+            <g key={s.key}>
+              <path d={path} fill="none" stroke={s.color} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+              {coords.map((c, i) => (
+                <g key={i}>
+                  <circle cx={c.x} cy={c.y} r={4} fill={s.color} />
+                  <title>{`${s.label} vs ${c.tier}: ${c.v.toFixed(1)}`}</title>
+                  <text x={c.x} y={c.y - labelOffset} fontSize={10} textAnchor="middle" fill={s.color}>
+                    {c.v.toFixed(1)}
+                  </text>
+                </g>
+              ))}
+            </g>
+          );
+        })}
+        {points.map((p, i) => (
+          <text key={p.tier} x={padX + i * stepX} y={height - 12} fontSize={11} textAnchor="middle" fill="var(--text-dim)">
+            vs. {tierAbbrev(p.tier)}
+          </text>
+        ))}
+      </svg>
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 2 }}>
+        {series.map((s) => (
+          <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: s.color, display: "inline-block" }} />
+            {s.label}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

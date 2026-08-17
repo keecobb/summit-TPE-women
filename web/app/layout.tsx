@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { Analytics } from "@vercel/analytics/next";
 import MobileNav from "@/components/MobileNav";
+import BrandLink from "@/components/BrandLink";
+import FooterNav from "@/components/FooterNav";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -42,12 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <header className="site-header">
           <nav>
-            <Link href="/" className="brand">
-              {/* eslint-disable-next-line @next/next/no-img-element -- small fixed-size
-                  brand mark; next/image's extra runtime isn't worth it here. */}
-              <img src="/summit-tpe-mark.png" alt="Summit TPE" />
-              Summit <span>TPE</span>
-            </Link>
+            <BrandLink />
             <MobileNav />
           </nav>
         </header>
@@ -71,8 +67,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
           <div>
             Summit TPE by Estrella Works &middot; team ratings, Summit Scores, and transfer projections, refreshed
-            periodically from the Summit TPE pipeline. &middot; <Link href="/about">About</Link> &middot;{" "}
-            <Link href="/contact">Contact</Link>
+            periodically from the Summit TPE pipeline. &middot; <FooterNav />
           </div>
           <div style={{ marginTop: 8 }}>
             <a href="https://twitter.com/SummitTPE" target="_blank" rel="noopener noreferrer">

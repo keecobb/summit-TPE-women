@@ -11,6 +11,12 @@ import FlowSteps from "@/components/FlowSteps";
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 export const dynamic = "force-dynamic";
 
+// Search-box hint text is sport-specific -- a women's example name in the
+// men's search box (or vice versa) reads like the men's side is an
+// afterthought bolted onto a women's-first product. Same pattern as
+// SPORT_LABEL on the home page.
+const SPORT_HINT_PLAYER: Record<string, string> = { women: "Anguera", men: "Boozer" };
+
 interface SP {
   search?: string;
   team_id?: string;
@@ -63,7 +69,7 @@ async function StartView({ sp, sport }: { sp: SP; sport: string }) {
               sport={sport}
               kind="players"
               inputId="tpe-player-search"
-              placeholder="e.g. Anguera"
+              placeholder={`e.g. ${SPORT_HINT_PLAYER[sport] ?? SPORT_HINT_PLAYER.women}`}
               mode="navigate"
               hrefTemplate={`/${sport}/tpe?player_id={id}`}
               defaultValue={sp.search}

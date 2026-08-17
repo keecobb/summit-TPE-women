@@ -422,9 +422,9 @@ def project(sport: str,
 @router.get("/players/{player_id}/role-translation", dependencies=[Depends(require_api_key)])
 def get_role_translation(sport: str,
     player_id: int):
-    """What her real per-40 production would translate to at each of the 4
-    role-based minutes levels on her OWN CURRENT team -- a same-team,
-    same-competition-level "what if she played a different role" view,
+    """What their real per-40 production would translate to at each of the 4
+    role-based minutes levels on their OWN CURRENT team -- a same-team,
+    same-competition-level "what if they played a different role" view,
     distinct from /project (which changes competition level via a target
     school). See role_translation()'s docstring in projection.py for why
     this is deliberately NOT built on the transfer-calibrated projection
