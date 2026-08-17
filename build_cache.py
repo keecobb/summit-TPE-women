@@ -86,6 +86,35 @@ def header_map(ws):
         if cell.value is not None and str(cell.value).strip():
             mapping[str(cell.value).strip()] = cell.column
     return mapping
+
+
+def _clean_text(value):
+    """Normalize a free-text cell (Position/Class/Height) to a trimmed
+    string, or None for blank/whitespace-only/missing. Used so an empty
+    string from one sheet doesn't win over a real value from the other --
+    "" and None are both treated as "no value" everywhere below."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value if value is not None else None
+
+
+def _resolve_field(*values):
+    """Return the first non-blank value, PlayerSeasons-sheet value first.
+    Position/Class/Height should come from the current season's own
+    PlayerSeasons row whenever that row has them -- it's the season-scoped
+    source of truth -- but PlayerSeasons is occasionally blank on one of
+    these fields for a player the roster/bio Players sheet DOES have real
+    data for (and vice versa for Height, which historically was only ever
+    read off the Players sheet). Falling back through every available
+    source, in priority order, is what actually gets a player's profile to
+    stop showing blank fields instead of just moving which sheet is
+    trusted first."""
+    for v in values:
+        v = _clean_text(v)
+        if v is not None:
+            return v
+    return None
  
  
 # Column name(s) to look for on the Players sheet for transfer-portal
@@ -174,6 +203,7 @@ def load(path):
  
     ps_ws = wb["PlayerSeasons"]
     ph = header_map(ps_ws)
+    has_ps_height_col = "Height" in ph
     player_season = {}
     players_with_any_season = set()
     for row in ps_ws.iter_rows(min_row=2, values_only=True):
@@ -182,10 +212,16 @@ def load(path):
             continue
         player_season[(pid, season)] = dict(
             team_id=row[ph["Team ID"] - 1], division=row[ph["Division"] - 1],
-            position=row[ph["Position"] - 1], class_year=row[ph["Class"] - 1],
+            position=_clean_text(row[ph["Position"] - 1]), class_year=_clean_text(row[ph["Class"] - 1]),
+            # Height is read off PlayerSeasons too, when the sheet has that
+            # column -- season-scoped, so it's preferred over the Players
+            # sheet's single current-snapshot Height below when both exist.
+            height=(_clean_text(row[ph["Height"] - 1]) if has_ps_height_col else None),
         )
         players_with_any_season.add(pid)
-    print(f"  PlayerSeasons: {len(player_season)}")
+    print(f"  PlayerSeasons: {len(player_season)}"
+          + ("" if has_ps_height_col else " (no Height column on PlayerSeasons -- falling back to the "
+                                           "Players sheet's Height for every season)"))
  
     players_ws = wb["Players"]
     plh = header_map(players_ws)
@@ -398,7 +434,14 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
         ps = data["player_season"].get((pid, season))
         if ps is None:
             continue
-        position = ps["position"]
+        # Position is season-scoped on PlayerSeasons, so it's the preferred
+        # source -- but fall back to the Players sheet's current-roster
+        # Position (sheet_meta, only ever passed in for the CURRENT season,
+        # never a historical one -- see this function's docstring) so a
+        # blank PlayerSeasons cell doesn't dump a real rostered player into
+        # the generic "ALL" composite-scoring bucket for no reason.
+        sm = (sheet_meta or {}).get(pid, {})
+        position = _resolve_field(ps["position"], sm.get("position"))
         bucket = POSITION_TO_BUCKET.get(position, "ALL")
         minutes = max(r["minutes"], 1)
         scale = per40_scale(minutes)
@@ -429,8 +472,9 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
             blk=r["blk"], stl=r["stl"], tov=r["tov"], fgm=r["fgm"],
         ))
         if pid not in per_player_meta:
+            resolved_class = _resolve_field(ps["class_year"], sm.get("class_year"))
             per_player_meta[pid] = dict(team_id=ps["team_id"], division=ps["division"],
-                                         position=position, class_year=ps["class_year"],
+                                         position=position, class_year=resolved_class,
                                          in_transfer_portal=data["player_transfer_portal"].get(pid))
  
     season_raw = {}
@@ -458,6 +502,14 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
     covered_pids = set()
     for pid, glist in per_player_games.items():
         meta = per_player_meta[pid]
+        # Height: prefer this season's own PlayerSeasons row (when the sheet
+        # has a Height column at all) over the Players sheet's single
+        # current-snapshot Height, then fall back to the Players sheet if
+        # PlayerSeasons didn't have it for this player/season.
+        resolved_height = _resolve_field(
+            data["player_season"].get((pid, season), {}).get("height"),
+            data["player_height"].get(pid),
+        )
         n_games = len(glist)
         total_min = sum(g["minutes"] for g in glist)
         thin = n_games < MIN_GAMES_FOR_PROFILE or total_min < MIN_TOTAL_MINUTES_FOR_PROFILE
@@ -477,8 +529,8 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
         fg_pct = (total_fgm / total_fga) if total_fga >= 15 else None
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
-            height=data["player_height"].get(pid),
-            height_in=parse_height_inches(data["player_height"].get(pid)),
+            height=resolved_height,
+            height_in=parse_height_inches(resolved_height),
             team_id=meta["team_id"], division=meta["division"], position=meta["position"],
             class_year=meta["class_year"], in_transfer_portal=meta["in_transfer_portal"],
             season=season, games=n_games,
@@ -514,12 +566,16 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
     for (pid, s), ps in data["player_season"].items():
         if s != season or pid in covered_pids:
             continue
+        sm = (sheet_meta or {}).get(pid, {})
+        resolved_height = _resolve_field(ps.get("height"), data["player_height"].get(pid))
+        resolved_position = _resolve_field(ps["position"], sm.get("position"))
+        resolved_class = _resolve_field(ps["class_year"], sm.get("class_year"))
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
-            height=data["player_height"].get(pid),
-            height_in=parse_height_inches(data["player_height"].get(pid)),
-            team_id=ps["team_id"], division=ps["division"], position=ps["position"],
-            class_year=ps["class_year"], in_transfer_portal=data["player_transfer_portal"].get(pid),
+            height=resolved_height,
+            height_in=parse_height_inches(resolved_height),
+            team_id=ps["team_id"], division=ps["division"], position=resolved_position,
+            class_year=resolved_class, in_transfer_portal=data["player_transfer_portal"].get(pid),
             season=season, games=0, total_minutes=0,
             avg_minutes=None, ppg=None, rpg=None, apg=None, bpg=None, spg=None, topg=None,
             ts_pct=None, fg_pct=None,
