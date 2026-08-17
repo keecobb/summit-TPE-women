@@ -10,7 +10,7 @@ import { useRouter, usePathname, useSearchParams } from "next/navigation";
 // needed on the page itself beyond reading `sort`/`dir` back out of
 // searchParams when building its own data fetch/sort.
 //
-// Resets `offset` to 0 on every sort change -- re-sorting a paginated list
+// Resets `page` to 1 on every sort change -- re-sorting a paginated list
 // and landing on page 3 of the NEW order (which is almost certainly not
 // where the player you were looking at moved to) is more confusing than
 // just returning to page 1.
@@ -36,7 +36,7 @@ export default function SortableTh({
     const params = new URLSearchParams(searchParams.toString());
     params.set("sort", column);
     params.set("dir", nextDir);
-    params.delete("offset");
+    params.delete("page");
     // scroll: false -- re-sorting a table shouldn't jump the viewport back
     // to the top of the page, same reasoning as FilterForm's submit handler.
     router.push(`${pathname}?${params.toString()}`, { scroll: false });

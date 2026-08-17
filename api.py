@@ -327,8 +327,47 @@ def list_players(sport: str,
     for d in result:
         d["games_started"] = gs_by_player.get(d["player_id"])
     return result
- 
- 
+
+
+@router.get("/players/count", dependencies=[Depends(require_api_key)])
+def count_players(sport: str,
+    search: str | None = Query(None, description="Case-insensitive substring match on player name"),
+    team_id: int | None = None,
+    position: str | None = Query(None, description="Exact match, e.g. G/F/C."),
+    class_year: str | None = Query(None, description="Exact match, e.g. FR/SO/JR/SR/GR."),
+    min_height_in: int | None = Query(None),
+    max_height_in: int | None = Query(None),
+):
+    # Total row count for the same filters list_players() accepts (minus
+    # sort/limit/offset, which don't affect how many rows match) -- lets the
+    # frontend build numbered/first-to-last pagination without having to
+    # fetch every matching row just to count them.
+    conn = get_conn(sport)
+    clauses, params = [], []
+    if search:
+        clauses.append("p.name LIKE ?")
+        params.append(f"%{search}%")
+    if team_id is not None:
+        clauses.append("p.team_id = ?")
+        params.append(team_id)
+    if position:
+        clauses.append("p.position = ?")
+        params.append(position)
+    if class_year:
+        clauses.append("p.class_year = ?")
+        params.append(class_year)
+    if min_height_in is not None:
+        clauses.append("p.height_in >= ?")
+        params.append(min_height_in)
+    if max_height_in is not None:
+        clauses.append("p.height_in <= ?")
+        params.append(max_height_in)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    total = conn.execute(f"SELECT COUNT(*) FROM players p {where}", params).fetchone()[0]
+    conn.close()
+    return {"total": total}
+
+
 @router.get("/players/{player_id}", dependencies=[Depends(require_api_key)])
 def get_player_detail(sport: str,
     player_id: int):

@@ -4,11 +4,18 @@ import type { Team } from "@/lib/types";
 import { TIERS, tierAbbrev } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
 import FilterForm from "@/components/FilterForm";
+import Pagination from "@/components/Pagination";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 export const dynamic = "force-dynamic";
+
+const DEFAULT_PAGE_SIZE = 25;
+// "All" (Infinity) skips slicing entirely -- /teams already fetches the
+// whole filtered set in one call (limit 500 covers every D1 team, see the
+// comment below), so showing "All" doesn't cost an extra request.
+const PAGE_SIZE_OPTIONS: (number | "All")[] = [25, 50, 100, "All"];
 
 type TeamWithRank = Team & { net_rank: number | null };
 
@@ -33,10 +40,13 @@ export default async function TeamsPage({
   searchParams,
 }: {
   params: Promise<{ sport: string }>;
-  searchParams: Promise<{ search?: string; tier?: string; conference?: string; sort?: string; dir?: string }>;
+  searchParams: Promise<{ search?: string; tier?: string; conference?: string; sort?: string; dir?: string; page?: string; size?: string }>;
 }) {
   const { sport } = await params;
   const sp = await searchParams;
+
+  const sizeOpt = PAGE_SIZE_OPTIONS.find((o) => String(o) === sp.size) ?? DEFAULT_PAGE_SIZE;
+  const page = Math.max(1, Number(sp.page ?? 1) || 1);
 
   // Conference is a single-select, pushed down to the API as a param --
   // /teams' `conference` param is already an exact match on one conference,
@@ -80,6 +90,25 @@ export default async function TeamsPage({
     });
   }
 
+  const total = rankedTeams.length;
+  const totalPages = sizeOpt === "All" ? 1 : Math.max(1, Math.ceil(total / sizeOpt));
+  const clampedPage = Math.min(page, totalPages);
+  const pageStart = sizeOpt === "All" ? 0 : (clampedPage - 1) * sizeOpt;
+  const pageTeams = sizeOpt === "All" ? rankedTeams : rankedTeams.slice(pageStart, pageStart + sizeOpt);
+
+  const hrefFor = (nextPage: number, nextSize: number | "All" = sizeOpt) => {
+    const p = new URLSearchParams();
+    if (sp.search) p.set("search", sp.search);
+    if (sp.tier) p.set("tier", sp.tier);
+    if (sp.conference) p.set("conference", sp.conference);
+    if (sp.sort) p.set("sort", sp.sort);
+    if (sp.dir) p.set("dir", sp.dir);
+    if (nextSize !== DEFAULT_PAGE_SIZE) p.set("size", String(nextSize));
+    if (nextPage > 1) p.set("page", String(nextPage));
+    const qs = p.toString();
+    return qs ? `/${sport}/teams?${qs}` : `/${sport}/teams`;
+  };
+
   return (
     <div>
       <h1>Teams</h1>
@@ -120,6 +149,11 @@ export default async function TeamsPage({
             ))}
           </select>
         </div>
+        {/* Carries the current page size through a filter submit -- FilterForm
+            only serializes its own fields, so without this hidden field a
+            visitor who picked "100 per page" would get silently bumped back
+            to the 25-per-page default the next time they searched/filtered. */}
+        <input type="hidden" name="size" value={sizeOpt} />
         <button className="btn btn-primary" type="submit">
           Filter
         </button>
@@ -133,9 +167,10 @@ export default async function TeamsPage({
         </p>
       )}
 
-      {rankedTeams.length === 0 ? (
+      {total === 0 ? (
         <p className="empty-state">No teams match that filter.</p>
       ) : (
+        <>
         <div className="table-scroll">
         <table>
           <thead>
@@ -149,7 +184,7 @@ export default async function TeamsPage({
             </tr>
           </thead>
           <tbody>
-            {rankedTeams.map((t) => (
+            {pageTeams.map((t) => (
               <tr key={t.team_id}>
                 <td>
                   <Link href={`/${sport}/teams/${t.team_id}`}>{t.name}</Link>
@@ -170,6 +205,25 @@ export default async function TeamsPage({
           </tbody>
         </table>
         </div>
+
+        <div className="pagination-bar">
+          <p className="section-note" style={{ margin: 0 }}>
+            Showing {total === 0 ? 0 : pageStart + 1}&ndash;{Math.min(pageStart + pageTeams.length, total)} of {total}
+            &nbsp;&middot;&nbsp; Show:{" "}
+            {PAGE_SIZE_OPTIONS.map((opt, i) => (
+              <span key={opt}>
+                {i > 0 && " / "}
+                {opt === sizeOpt ? (
+                  <strong>{opt}</strong>
+                ) : (
+                  <Link href={hrefFor(1, opt)}>{opt}</Link>
+                )}
+              </span>
+            ))}
+          </p>
+          <Pagination page={clampedPage} totalPages={totalPages} buildHref={(p) => hrefFor(p)} />
+        </div>
+        </>
       )}
     </div>
   );

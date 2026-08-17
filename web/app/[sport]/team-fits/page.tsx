@@ -12,7 +12,7 @@ import RoleStat from "@/components/RoleStat";
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 export const dynamic = "force-dynamic";
 
-const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"];
+const CLASS_YEARS = ["FR", "SO", "JR", "SR"];
 const POSITIONS = ["G", "F", "C"];
 
 interface SP {

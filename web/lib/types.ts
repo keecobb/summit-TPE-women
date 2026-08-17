@@ -291,7 +291,7 @@ export const LEADERBOARD_STAT_LABELS: Record<string, string> = {
 // class/position filter dropdowns on the Data page. Matches the exact
 // values stored in players.class_year / players.position (see
 // API_REFERENCE.md).
-export const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"] as const;
+export const CLASS_YEARS = ["FR", "SO", "JR", "SR"] as const;
 export const POSITIONS = ["G", "F", "C"] as const;
 
 export interface StandoutPlayer {

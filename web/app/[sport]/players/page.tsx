@@ -3,31 +3,24 @@ import { apiFetch } from "@/lib/api";
 import type { Player } from "@/lib/types";
 import SortableTh from "@/components/SortableTh";
 import FilterForm from "@/components/FilterForm";
+import Pagination from "@/components/Pagination";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
 // ARCHITECTURE_HOSTING_PLAN.md's caching-fix notes for the full writeup).
 export const dynamic = "force-dynamic";
 
-const PAGE_SIZE = 25;
-const CLASS_YEARS = ["FR", "SO", "JR", "SR", "GR"];
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
+const CLASS_YEARS = ["FR", "SO", "JR", "SR"];
 const POSITIONS = ["G", "F", "C"];
-
-// 4'6" (54") to 7'0" (84") in 1" steps -- covers every real height on
-// record with room to spare, shown as a plain feet/inches label so a
-// visitor doesn't have to think in raw inches to use the filter.
-const HEIGHT_OPTIONS = Array.from({ length: 84 - 54 + 1 }, (_, i) => {
-  const inches = 54 + i;
-  return { value: inches, label: `${Math.floor(inches / 12)}' ${inches % 12}"` };
-});
 
 interface SP {
   search?: string;
   position?: string;
   class_year?: string;
-  min_height_in?: string;
-  max_height_in?: string;
-  offset?: string;
+  page?: string;
+  size?: string;
   sort?: string;
   dir?: string;
 }
@@ -35,32 +28,36 @@ interface SP {
 export default async function PlayersPage({ params, searchParams }: { params: Promise<{ sport: string }>; searchParams: Promise<SP> }) {
   const { sport } = await params;
   const sp = await searchParams;
-  const offset = Number(sp.offset ?? 0) || 0;
 
-  const players = await apiFetch<Player[]>(`/${sport}/players`, {
-    params: {
-      search: sp.search, position: sp.position, class_year: sp.class_year,
-      min_height_in: sp.min_height_in, max_height_in: sp.max_height_in,
-      limit: PAGE_SIZE, offset, sort: sp.sort, order: sp.dir,
-    },
-  });
+  const size = PAGE_SIZE_OPTIONS.includes(Number(sp.size)) ? Number(sp.size) : DEFAULT_PAGE_SIZE;
+  const page = Math.max(1, Number(sp.page ?? 1) || 1);
+  const offset = (page - 1) * size;
 
-  const hasNext = players.length === PAGE_SIZE;
-  const hasPrev = offset > 0;
+  const filterParams = { search: sp.search, position: sp.position, class_year: sp.class_year };
+
+  const [players, countResult] = await Promise.all([
+    apiFetch<Player[]>(`/${sport}/players`, {
+      params: { ...filterParams, limit: size, offset, sort: sp.sort, order: sp.dir },
+    }),
+    apiFetch<{ total: number }>(`/${sport}/players/count`, { params: filterParams }),
+  ]);
+
+  const total = countResult.total;
+  const totalPages = Math.max(1, Math.ceil(total / size));
   const anyThin = players.some((p) => !!p.thin_sample);
   const anyZeroGames = players.some((p) => (p.games ?? 0) === 0);
 
-  const paramsFor = (nextOffset: number) => {
+  const hrefFor = (nextPage: number, nextSize: number = size) => {
     const p = new URLSearchParams();
     if (sp.search) p.set("search", sp.search);
     if (sp.position) p.set("position", sp.position);
     if (sp.class_year) p.set("class_year", sp.class_year);
-    if (sp.min_height_in) p.set("min_height_in", sp.min_height_in);
-    if (sp.max_height_in) p.set("max_height_in", sp.max_height_in);
     if (sp.sort) p.set("sort", sp.sort);
     if (sp.dir) p.set("dir", sp.dir);
-    p.set("offset", String(nextOffset));
-    return `/${sport}/players?${p.toString()}`;
+    if (nextSize !== DEFAULT_PAGE_SIZE) p.set("size", String(nextSize));
+    if (nextPage > 1) p.set("page", String(nextPage));
+    const qs = p.toString();
+    return qs ? `/${sport}/players?${qs}` : `/${sport}/players`;
   };
 
   return (
@@ -68,9 +65,9 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
       <h1>Players</h1>
       <p className="subtitle">Search the current player pool. Sorted by Summit Score.</p>
       <p className="section-note" style={{ marginTop: -20, marginBottom: 20, maxWidth: "68ch" }}>
-        Filter by name, position, class, and/or a height range, then click any column header to sort by that
-        stat instead. Click a player&apos;s name to open their full profile -- season splits, trajectory, and
-        (once they have enough games on record) their best games of the year.
+        Filter by name, position, and/or class, then click any column header to sort by that stat instead.
+        Click a player&apos;s name to open their full profile -- season splits, trajectory, and (once they
+        have enough games on record) their best games of the year.
       </p>
 
       <FilterForm className="filter-form" action={`/${sport}/players`}>
@@ -100,28 +97,11 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
             ))}
           </select>
         </div>
-        <div className="field">
-          <label htmlFor="min_height_in">Min. height</label>
-          <select id="min_height_in" name="min_height_in" defaultValue={sp.min_height_in ?? ""}>
-            <option value="">Any</option>
-            {HEIGHT_OPTIONS.map((h) => (
-              <option key={h.value} value={h.value}>
-                {h.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="field">
-          <label htmlFor="max_height_in">Max. height</label>
-          <select id="max_height_in" name="max_height_in" defaultValue={sp.max_height_in ?? ""}>
-            <option value="">Any</option>
-            {HEIGHT_OPTIONS.map((h) => (
-              <option key={h.value} value={h.value}>
-                {h.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Carries the current page size through a filter submit -- FilterForm
+            only serializes its own fields, so without this hidden field a
+            visitor who picked "50 per page" would get silently bumped back
+            to the 10-per-page default the next time they searched/filtered. */}
+        <input type="hidden" name="size" value={size} />
         <button className="btn btn-primary" type="submit">
           Search
         </button>
@@ -198,17 +178,22 @@ export default async function PlayersPage({ params, searchParams }: { params: Pr
             </p>
           )}
 
-          <div className="pagination">
-            {hasPrev && (
-              <Link className="btn" href={paramsFor(Math.max(0, offset - PAGE_SIZE))}>
-                &larr; Previous
-              </Link>
-            )}
-            {hasNext && (
-              <Link className="btn" href={paramsFor(offset + PAGE_SIZE)}>
-                Next &rarr;
-              </Link>
-            )}
+          <div className="pagination-bar">
+            <p className="section-note" style={{ margin: 0 }}>
+              Showing {total === 0 ? 0 : offset + 1}&ndash;{Math.min(offset + players.length, total)} of {total}
+              &nbsp;&middot;&nbsp; Show:{" "}
+              {PAGE_SIZE_OPTIONS.map((opt, i) => (
+                <span key={opt}>
+                  {i > 0 && " / "}
+                  {opt === size ? (
+                    <strong>{opt}</strong>
+                  ) : (
+                    <Link href={hrefFor(1, opt)}>{opt}</Link>
+                  )}
+                </span>
+              ))}
+            </p>
+            <Pagination page={page} totalPages={totalPages} buildHref={(p) => hrefFor(p)} />
           </div>
         </>
       )}

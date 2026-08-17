@@ -640,8 +640,28 @@ tbody tr td:first-child a:hover {
 
 .pagination {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin-top: 20px;
+}
+
+.pagination-gap {
+  color: var(--text-dim);
+  padding: 0 2px;
+}
+
+.pagination-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.pagination-bar .pagination {
+  margin-top: 0;
 }
 
 .stat-grid {

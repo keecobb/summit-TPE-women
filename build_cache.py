@@ -57,7 +57,7 @@ from summit_calc import (
 # projection.py -- a team with a HIGH turnover rate has a weakness there,
 # not a strength, so its z-score gets flipped at read time.
 TEAM_PROFILE_STATS = ["per40_pts", "per40_reb", "per40_ast", "per40_blk", "per40_stl", "per40_tov"]
-TEAM_PROFILE_PCT_STATS = ["ts_pct", "fg_pct"]
+TEAM_PROFILE_PCT_STATS = ["ts_pct", "fg_pct", "tfg_pct"]
  
  
 _HEIGHT_RE = re.compile(r"^(\d+)'\s*(\d+)?")
@@ -335,6 +335,13 @@ def load(path):
             pf=row[gsh["Foul"] - 1] or 0, ast=row[gsh["Ast"] - 1] or 0, tov=row[gsh["To"] - 1] or 0,
             blk=row[gsh["Blk"] - 1] or 0, stl=row[gsh["Stl"] - 1] or 0, points=row[gsh["Points"] - 1] or 0,
             game_id=row[gsh["Game ID"] - 1],
+            # 3-point makes/attempts -- same "0 if the sheet doesn't have this
+            # column" fallback already used for game_log_rows below, so a
+            # workbook without 3FG columns still builds a cache (just with
+            # every player's tfg_pct landing on None, same as low-attempt
+            # players already do below).
+            tfgm=row[gsh["3FG M"] - 1] or 0 if "3FG M" in gsh else 0,
+            tfga=row[gsh["3FG A"] - 1] or 0 if "3FG A" in gsh else 0,
         ))
         # Persisted verbatim (not just used transiently for the season
         # aggregate above) for player-profile game logs and opponent-level
@@ -470,6 +477,7 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
             value=adjusted_value, weight=weight,
             minutes=minutes, points=r["points"], reb=r["reb"], ast=r["ast"], fga=r["fga"], fta=r["fta"],
             blk=r["blk"], stl=r["stl"], tov=r["tov"], fgm=r["fgm"],
+            tfgm=r["tfgm"], tfga=r["tfga"],
         ))
         if pid not in per_player_meta:
             resolved_class = _resolve_field(ps["class_year"], sm.get("class_year"))
@@ -524,9 +532,14 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
         total_stl = sum(g["stl"] for g in glist)
         total_tov = sum(g["tov"] for g in glist)
         total_fgm = sum(g["fgm"] for g in glist)
+        total_tfgm = sum(g["tfgm"] for g in glist)
+        total_tfga = sum(g["tfga"] for g in glist)
         true_shot_attempts = total_fga + 0.44 * total_fta
         ts_pct = (total_pts / (2 * true_shot_attempts)) if true_shot_attempts >= 15 else None
         fg_pct = (total_fgm / total_fga) if total_fga >= 15 else None
+        # Same >=15-attempt floor as fg_pct -- a 2-for-2 3-point season
+        # shouldn't display as a misleading 100.0%.
+        tfg_pct = (total_tfgm / total_tfga) if total_tfga >= 15 else None
         player_rows.append(dict(
             player_id=pid, name=data["player_name"].get(pid, f"Player {pid}"),
             height=resolved_height,
@@ -537,7 +550,7 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
             total_minutes=total_min,
             avg_minutes=total_min / n_games, ppg=total_pts / n_games, rpg=total_reb / n_games,
             apg=total_ast / n_games, bpg=total_blk / n_games, spg=total_stl / n_games,
-            topg=total_tov / n_games, ts_pct=ts_pct, fg_pct=fg_pct,
+            topg=total_tov / n_games, ts_pct=ts_pct, fg_pct=fg_pct, tfg_pct=tfg_pct,
             # Raw season totals, kept on the row (not exposed via the API --
             # players/player_history only insert the named columns below)
             # purely so compute_team_profiles() can sum real team production
@@ -546,6 +559,7 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
             _total_pts=total_pts, _total_reb=total_reb, _total_ast=total_ast,
             _total_blk=total_blk, _total_stl=total_stl, _total_tov=total_tov,
             _total_fgm=total_fgm, _total_fga=total_fga, _true_shot_attempts=true_shot_attempts,
+            _total_tfgm=total_tfgm, _total_tfga=total_tfga,
             per40_pts=total_pts / total_min * 40.0,
             per40_reb=total_reb / total_min * 40.0,
             per40_ast=total_ast / total_min * 40.0,
@@ -578,7 +592,7 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
             class_year=resolved_class, in_transfer_portal=data["player_transfer_portal"].get(pid),
             season=season, games=0, total_minutes=0,
             avg_minutes=None, ppg=None, rpg=None, apg=None, bpg=None, spg=None, topg=None,
-            ts_pct=None, fg_pct=None,
+            ts_pct=None, fg_pct=None, tfg_pct=None,
             per40_pts=None, per40_reb=None, per40_ast=None, per40_blk=None, per40_stl=None, per40_tov=None,
             hoop_score=None, hoop_score_raw=None,
             thin_sample=1,
@@ -631,7 +645,7 @@ def compute_season_profiles(data, season, sheet_meta=None, sport="women"):
                 class_year=meta.get("class_year"), in_transfer_portal=data["player_transfer_portal"].get(pid),
                 season=season, games=0, total_minutes=0,
                 avg_minutes=None, ppg=None, rpg=None, apg=None, bpg=None, spg=None, topg=None,
-                ts_pct=None, fg_pct=None,
+                ts_pct=None, fg_pct=None, tfg_pct=None,
                 per40_pts=None, per40_reb=None, per40_ast=None, per40_blk=None, per40_stl=None, per40_tov=None,
                 hoop_score=None, hoop_score_raw=None,
                 thin_sample=1,
@@ -717,6 +731,8 @@ def compute_team_profiles(player_rows, team_boxscore_games):
         acc[tid]["_total_fgm"] += p["_total_fgm"]
         acc[tid]["_total_fga"] += p["_total_fga"]
         acc[tid]["_true_shot_attempts"] += p["_true_shot_attempts"]
+        acc[tid]["_total_tfgm"] += p["_total_tfgm"]
+        acc[tid]["_total_tfga"] += p["_total_tfga"]
 
     rows = []
     for tid in teams_seen:
@@ -734,6 +750,7 @@ def compute_team_profiles(player_rows, team_boxscore_games):
             per40_tov=a["_total_tov"] / games,
             ts_pct=(a["_total_pts"] / (2 * a["_true_shot_attempts"])) if a["_true_shot_attempts"] > 0 else None,
             fg_pct=(a["_total_fgm"] / a["_total_fga"]) if a["_total_fga"] > 0 else None,
+            tfg_pct=(a["_total_tfgm"] / a["_total_tfga"]) if a["_total_tfga"] > 0 else None,
         )
         rows.append(row)
     return rows
@@ -842,7 +859,7 @@ def main():
             player_id INTEGER PRIMARY KEY, name TEXT, height TEXT, height_in INTEGER, team_id INTEGER, division TEXT,
             position TEXT, class_year TEXT, season TEXT, games INTEGER, total_minutes REAL,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
-            ts_pct REAL, fg_pct REAL,
+            ts_pct REAL, fg_pct REAL, tfg_pct REAL,
             per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
             hoop_score REAL, hoop_score_raw REAL,
             in_transfer_portal INTEGER, thin_sample INTEGER DEFAULT 0
@@ -852,7 +869,7 @@ def main():
         CREATE TABLE team_profile (
             team_id INTEGER PRIMARY KEY, roster_size INTEGER,
             per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
-            ts_pct REAL, fg_pct REAL
+            ts_pct REAL, fg_pct REAL, tfg_pct REAL
         )
     """)
     conn.execute("""
@@ -860,7 +877,7 @@ def main():
             player_id INTEGER, name TEXT, season TEXT, team_id INTEGER, team_name TEXT,
             division TEXT, position TEXT, class_year TEXT, games INTEGER, total_minutes REAL,
             avg_minutes REAL, ppg REAL, rpg REAL, apg REAL, bpg REAL, spg REAL, topg REAL,
-            ts_pct REAL, fg_pct REAL,
+            ts_pct REAL, fg_pct REAL, tfg_pct REAL,
             per40_pts REAL, per40_reb REAL, per40_ast REAL, per40_blk REAL, per40_stl REAL, per40_tov REAL,
             hoop_score REAL, hoop_score_raw REAL, thin_sample INTEGER DEFAULT 0,
             PRIMARY KEY (player_id, season)
@@ -873,19 +890,19 @@ def main():
     )
     conn.executemany(
         """INSERT INTO players VALUES (:player_id,:name,:height,:height_in,:team_id,:division,:position,:class_year,
-           :season,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :season,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,:tfg_pct,
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,
            :hoop_score,:hoop_score_raw,:in_transfer_portal,:thin_sample)""",
         player_rows,
     )
     conn.executemany(
         """INSERT INTO team_profile VALUES (:team_id,:roster_size,:per40_pts,:per40_reb,:per40_ast,
-           :per40_blk,:per40_stl,:per40_tov,:ts_pct,:fg_pct)""",
+           :per40_blk,:per40_stl,:per40_tov,:ts_pct,:fg_pct,:tfg_pct)""",
         team_profile_rows,
     )
     conn.executemany(
         """INSERT INTO player_history VALUES (:player_id,:name,:season,:team_id,:team_name,:division,
-           :position,:class_year,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,
+           :position,:class_year,:games,:total_minutes,:avg_minutes,:ppg,:rpg,:apg,:bpg,:spg,:topg,:ts_pct,:fg_pct,:tfg_pct,
            :per40_pts,:per40_reb,:per40_ast,:per40_blk,:per40_stl,:per40_tov,:hoop_score,:hoop_score_raw,:thin_sample)""",
         player_history_rows,
     )

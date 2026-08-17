@@ -266,6 +266,21 @@ ROLE_NAMES = ("starter", "sixth_man", "role_player", "depth_piece")
 # starter no matter how efficient her limited minutes were.
 LINEUP_MAX_OUT_MINUTED_BY = 3
 
+# optimal_lineup()-specific ranking weight -- how much of optimizer_score
+# comes from a player's real season-average production (points + rebounds +
+# assists + steals + blocks - turnovers per game) vs. her Summit Score
+# (hoop_score, an efficiency/quality composite). Was an even 0.5/0.5 blend;
+# raised to weight production more heavily so a player who genuinely
+# produces more for the team isn't ranked below a teammate who merely
+# scores higher on the efficiency-based Summit Score in the same or fewer
+# minutes -- suggesting a rotation is about maximizing what the team
+# actually puts on the board, not rewarding efficiency in isolation. Summit
+# Score keeps the remaining (1 - PRODUCTION_WEIGHT) share rather than being
+# dropped entirely -- it's still a real signal (two players with
+# near-identical production shouldn't be a coin flip), just no longer able
+# to override a genuine production gap the way a 50/50 blend could.
+PRODUCTION_WEIGHT = 0.75
+
 # role_translation()-specific sample floor -- stricter than the site-wide
 # thin_sample floor (5 games / 100 minutes) used everywhere else. Applying a
 # player's per-40 rate to 4 different hypothetical role-minutes levels
@@ -296,15 +311,30 @@ UNDERCLASS_YEARS = {"FR", "SO"}
 # project_player()'s result, whether a HIGHER team rate is a weakness
 # instead of a strength). Turnovers are the one category where more is
 # worse, so its z-score gets flipped before ranking "biggest weakness."
+# Dict literal order = display order on the Team Stats Breakdown tab (see
+# team_needs()'s `for stat, info in CATEGORY_INFO.items()` loop below) AND
+# the Team Fits page's selectable target-stat list -- Points, Rebounds,
+# Assists, Steals, Blocks, Turnovers, TS%, FG%, 3FG%, per the user's
+# requested order.
+#
+# tfg_pct (3-point %) needs a per-player `players.tfg_pct` column and a
+# team_profile `tfg_pct` column (both populated by build_cache.py, mirroring
+# how ts_pct/fg_pct are already built) plus league_mean_tfg_pct/
+# league_std_tfg_pct in the meta table -- until a cache rebuild adds those,
+# this category is present here but every place that reads it (team_needs,
+# _core_projection, _load_meta) degrades gracefully by skipping/omitting it
+# rather than erroring, so shipping this entry ahead of the cache rebuild is
+# safe.
 CATEGORY_INFO = {
     "per40_pts":  dict(label="points",     proj_field="ppg",    lower_is_better=False),
     "per40_reb":  dict(label="rebounds",   proj_field="rpg",    lower_is_better=False),
     "per40_ast":  dict(label="assists",    proj_field="apg",    lower_is_better=False),
-    "per40_blk":  dict(label="blocks",     proj_field="bpg",    lower_is_better=False),
     "per40_stl":  dict(label="steals",     proj_field="spg",    lower_is_better=False),
+    "per40_blk":  dict(label="blocks",     proj_field="bpg",    lower_is_better=False),
     "per40_tov":  dict(label="turnovers",  proj_field="topg",   lower_is_better=True),
     "ts_pct":     dict(label="true shooting %", proj_field="ts_pct", lower_is_better=False),
     "fg_pct":     dict(label="field goal %",    proj_field="fg_pct", lower_is_better=False),
+    "tfg_pct":    dict(label="3-point %",       proj_field="tfg_pct", lower_is_better=False),
 }
  
 # Same 3 tiers classify_tier() (summit_calc.py) assigns every team at cache
@@ -668,29 +698,33 @@ def optimal_lineup(conn, team_id):
     roster_roles, which reflects who ACTUALLY starts (real games-started
     rate). Ranks every real-profile roster player (no thin_sample
     placeholders, and only players with at least one real per-game log --
-    nothing to rank without both) by an equal-weighted composite of two
-    team-relative z-scores: Summit Score (hoop_score, the site's overall
-    quality composite) and season-average combined production (points +
+    nothing to rank without both) by a production-weighted composite of two
+    team-relative z-scores: season-average combined production (points +
     rebounds + assists + steals + blocks - turnovers per game, live from
     player_game_logs -- the exact "Production Rating" formula already used
     on the player profile's Game-by-Game Production Rating chart, averaged
-    across her season here instead of shown per game). Both z-scored
-    against THIS TEAM'S OWN roster, not the whole league -- the question is
-    "who's most valuable on THIS roster," not "who'd rank well nationally."
+    across her season here instead of shown per game) at PRODUCTION_WEIGHT,
+    and Summit Score (hoop_score, the site's overall quality/efficiency
+    composite) at the remaining share. Both z-scored against THIS TEAM'S
+    OWN roster, not the whole league -- the question is "who's most
+    valuable on THIS roster," not "who'd rank well nationally." Weighted
+    toward production (not an even blend) so a genuinely higher-producing
+    player is never ranked below a teammate who merely posts a higher
+    efficiency-based Summit Score -- see PRODUCTION_WEIGHT's own comment
+    for the full reasoning.
 
-    Position-balanced starting 5: must include at least 1 Forward/Center
-    (the two are treated as one interchangeable "frontcourt" pool -- a
-    roster's own Forward/Center labeling is often blurry in practice, e.g.
-    a combo four/five listed either way depending on the workbook, so
-    requiring specifically a `C` would wrongly flag a normal frontcourt as
-    a "fallback" case) and at least 2 guards, so the suggested lineup is a
-    realistic, playable 5 -- not just the 5 highest composite scores
-    regardless of position, which could genuinely be 5 guards. The
-    remaining 3 starting spots go to the next-highest composite scores
-    regardless of position -- so a 3-guard/2-frontcourt five (common in
-    real women's college basketball, e.g. LSU) or any other mix beyond the
-    2-guard/1-frontcourt floor happens naturally whenever that's who scores
-    best, with no extra logic needed to allow it.
+    Position-balanced starting 5: must include at least 2 real Guards and
+    at least 2 real Forwards, with the 5th spot going to whichever scores
+    higher between the best remaining Forward or the best available Center
+    -- producing a G/G/F/F/F five when the best option left is a 3rd
+    Forward, or a G/G/F/F/C five when a Center outscores the 3rd Forward,
+    matching how real women's college rotations are actually built (Center
+    isn't given its own separate floor -- a team with no real Center on the
+    roster, or whose best remaining frontcourt player happens to be a
+    Forward, still gets a fully valid five this way). If the roster doesn't
+    have 2 real Guards and/or 2 real Forwards, the shortfall is filled by
+    the next-highest composite scores regardless of position (flagged with
+    a note) rather than failing to suggest a lineup at all.
 
     Realistic-minutes eligibility gate for Starter/Sixth Man (see
     LINEUP_MAX_OUT_MINUTED_BY): the composite score above is intentionally
@@ -820,16 +854,24 @@ def optimal_lineup(conn, team_id):
     for p in real:
         z_score = (p["hoop_score"] - score_mean) / score_std
         z_prod = (p["avg_production"] - prod_mean) / prod_std
-        p["optimizer_score"] = round((z_score + z_prod) / 2, 3)
+        p["z_hoop_score"] = round(z_score, 3)
+        p["z_production"] = round(z_prod, 3)
+        # See PRODUCTION_WEIGHT's comment -- production-led, not an even
+        # 50/50 blend, so a real production gap can't be overridden by an
+        # efficiency-only Summit Score edge.
+        p["optimizer_score"] = round(PRODUCTION_WEIGHT * z_prod + (1 - PRODUCTION_WEIGHT) * z_score, 3)
 
     real.sort(key=lambda p: p["optimizer_score"], reverse=True)
 
     guards = [p for p in real if p["position"] == "G"]
-    # Forward and Center are treated as one interchangeable frontcourt pool
-    # -- see the docstring for why (real rosters label combo forwards/
-    # centers inconsistently, and a true F/C swap is normal in basketball,
-    # not a fallback worth flagging).
-    frontcourt = [p for p in real if p["position"] in ("F", "C")]
+    forwards = [p for p in real if p["position"] == "F"]
+    # The 5th starting spot is either a 3rd Forward or a single Center,
+    # whichever scores higher -- see the docstring for the G/G/F/F/F vs.
+    # G/G/F/F/C shapes this produces. Kept as one pool (not split into
+    # "3rd forward" vs. "center" candidates) so _take() naturally picks
+    # whichever position scores higher, with no extra comparison logic
+    # needed here.
+    frontcourt_extra = [p for p in real if p["position"] in ("F", "C")]
     by_id = {p["player_id"]: p for p in real}
 
     def _select(banned_ids):
@@ -863,12 +905,6 @@ def optimal_lineup(conn, team_id):
             return taken
 
         starters_attempt = []
-        frontcourt_pick = _take(frontcourt, 1)
-        if not frontcourt_pick:
-            attempt_notes.append("No Forward or Center on this roster -- the starting 5 below is filled "
-                                  "purely by composite score.")
-        starters_attempt += frontcourt_pick
-
         guard_picks = _take(guards, 2)
         if len(guard_picks) < 2:
             attempt_notes.append(f"Only {len(guard_picks)} real Guard{'s' if len(guard_picks) != 1 else ''} "
@@ -876,6 +912,26 @@ def optimal_lineup(conn, team_id):
                                   f"spot{'s' if 2 - len(guard_picks) != 1 else ''} filled by composite score "
                                   f"regardless of position.")
         starters_attempt += guard_picks
+
+        forward_picks = _take(forwards, 2)
+        if len(forward_picks) < 2:
+            attempt_notes.append(f"Only {len(forward_picks)} real Forward{'s' if len(forward_picks) != 1 else ''} "
+                                  f"on this roster -- the remaining starting "
+                                  f"spot{'s' if 2 - len(forward_picks) != 1 else ''} filled by composite score "
+                                  f"regardless of position.")
+        starters_attempt += forward_picks
+
+        # 5th spot: the single best remaining Forward or Center (a 3rd
+        # Forward, or a Center, whichever scores higher -- see docstring).
+        fifth_pick = _take(frontcourt_extra, 1)
+        starters_attempt += fifth_pick
+        if not fifth_pick:
+            if not frontcourt_extra:
+                attempt_notes.append("No Forward or Center on this roster -- the starting 5 below is filled "
+                                      "purely by composite score.")
+            else:
+                attempt_notes.append("No Forward or Center left for the 5th starting spot after filling the "
+                                      "Guard/Forward floors -- filled by composite score regardless of position.")
 
         remaining_needed = 5 - len(starters_attempt)
         starters_attempt += _take(real, remaining_needed)
@@ -1014,14 +1070,17 @@ def optimal_lineup(conn, team_id):
         rotation=[_out(p) for p in rotation_sorted],
         notes=notes,
         method_note=(
-            "Ranked by an equal-weighted blend of Summit Score and season-average combined production "
-            "(points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
-            "Game-by-Game Production Rating chart), both compared only against this team's own roster -- not "
-            "the whole league. The starting 5 requires at least 1 Forward or Center (the two are treated as one "
-            "interchangeable frontcourt pool) and at least 2 Guards for a realistic, playable lineup; the "
-            "remaining 3 starting spots go to the next-best composite scores regardless of position, so a "
-            "3-guard/2-frontcourt five (common in real women's college basketball) happens naturally whenever "
-            "that's who scores best. Sixth Man is the next-best player not in the starting 5, no positional "
+            f"Ranked by a production-weighted blend of season-average combined production ({int(PRODUCTION_WEIGHT * 100)}% "
+            "-- points + rebounds + assists + steals + blocks - turnovers per game, the same formula as the "
+            f"Game-by-Game Production Rating chart) and Summit Score ({int((1 - PRODUCTION_WEIGHT) * 100)}%), both compared "
+            "only against this team's own roster -- not the whole league -- and weighted toward production so a "
+            "genuinely higher-producing player is never ranked below a teammate who only posts a higher "
+            "efficiency-based Summit Score. The starting 5 requires at least 2 real Guards and at least 2 real "
+            "Forwards; the 5th spot goes to whichever scores higher between the best remaining Forward or the "
+            "best available Center, producing a G/G/F/F/F five or a G/G/F/F/C five depending on which one "
+            "scores best -- matching how real women's college rotations are actually built. If the roster is "
+            "short a required Guard or Forward, that spot is filled by the next-best composite score regardless "
+            "of position instead. Sixth Man is the next-best player not in the starting 5, no positional "
             "requirement. A player is only eligible for Starter or Sixth Man if they aren't out-played in real "
             f"minutes/game by {LINEUP_MAX_OUT_MINUTED_BY + 1}+ teammates -- an elite composite score in very "
             "limited minutes doesn't make someone a realistic starter. Every player's Minutes below is their "
@@ -1091,13 +1150,19 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
  
         ts = clamp(player["ts_pct"] * pf, *TS_BOUNDS) if player["ts_pct"] is not None else None
         fg = clamp(player["fg_pct"] * pf, *TS_BOUNDS) if player["fg_pct"] is not None else None
+        # player.get (not player[...]) -- tfg_pct is only a real column on
+        # `players` once build_cache.py has been rebuilt with 3FG% support
+        # (see the CATEGORY_INFO comment above); until then this is just
+        # None for every player, same as a missing games/sample would be.
+        player_tfg = player.get("tfg_pct")
+        tfg = clamp(player_tfg * pf, *TS_BOUNDS) if player_tfg is not None else None
         return dict(
             minutes=m,
             ppg=pts * m / 40.0, rpg=reb * m / 40.0, apg=ast * m / 40.0,
             bpg=(blk * m / 40.0) if blk is not None else None,
             spg=(stl * m / 40.0) if stl is not None else None,
             topg=(tov * m / 40.0) if tov is not None else None,
-            ts_pct=ts, fg_pct=fg,
+            ts_pct=ts, fg_pct=fg, tfg_pct=tfg,
         )
  
     point = _at_factor(production_factor, minutes_factor)
@@ -1179,6 +1244,7 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
                      topg=round(player["topg"], 1) if player.get("topg") is not None else None,
                      ts_pct=round(player["ts_pct"] * 100, 1) if player["ts_pct"] is not None else None,
                      fg_pct=round(player["fg_pct"] * 100, 1) if player.get("fg_pct") is not None else None,
+                     tfg_pct=round(player["tfg_pct"] * 100, 1) if player.get("tfg_pct") is not None else None,
                      avg_minutes=round(player["avg_minutes"], 1), hoop_score=player["hoop_score"]),
         target=dict(team=target_team["name"], division=target_team["division"], tier=target_team["tier"],
                     current_rating=round(target_team["current_rating"], 2)),
@@ -1190,6 +1256,7 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
             topg=round(point["topg"], 1) if point["topg"] is not None else None,
             ts_pct=round(point["ts_pct"] * 100, 1) if point["ts_pct"] is not None else None,
             fg_pct=round(point["fg_pct"] * 100, 1) if point["fg_pct"] is not None else None,
+            tfg_pct=round(point["tfg_pct"] * 100, 1) if point.get("tfg_pct") is not None else None,
             hoop_score=proj_hoop_score,
         ),
         projected_range=projected_range,
@@ -1398,7 +1465,7 @@ def team_needs(conn, team_id, top_n=3, level=None):
         # same as everywhere else in the cache -- scale to a percentage for
         # display only (z above is computed from the unscaled fraction, but
         # z is scale-invariant here so this doesn't change it).
-        scale = 100.0 if stat in ("ts_pct", "fg_pct") else 1.0
+        scale = 100.0 if stat in ("ts_pct", "fg_pct", "tfg_pct") else 1.0
         categories.append(dict(
             # kept as "league_mean" even when level-scoped (not renamed to
             # "peer_mean") so existing callers reading this field don't
@@ -1408,7 +1475,17 @@ def team_needs(conn, team_id, top_n=3, level=None):
             team_value=round(val * scale, 3), league_mean=round(mean * scale, 3), z=round(z, 2),
             conference_mean=round(conf_mean * scale, 3) if conf_mean is not None else None,
         ))
-    categories.sort(key=lambda c: c["z"])
+    # `categories` was built by iterating CATEGORY_INFO.items(), so it's
+    # already in that dict's display order (Points, Rebounds, Assists,
+    # Steals, Blocks, Turnovers, TS%, FG%, 3FG%) -- full_profile (the Stats
+    # Breakdown tab's "every category" table) keeps that fixed order rather
+    # than being sorted, while `weaknesses` gets its own worst-first sorted
+    # copy (that's the whole point of "weaknesses": call out the worst top_n
+    # regardless of category order). Previously this sorted `categories` in
+    # place by z-score and reused it for BOTH fields, which meant the Stats
+    # Breakdown tab silently reordered itself by weakness instead of
+    # showing a stable, predictable category order.
+    weaknesses = sorted(categories, key=lambda c: c["z"])[:top_n]
 
     return dict(
         team_id=team_id, team_name=team["name"] if team else None,
@@ -1416,7 +1493,7 @@ def team_needs(conn, team_id, top_n=3, level=None):
         level=level, teams_compared=n_teams_compared,
         comparison_group=f"{level} teams only" if level else "whole league",
         conference=conference, teams_in_conference=n_conf_teams,
-        weaknesses=categories[:top_n],
+        weaknesses=weaknesses,
         full_profile=categories,
     )
  
