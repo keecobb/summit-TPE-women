@@ -314,13 +314,23 @@ async function ResultView({ sp, sport }: { sp: SP; sport: string }) {
             ? `Assuming ${roleLabel(result.role_applied.role)} minutes at ${result.target.team} (${result.projected.minutes?.toFixed(1)}/game)`
             : `Projected minutes: ${result.projected.minutes?.toFixed(1)}/game`}
         </p>
+        {/* GP/GS only exists for the current team -- there's no real "games
+            played" for a projection at a school the player hasn't played
+            for. Shown as a note (same pattern as the projected-minutes note
+            above) instead of a table row, so both columns below have the
+            same row count -- 2 extra rows only on the left side is exactly
+            what was throwing the two columns out of alignment on narrow
+            (mobile) widths, where the two tables stack tightly enough for a
+            row-height mismatch to actually be visible. */}
+        <p className="section-note" style={{ marginTop: 4 }}>
+          {result.player.current_team} this season: {result.player.games} GP
+          {result.player.games_started != null ? ` / ${result.player.games_started} GS` : ""}
+        </p>
         <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
           <div>
             <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.player.current_team} (now)</h3>
             <table>
               <tbody>
-                <StatRow label="GP" value={result.player.games} decimals={0} />
-                <StatRow label="GS" value={result.player.games_started} decimals={0} />
                 <StatRow label="MPG" value={result.current.avg_minutes} />
                 <StatRow label="PPG" value={result.current.ppg} />
                 <StatRow label="RPG" value={result.current.rpg} />
