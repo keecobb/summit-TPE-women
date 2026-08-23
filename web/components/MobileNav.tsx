@@ -11,12 +11,16 @@ import ThemeToggle from "./ThemeToggle";
 // browse -- unlike a /teams/{id} or /players/{id} detail page, a bare
 // listing page has no sport-specific ID embedded in the path, so it's never
 // a dead link in the other sport.
-// "glossary"/"about"/"contact" are content-identical across sports (see
-// app/[sport]/about|contact|glossary/page.tsx) but still live under the
-// [sport]/ segment so the URL always carries the current sport -- without
-// that, navigating to one of these reset the nav's sport context back to
-// women's on your next click (see ARCHITECTURE_HOSTING_PLAN.md's phase 16
-// follow-up).
+// "about" (which now also covers Glossary and Contact as tabs -- see
+// app/[sport]/about/page.tsx) is content-identical across sports but still
+// lives under the [sport]/ segment so the URL always carries the current
+// sport -- without that, navigating to it reset the nav's sport context
+// back to women's on your next click (see ARCHITECTURE_HOSTING_PLAN.md's
+// phase 16 follow-up). "glossary"/"contact" stay in this list even though
+// they're unlinked below -- their own routes still resolve (as redirects
+// into About's tabs, see those files), so a stale bookmark to either one
+// still counts as a "safe to jump straight to when switching sport"
+// bare listing page.
 const SPORT_SECTIONS = [
   "tpe", "team-fits", "compare", "data", "players", "teams", "conferences", "glossary", "about", "contact",
 ] as const;
@@ -31,10 +35,11 @@ const LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
   // { section: "conferences", label: "Conferences" }, // hidden for now -- pages still live, just unlinked
 ];
 
+// About/Glossary/Contact collapsed from 3 nav links into 1 -- Glossary and
+// Contact are now tabs on the About page (?tab=glossary / ?tab=contact)
+// instead of separate pages, so there's only one link to them here.
 const STATIC_LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
-  { section: "glossary", label: "Glossary" },
   { section: "about", label: "About" },
-  { section: "contact", label: "Contact" },
 ];
 
 // Client component only for the small bit of interactivity (open/close on

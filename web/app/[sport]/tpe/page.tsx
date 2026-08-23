@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
 import type { Player, Team, ProjectionResult } from "@/lib/types";
-import { ROLE_NAMES, roleLabel } from "@/lib/types";
+import { roleLabel } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 import FilterForm from "@/components/FilterForm";
 import FlowSteps from "@/components/FlowSteps";
+import RoleCheckboxGroup from "@/components/RoleCheckboxGroup";
 
 // Forces a fresh fetch on every request instead of risking Next's Data
 // Cache/Full Route Cache treating this route as static (see
@@ -22,7 +23,11 @@ interface SP {
   team_id?: string;
   player_id?: string;
   target_team_id?: string;
-  role?: string;
+  // Up to 3 role lanes, compared side by side -- see RoleCheckboxGroup and
+  // ResultView's multi-lane fetch below. A single old bookmarked link with
+  // one bare ?role=starter still works fine (comes through as a string,
+  // normalized to a 1-item array).
+  role?: string | string[];
   minutes?: string;
 }
 
@@ -56,6 +61,11 @@ async function StartView({ sp, sport }: { sp: SP; sport: string }) {
         today. The projection is grounded in how real transfers at a comparable strength gap have actually
         played out, not a hand-picked formula -- every result includes a confidence read and a real range,
         not just one number.
+      </p>
+      <p className="section-note" style={{ marginTop: -12, marginBottom: 24 }}>
+        Comparing several names against the same open roster spot?{" "}
+        <Link href={`/${sport}/tpe/batch`}>Try the batch scouting board</Link> instead of running this one player
+        at a time.
       </p>
 
       <FlowSteps steps={["Find a player", "Pick their target school", "See the projection"]} />
@@ -226,19 +236,9 @@ async function TargetPickerView({ sp, sport }: { sp: SP; sport: string }) {
             />
           </div>
 
-          <div className="field">
-            <label htmlFor="role">Projected role</label>
-            <select id="role" name="role" defaultValue="">
-              <option value="">Auto (based on current minutes)</option>
-              {ROLE_NAMES.map((r) => (
-                <option key={r} value={r}>
-                  {roleLabel(r)}
-                </option>
-              ))}
-            </select>
-          </div>
+          <RoleCheckboxGroup />
 
-          <div className="section-note">Or set exact minutes instead of a role:</div>
+          <div className="section-note">Or set exact minutes instead -- overrides every role lane above:</div>
           <div className="field">
             <label htmlFor="minutes">Minutes (0-40, optional)</label>
             <input id="minutes" name="minutes" type="number" min={0} max={40} step={0.5} />
@@ -255,27 +255,70 @@ async function TargetPickerView({ sp, sport }: { sp: SP; sport: string }) {
   );
 }
 
-// ---- Step 3: side-by-side comparison ----
+// A lane is one (role|minutes) variant of the projection, run as its own
+// /project call -- see ResultView below for why this is N parallel calls
+// instead of a single batch endpoint (there's no "one player, several
+// roles" batch API, only "several players, one target team" -- reusing
+// that would need a fake player-per-role trick, more confusing than just
+// firing a few real requests in parallel).
+interface Lane {
+  key: string;
+  label: string;
+  role?: string;
+  minutes?: number;
+}
+type LaneResult = Lane & ({ result: ProjectionResult; error?: undefined } | { result?: undefined; error: string });
+
+const ROLE_LANE_LABELS: Record<string, string> = { auto: "Auto" };
+
+function laneLabel(value: string): string {
+  return ROLE_LANE_LABELS[value] ?? roleLabel(value);
+}
+
+// ---- Step 3: side-by-side comparison across up to 3 role lanes ----
 async function ResultView({ sp, sport }: { sp: SP; sport: string }) {
-  let result: ProjectionResult;
-  try {
-    result = await apiFetch<ProjectionResult>(`/${sport}/project`, {
-      params: { player_id: sp.player_id, target_team_id: sp.target_team_id, role: sp.role, minutes: sp.minutes },
-    });
-  } catch (e) {
-    if (e instanceof ApiError) {
-      return (
-        <div>
-          <h1>Transfer Projection</h1>
-          <div className="error-box">{e.message}</div>
-          <Link className="btn" href={`/${sport}/tpe?player_id=${sp.player_id}`}>
-            &larr; Try a different school
-          </Link>
-        </div>
-      );
-    }
-    throw e;
+  const minutesNum = sp.minutes && sp.minutes.trim() !== "" ? Number(sp.minutes) : undefined;
+
+  let lanes: Lane[];
+  if (minutesNum != null && !Number.isNaN(minutesNum)) {
+    // Coach-set exact minutes always wins over any role selection -- see
+    // RoleCheckboxGroup's own note saying so on the form.
+    lanes = [{ key: "minutes", label: `${minutesNum} min (coach-set)`, minutes: minutesNum }];
+  } else {
+    const rawRoles = Array.isArray(sp.role) ? sp.role : sp.role ? [sp.role] : [];
+    const values = (rawRoles.length > 0 ? rawRoles : ["auto"]).slice(0, 3);
+    lanes = values.map((v) => (v === "auto" ? { key: "auto", label: laneLabel(v) } : { key: v, label: laneLabel(v), role: v }));
   }
+
+  const laneResults: LaneResult[] = await Promise.all(
+    lanes.map(async (lane): Promise<LaneResult> => {
+      try {
+        const result = await apiFetch<ProjectionResult>(`/${sport}/project`, {
+          params: { player_id: sp.player_id, target_team_id: sp.target_team_id, role: lane.role, minutes: lane.minutes },
+        });
+        return { ...lane, result };
+      } catch (e) {
+        return { ...lane, error: e instanceof ApiError ? e.message : "Something went wrong running this projection." };
+      }
+    })
+  );
+
+  const successLanes = laneResults.filter((l): l is LaneResult & { result: ProjectionResult } => l.result != null);
+  const failedLanes = laneResults.filter((l): l is LaneResult & { error: string } => l.error != null);
+
+  if (successLanes.length === 0) {
+    return (
+      <div>
+        <h1>Transfer Projection</h1>
+        <div className="error-box">{failedLanes[0]?.error ?? "Couldn't run this projection."}</div>
+        <Link className="btn" href={`/${sport}/tpe?player_id=${sp.player_id}`}>
+          &larr; Try a different school
+        </Link>
+      </div>
+    );
+  }
+
+  const headline = successLanes[0].result;
 
   const navButtons = (
     <div className="hero-actions" style={{ marginBottom: 24 }}>
@@ -293,74 +336,52 @@ async function ResultView({ sp, sport }: { sp: SP; sport: string }) {
   // it's recoverable algebraically (strength_gap = target - current) so no
   // backend change is needed to show both teams' ratings side by side, which
   // is what makes a lone "target team rating" number mean anything -- shown
-  // on its own (the previous layout) it had no reference point.
-  const currentTeamRating = result.target.current_rating - result.strength_gap;
+  // on its own (the previous layout) it had no reference point. Target-team
+  // rating, strength gap, confidence, and extreme-mismatch status don't vary
+  // by role/minutes lane (they're driven only by the two teams' strength,
+  // not by how many minutes she'd play) -- so it's safe to read all of that
+  // off just the first successful lane rather than repeating it per lane.
+  const currentTeamRating = headline.target.current_rating - headline.strength_gap;
 
   return (
     <div>
       {navButtons}
 
       <h1>
-        {result.player.name}: {result.player.current_team} &rarr; {result.target.team}
+        {headline.player.name}: {headline.player.current_team} &rarr; {headline.target.team}
       </h1>
       <p className="subtitle">
-        {result.player.current_tier} to {result.target.tier} &middot; Confidence: <strong>{result.confidence}</strong>
+        {headline.player.current_tier} to {headline.target.tier} &middot; Confidence:{" "}
+        <strong>{headline.confidence}</strong>
       </p>
 
+      {failedLanes.length > 0 && (
+        <div className="error-box" style={{ marginBottom: 16 }}>
+          {failedLanes.map((l) => (
+            <div key={l.key}>
+              <strong>{l.label}:</strong> {l.error}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="card">
-        <h2>Side by side</h2>
-        <p className="section-note">
-          {result.role_applied
-            ? `Assuming ${roleLabel(result.role_applied.role)} minutes at ${result.target.team} (${result.projected.minutes?.toFixed(1)}/game)`
-            : `Projected minutes: ${result.projected.minutes?.toFixed(1)}/game`}
-        </p>
+        <h2>Side by side{successLanes.length > 1 ? ` -- ${successLanes.length} roles compared` : ""}</h2>
         {/* GP/GS only exists for the current team -- there's no real "games
             played" for a projection at a school the player hasn't played
-            for. Shown as a note (same pattern as the projected-minutes note
-            above) instead of a table row, so both columns below have the
-            same row count -- 2 extra rows only on the left side is exactly
-            what was throwing the two columns out of alignment on narrow
-            (mobile) widths, where the two tables stack tightly enough for a
-            row-height mismatch to actually be visible. */}
-        <p className="section-note" style={{ marginTop: 4 }}>
-          {result.player.current_team} this season: {result.player.games} GP
-          {result.player.games_started != null ? ` / ${result.player.games_started} GS` : ""}
+            for. Shown as a note (same pattern used for the per-lane minutes
+            basis below) instead of a table row, so every column keeps the
+            same row count on narrow (mobile) widths. */}
+        <p className="section-note">
+          {headline.player.current_team} this season: {headline.player.games} GP
+          {headline.player.games_started != null ? ` / ${headline.player.games_started} GS` : ""}
         </p>
-        <div className="card-grid" style={{ gridTemplateColumns: "1fr 1fr" }}>
-          <div>
-            <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.player.current_team} (now)</h3>
-            <table>
-              <tbody>
-                <StatRow label="MPG" value={result.current.avg_minutes} />
-                <StatRow label="PPG" value={result.current.ppg} />
-                <StatRow label="RPG" value={result.current.rpg} />
-                <StatRow label="APG" value={result.current.apg} />
-                <StatRow label="SPG" value={result.current.spg} />
-                <StatRow label="BPG" value={result.current.bpg} />
-                <StatRow label="TS%" value={result.current.ts_pct} />
-                <StatRow label="Summit Score" value={result.current.hoop_score} highlight />
-              </tbody>
-            </table>
-          </div>
-          <div>
-            <h3 style={{ fontSize: "1rem", margin: "0 0 10px" }}>{result.target.team} (projected)</h3>
-            <table>
-              <tbody>
-                <StatRow label="MPG" value={result.projected.minutes} />
-                <StatRow label="PPG" value={result.projected.ppg} />
-                <StatRow label="RPG" value={result.projected.rpg} />
-                <StatRow label="APG" value={result.projected.apg} />
-                <StatRow label="SPG" value={result.projected.spg} />
-                <StatRow label="BPG" value={result.projected.bpg} />
-                <StatRow label="TS%" value={result.projected.ts_pct} />
-                <StatRow label="Summit Score" value={result.projected.hoop_score} highlight />
-              </tbody>
-            </table>
-          </div>
+        <div className="table-scroll">
+          <MultiRoleTable current={headline.current} lanes={successLanes} />
         </div>
-        {!result.extreme_mismatch && (
+        {!headline.extreme_mismatch && (
           <p className="section-note" style={{ marginTop: 12 }}>
-            {plainLanguageNote(result)}
+            {plainLanguageNote(headline)}
           </p>
         )}
       </div>
@@ -368,40 +389,41 @@ async function ResultView({ sp, sport }: { sp: SP; sport: string }) {
       <div className="card">
         <h2>
           Comparison Chart
-          <span className="hint" title="Same numbers as the Side by Side table above, laid out as bars so the size of the change is easier to see at a glance.">
+          <span className="hint" title="Same numbers as the Side by Side table above, laid out as bars so the size of the change -- and the difference between role lanes -- is easier to see at a glance.">
             ?
           </span>
         </h2>
         <p className="section-note">
-          {result.player.current_team} (now) vs. {result.target.team} (projected), bar for bar.
+          {headline.player.current_team} (now) vs. {headline.target.team}, one bar per role compared.
         </p>
-        <ProjectionCompareChart result={result} />
+        <MultiRoleCompareChart current={headline.current} currentLabel={headline.player.current_team} lanes={successLanes} />
       </div>
 
       <div className="card">
         <h2>Background</h2>
         <p className="section-note">
-          Team Rating is each school&apos;s overall strength on one shared scale (see the Glossary for how
-          it&apos;s built) -- shown for both schools here so the Rating Difference below actually means
-          something on its own, instead of one team&apos;s number with nothing to compare it to.
+          Team Rating is each school&apos;s overall strength on one shared scale (see the{" "}
+          <Link href={`/${sport}/about?tab=glossary`}>Glossary</Link> for how it&apos;s built) -- shown for both
+          schools here so the Rating Difference below actually means something on its own, instead of one
+          team&apos;s number with nothing to compare it to.
         </p>
         <div className="stat-grid">
           <div className="stat-tile">
             <div className="value">{currentTeamRating.toFixed(1)}</div>
             <div className="label">
-              {result.player.current_team} rating ({result.player.current_tier})
+              {headline.player.current_team} rating ({headline.player.current_tier})
             </div>
           </div>
           <div className="stat-tile">
-            <div className="value">{result.target.current_rating.toFixed(1)}</div>
+            <div className="value">{headline.target.current_rating.toFixed(1)}</div>
             <div className="label">
-              {result.target.team} rating ({result.target.tier})
+              {headline.target.team} rating ({headline.target.tier})
             </div>
           </div>
           <div className="stat-tile">
-            <div className="value" style={{ color: result.strength_gap >= 0 ? "var(--good)" : "var(--warn)" }}>
-              {result.strength_gap >= 0 ? "+" : ""}
-              {result.strength_gap.toFixed(1)}
+            <div className="value" style={{ color: headline.strength_gap >= 0 ? "var(--good)" : "var(--warn)" }}>
+              {headline.strength_gap >= 0 ? "+" : ""}
+              {headline.strength_gap.toFixed(1)}
             </div>
             <div className="label">
               Rating difference
@@ -411,25 +433,21 @@ async function ResultView({ sp, sport }: { sp: SP; sport: string }) {
             </div>
           </div>
           <div className="stat-tile">
-            <div className="value">{result.player.class_year}</div>
+            <div className="value">{headline.player.class_year}</div>
             <div className="label">Class</div>
           </div>
           <div className="stat-tile">
             <div className="value">
-              {result.player.games}
-              {result.player.games_started != null ? ` / ${result.player.games_started}` : ""}
+              {headline.player.games}
+              {headline.player.games_started != null ? ` / ${headline.player.games_started}` : ""}
             </div>
             <div className="label">GP / GS this season</div>
-          </div>
-          <div className="stat-tile">
-            <div className="value">{formatMinutesSource(result.minutes_source)}</div>
-            <div className="label">Minutes source</div>
           </div>
         </div>
       </div>
 
-      {result.extreme_mismatch && result.extreme_mismatch_note && (
-        <div className="info-box">{result.extreme_mismatch_note}</div>
+      {headline.extreme_mismatch && headline.extreme_mismatch_note && (
+        <div className="info-box">{headline.extreme_mismatch_note}</div>
       )}
     </div>
   );
@@ -465,66 +483,131 @@ function plainLanguageNote(result: ProjectionResult): string {
   return "This is a moderate jump in competition level -- a solid estimate, with a bit more natural variation than a same-level comparison would have.";
 }
 
-function StatRow({
-  label, value, highlight, decimals = 1,
+// Stat rows shown per lane -- shared by both the table and the chart below
+// so the two never drift out of sync on which stats are covered.
+const LANE_STAT_ROWS: { key: string; label: string; decimals?: number; highlight?: boolean }[] = [
+  { key: "minutes_or_avg", label: "MPG" },
+  { key: "ppg", label: "PPG" },
+  { key: "rpg", label: "RPG" },
+  { key: "apg", label: "APG" },
+  { key: "spg", label: "SPG" },
+  { key: "bpg", label: "BPG" },
+  { key: "ts_pct", label: "TS%" },
+  { key: "hoop_score", label: "Summit Score", highlight: true },
+];
+
+// Distinct colors per lane column, up to 3 -- the site's existing brand
+// tones (gold/good-green/deep-green), reused here the same way the Full
+// Team Profile and Opponent Splits charts already pick 2-3 genuinely
+// distinguishable colors instead of shades of the same hue.
+const LANE_COLORS = ["var(--accent)", "var(--good)", "var(--green)"];
+
+function laneStatValue(lane: { result: ProjectionResult }, statKey: string): number | null | undefined {
+  if (statKey === "minutes_or_avg") return lane.result.projected.minutes;
+  return lane.result.projected[statKey];
+}
+
+// One row per stat, one column per successful role/minutes lane (plus a
+// shared Current column) -- replaces the old fixed 2-column layout so up
+// to 3 role projections are visible at once instead of only whichever one
+// role was picked.
+function MultiRoleTable({
+  current,
+  lanes,
 }: {
-  label: string;
-  value: number | null | undefined;
-  highlight?: boolean;
-  decimals?: number;
+  current: Record<string, number>;
+  lanes: (Lane & { result: ProjectionResult })[];
 }) {
   return (
-    <tr>
-      <td style={{ fontWeight: 600 }}>{label}</td>
-      <td style={highlight ? { color: "var(--accent)", fontWeight: 700, textAlign: "right" } : { textAlign: "right" }}>
-        {value != null ? value.toFixed(decimals) : "--"}
-      </td>
-    </tr>
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>Now</th>
+          {lanes.map((l, i) => (
+            <th key={l.key} style={{ color: LANE_COLORS[i % LANE_COLORS.length] }}>
+              {l.label}
+              <div style={{ fontWeight: 400, fontSize: "0.75rem", color: "var(--text-dim)" }}>
+                {l.result.projected.minutes?.toFixed(1)} min &middot; {formatMinutesSource(l.result.minutes_source)}
+              </div>
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {LANE_STAT_ROWS.map((row) => (
+          <tr key={row.key}>
+            <td style={{ fontWeight: 600 }}>{row.label}</td>
+            <td style={{ textAlign: "right", ...(row.highlight ? { color: "var(--accent)", fontWeight: 700 } : {}) }}>
+              {(row.key === "minutes_or_avg" ? current.avg_minutes : current[row.key])?.toFixed(row.decimals ?? 1) ?? "--"}
+            </td>
+            {lanes.map((l) => {
+              const v = laneStatValue(l, row.key);
+              return (
+                <td
+                  key={l.key}
+                  style={{ textAlign: "right", ...(row.highlight ? { color: "var(--accent)", fontWeight: 700 } : {}) }}
+                >
+                  {v != null ? v.toFixed(row.decimals ?? 1) : "--"}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
-// Paired current-vs-projected bars, one pair per stat, reusing the same
-// bar-row/bar-track/bar-fill visual language as the Data page's charts --
-// each row is scaled to its OWN max (current vs projected for that one
-// stat), not a shared scale, since PPG/TS%/Summit Score all live on very
-// different numeric ranges and a single shared scale would flatten most
-// rows to nothing.
-function ProjectionCompareChart({ result }: { result: ProjectionResult }) {
-  const rows: { key: string; label: string; current: number | undefined; projected: number | undefined }[] = [
-    { key: "ppg", label: "PPG", current: result.current.ppg, projected: result.projected.ppg },
-    { key: "rpg", label: "RPG", current: result.current.rpg, projected: result.projected.rpg },
-    { key: "apg", label: "APG", current: result.current.apg, projected: result.projected.apg },
-    { key: "spg", label: "SPG", current: result.current.spg, projected: result.projected.spg },
-    { key: "bpg", label: "BPG", current: result.current.bpg, projected: result.projected.bpg },
-    { key: "ts_pct", label: "TS%", current: result.current.ts_pct, projected: result.projected.ts_pct },
-    { key: "hoop_score", label: "Summit Score", current: result.current.hoop_score, projected: result.projected.hoop_score },
-  ];
+// One bar-group per stat: a "now" bar plus one bar per role lane, all
+// scaled to that row's own shared max -- generalizes the old 2-bar
+// current-vs-projected chart to N lanes instead of exactly 1.
+function MultiRoleCompareChart({
+  current,
+  currentLabel,
+  lanes,
+}: {
+  current: Record<string, number>;
+  currentLabel: string;
+  lanes: (Lane & { result: ProjectionResult })[];
+}) {
+  const chartRows = LANE_STAT_ROWS.filter((r) => r.key !== "minutes_or_avg");
   return (
     <div>
-      {rows.map((r) => {
-        const max = Math.max(r.current ?? 0, r.projected ?? 0, 0.0001);
+      {chartRows.map((row) => {
+        const currentVal = current[row.key];
+        const laneVals = lanes.map((l) => laneStatValue(l, row.key));
+        const max = Math.max(currentVal ?? 0, ...laneVals.map((v) => v ?? 0), 0.0001);
         return (
-          <div key={r.key} style={{ marginBottom: 14 }}>
+          <div key={row.key} style={{ marginBottom: 14 }}>
             <div style={{ fontSize: "0.8rem", color: "var(--text-dim)", marginBottom: 4, fontWeight: 600 }}>
-              {r.label}
+              {row.label}
             </div>
             <div className="bar-row">
-              <div className="bar-name">{result.player.current_team}</div>
+              <div className="bar-name">{currentLabel}</div>
               <div className="bar-track">
                 <div
                   className="bar-fill"
-                  style={{ width: `${((r.current ?? 0) / max) * 100}%`, background: "var(--text-dim)" }}
+                  style={{ width: `${((currentVal ?? 0) / max) * 100}%`, background: "var(--text-dim)" }}
                 />
               </div>
-              <div className="bar-value">{r.current?.toFixed(1) ?? "--"}</div>
+              <div className="bar-value">{currentVal?.toFixed(1) ?? "--"}</div>
             </div>
-            <div className="bar-row">
-              <div className="bar-name">{result.target.team}</div>
-              <div className="bar-track">
-                <div className="bar-fill" style={{ width: `${((r.projected ?? 0) / max) * 100}%` }} />
+            {lanes.map((l, i) => (
+              <div className="bar-row" key={l.key}>
+                <div className="bar-name">{l.label}</div>
+                <div className="bar-track">
+                  <div
+                    className="bar-fill"
+                    style={{
+                      width: `${((laneStatValue(l, row.key) ?? 0) / max) * 100}%`,
+                      background: LANE_COLORS[i % LANE_COLORS.length],
+                    }}
+                  />
+                </div>
+                <div className="bar-value">{laneStatValue(l, row.key)?.toFixed(1) ?? "--"}</div>
               </div>
-              <div className="bar-value">{r.projected?.toFixed(1) ?? "--"}</div>
-            </div>
+            ))}
           </div>
         );
       })}

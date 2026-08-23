@@ -134,6 +134,17 @@ export interface TeamNeedCategory {
   conference_mean: number | null;
 }
 
+export interface DepartingPlayer {
+  player_id: number;
+  name: string;
+  position: string | null;
+  class_year: string;
+  ppg: number | null;
+  rpg: number | null;
+  apg: number | null;
+  hoop_score: number | null;
+}
+
 export interface TeamNeeds {
   team_id: number;
   team_name: string;
@@ -145,6 +156,14 @@ export interface TeamNeeds {
   teams_in_conference: number;
   weaknesses: TeamNeedCategory[];
   full_profile: TeamNeedCategory[];
+  // returning_only=true recomputes the profile with this year's Seniors/
+  // Grad students removed -- an approximation of what the team is short on
+  // NEXT season. See /teams/{id}/fits' usage -- Stats Breakdown and Compare
+  // Teams intentionally still request the default (false, this season's
+  // full roster).
+  returning_only: boolean;
+  departing_players: DepartingPlayer[] | null;
+  returning_note: string | null;
 }
 
 export interface FitCandidate {

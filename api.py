@@ -487,6 +487,13 @@ def get_team_needs(sport: str,
                            f"Restrict the comparison group to teams at that tier only, instead of the whole "
                            f"league (default). E.g. level=Low-Major judges a Low-Major team's weaknesses "
                            f"against other Low-Major rosters, not High-Major ones."),
+    returning_only: bool = Query(
+        False, description="False (default) uses this season's full roster, matching every existing "
+                            "caller's behavior. True recomputes the profile with this year's Seniors/Grad "
+                            "students removed (see DEPARTING_CLASS_YEARS) -- an approximation of what the "
+                            "team is short on NEXT season, not a finalized future roster. Intended for "
+                            "/teams/{team_id}/fits' \"does this team actually need this transfer\" use case, "
+                            "not the Stats Breakdown tab's \"what did this team do this season\" one."),
 ):
     """This team's roster-weighted stat profile (rebounding, assists,
     blocks, steals, turnovers, shooting) vs. a peer group (whole league by
@@ -495,7 +502,7 @@ def get_team_needs(sport: str,
     the whole league, regardless of what's passed here)."""
     conn = get_conn(sport)
     try:
-        return team_needs(conn, team_id, top_n=top_n, level=level)
+        return team_needs(conn, team_id, top_n=top_n, level=level, returning_only=returning_only)
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     finally:

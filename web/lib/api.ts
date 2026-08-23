@@ -40,7 +40,9 @@ export async function apiFetch<T>(
     params,
     revalidate = 60,
     timeoutMs = 9000,
-  }: { params?: Params; revalidate?: number; timeoutMs?: number } = {}
+    method = "GET",
+    body,
+  }: { params?: Params; revalidate?: number; timeoutMs?: number; method?: "GET" | "POST"; body?: unknown } = {}
 ): Promise<T> {
   if (!API_URL) {
     throw new ApiError(0, "SUMMIT_TPE_API_URL is not configured on this deployment.");
@@ -62,10 +64,18 @@ export async function apiFetch<T>(
   let res: Response;
   try {
     res = await fetch(url.toString(), {
-      headers: API_KEY ? { "X-API-Key": API_KEY } : {},
+      method,
+      headers: {
+        ...(API_KEY ? { "X-API-Key": API_KEY } : {}),
+        ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
       // Short revalidation window rather than fully static -- the live
       // cache behind the API can change after a refresh_pipeline.py run
       // at any time, with no deploy/restart of this site needed to see it.
+      // (POST requests to a mutating-looking path are never actually
+      // cached by Next regardless of this option -- it's only meaningful
+      // for GET -- but harmless to pass through unconditionally.)
       next: { revalidate },
       // Fail fast with a clear, user-facing reason instead of hanging
       // until the hosting platform's own function-execution limit kills

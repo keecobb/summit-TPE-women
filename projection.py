@@ -423,6 +423,100 @@ def get_team_profile(conn, team_id):
         return None
     cols = [d[0] for d in conn.execute("SELECT * FROM team_profile LIMIT 0").description]
     return dict(zip(cols, row))
+
+
+# Class years treated as "not on next season's roster" for
+# _returning_only_team_profile below. SR is the clear case; GR (a grad
+# transfer/grad student playing a final year of eligibility) is included
+# too since that eligibility is spent after this season in the overwhelming
+# majority of cases -- the rare medical-redshirt/extra-COVID-year exception
+# isn't something this pipeline has data to detect, which is exactly why
+# every caller of the "returning-only" view gets an explicit caveat about
+# it rather than presenting this as a certainty.
+DEPARTING_CLASS_YEARS = ("SR", "GR")
+
+
+def _returning_only_team_profile(conn, team_id, season, team_games):
+    """The same category rates get_team_profile()/team_profile returns, but
+    computed live (no cache rebuild needed) from ONLY the players NOT in
+    DEPARTING_CLASS_YEARS -- an approximation of what this team's category
+    profile will look like next season with this year's Seniors/Grad
+    students gone, before any transfers out, transfers in, or incoming
+    signees are known.
+
+    Mirrors build_cache.py's compute_team_profiles() exactly (same
+    total-production-divided-by-team-games math, same true-shot-attempts
+    formula for ts_pct) but sourced live from player_game_logs + players
+    instead of a precomputed cache table, and filtered to the returning
+    subset. Does NOT redistribute the departing players' minutes to
+    whoever's left -- it simply removes their production entirely, which
+    understates what returning players would likely produce with a bigger
+    role next season, but that's the conservative direction for a "what
+    are we short on" read: better to flag a category as a bigger need than
+    to assume next year's rotation before it exists.
+
+    Returns None if there's no team_games to normalize against, or no
+    returning players with any real production this season (a real, if
+    rare, possibility for a team losing its entire real rotation).
+    """
+    if team_games <= 0:
+        return None
+    placeholders = ",".join("?" for _ in DEPARTING_CLASS_YEARS)
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(l.points), 0) AS total_pts,
+                   COALESCE(SUM(l.rebounds), 0) AS total_reb,
+                   COALESCE(SUM(l.assists), 0) AS total_ast,
+                   COALESCE(SUM(l.blocks), 0) AS total_blk,
+                   COALESCE(SUM(l.steals), 0) AS total_stl,
+                   COALESCE(SUM(l.turnovers), 0) AS total_tov,
+                   COALESCE(SUM(l.fgm), 0) AS total_fgm,
+                   COALESCE(SUM(l.fga), 0) AS total_fga,
+                   COALESCE(SUM(l.fta), 0) AS total_fta,
+                   COALESCE(SUM(l.tfgm), 0) AS total_tfgm,
+                   COALESCE(SUM(l.tfga), 0) AS total_tfga,
+                   COUNT(DISTINCT l.player_id) AS roster_size
+            FROM player_game_logs l
+            JOIN players p ON p.player_id = l.player_id
+            WHERE l.team_id = ? AND l.season = ?
+              AND (p.class_year IS NULL OR p.class_year NOT IN ({placeholders}))""",
+        (team_id, season, *DEPARTING_CLASS_YEARS),
+    ).fetchone()
+    if row is None or row["roster_size"] == 0:
+        return None
+    true_shot_attempts = row["total_fga"] + 0.44 * row["total_fta"]
+    return dict(
+        team_id=team_id, roster_size=row["roster_size"],
+        per40_pts=row["total_pts"] / team_games,
+        per40_reb=row["total_reb"] / team_games,
+        per40_ast=row["total_ast"] / team_games,
+        per40_blk=row["total_blk"] / team_games,
+        per40_stl=row["total_stl"] / team_games,
+        per40_tov=row["total_tov"] / team_games,
+        ts_pct=(row["total_pts"] / (2 * true_shot_attempts)) if true_shot_attempts > 0 else None,
+        fg_pct=(row["total_fgm"] / row["total_fga"]) if row["total_fga"] > 0 else None,
+        tfg_pct=(row["total_tfgm"] / row["total_tfga"]) if row["total_tfga"] > 0 else None,
+    )
+
+
+def _departing_players(conn, team_id):
+    """Real-profile players on this roster in DEPARTING_CLASS_YEARS, best
+    production first -- the "who's actually leaving" list behind
+    _returning_only_team_profile's numbers, so a coach isn't just told a
+    category got worse without being shown why."""
+    rows = conn.execute(
+        """SELECT player_id, name, position, class_year, ppg, rpg, apg, hoop_score
+           FROM players
+           WHERE team_id = ? AND class_year IN ({}) AND games > 0
+           ORDER BY (hoop_score IS NULL), hoop_score DESC""".format(
+            ",".join("?" for _ in DEPARTING_CLASS_YEARS)
+        ),
+        (team_id, *DEPARTING_CLASS_YEARS),
+    ).fetchall()
+    return [
+        dict(player_id=r["player_id"], name=r["name"], position=r["position"], class_year=r["class_year"],
+             ppg=r["ppg"], rpg=r["rpg"], apg=r["apg"], hoop_score=r["hoop_score"])
+        for r in rows
+    ]
  
  
 class ProjectionError(ValueError):
@@ -1555,14 +1649,14 @@ def _conference_comparison_means(conn, conference):
     return means, len(profiles)
 
 
-def team_needs(conn, team_id, top_n=3, level=None):
+def team_needs(conn, team_id, top_n=3, level=None, returning_only=False):
     """A team's roster-weighted per-40 category profile (team_profile,
     built once by build_cache.py) compared against a peer group. Returns
     every category ranked worst-to-best by z-score, with the worst top_n
     called out as `weaknesses`. Turnovers are flipped so a HIGH team
     turnover rate always reads as a negative z (a weakness), consistent
     with every other category where negative = below-peer-average = weak.
- 
+
     level: optional -- one of VALID_LEVELS ("High-Major", "Mid-Major", "Low-Major").
     When given, the comparison group is ONLY teams at that tier instead of
     the whole league (the default, and the original behavior). This
@@ -1571,12 +1665,58 @@ def team_needs(conn, team_id, top_n=3, level=None):
     Major rosters pull the whole-league average up, even if it's average
     for its own level. Pass level=<this team's own tier> to judge
     weaknesses against realistic peers instead of the entire tracked pool.
+
+    returning_only: False (default) uses this SEASON's full-roster
+    team_profile -- what the team actually did on the court, which is what
+    every existing caller of this function (the Stats Breakdown tab, the
+    team profile Overview snapshot, Compare Teams) still means by "this
+    team's profile." True switches the comparison to
+    _returning_only_team_profile -- the same category rates recomputed
+    live with this year's Seniors/Grad students (DEPARTING_CLASS_YEARS)
+    removed entirely, an approximation of what the team will be short on
+    NEXT season, still compared against the SAME peer group (a rate
+    comparison stays valid regardless of how many players it's summed
+    over). This is what /teams/{id}/fits should actually be judging "does
+    this team need this transfer" against -- a Team Fits weaknesses list
+    built from a roster that's about to lose its Seniors is judging next
+    year's need against this year's personnel, which is backwards. Still
+    just an approximation: it has no way to know about underclassmen who
+    transfer out, incoming transfers/signees, or a grad transfer who
+    plays a bonus year -- see `departing_players`/`returning_note` on the
+    response, which spell that out explicitly rather than presenting this
+    as a finalized 2026-27 projection.
     """
-    profile = get_team_profile(conn, team_id)
-    if profile is None:
-        raise ProjectionError(f"No team_profile row for team {team_id} -- team may have too "
-                               f"thin a roster this season, or the cache needs rebuilding.")
     team = get_team(conn, team_id)
+    departing_players = None
+    returning_note = None
+    if returning_only:
+        season = _load_meta(conn)["season"]
+        team_games_row = conn.execute(
+            "SELECT COUNT(DISTINCT game_id) FROM player_game_logs WHERE team_id = ? AND season = ?",
+            (team_id, season),
+        ).fetchone()
+        team_games = team_games_row[0] if team_games_row else 0
+        profile = _returning_only_team_profile(conn, team_id, season, team_games)
+        if profile is None:
+            raise ProjectionError(
+                f"Not enough returning-player game-log data for team {team_id} to compute a "
+                f"returning-only profile -- team may have too thin a roster, or nobody outside "
+                f"{DEPARTING_CLASS_YEARS} logged real minutes this season."
+            )
+        departing_players = _departing_players(conn, team_id)
+        returning_note = (
+            f"Categories below reflect this roster with {team['name'] if team else 'this team'}'s "
+            f"{len(departing_players)} Senior/Grad player{'s' if len(departing_players) != 1 else ''} "
+            "removed entirely (see departing_players), not redistributed to anyone staying -- an "
+            "approximation of what next season is short on, not a finalized 2026-27 roster. It can't "
+            "account for underclassmen who transfer out, transfers/signees coming in, or a grad "
+            "player who plays a bonus year, since none of that is known yet."
+        )
+    else:
+        profile = get_team_profile(conn, team_id)
+        if profile is None:
+            raise ProjectionError(f"No team_profile row for team {team_id} -- team may have too "
+                                   f"thin a roster this season, or the cache needs rebuilding.")
 
     level = normalize_tier(level)
     n_teams_compared = None
@@ -1650,6 +1790,9 @@ def team_needs(conn, team_id, top_n=3, level=None):
         conference=conference, teams_in_conference=n_conf_teams,
         weaknesses=weaknesses,
         full_profile=categories,
+        returning_only=returning_only,
+        departing_players=departing_players,
+        returning_note=returning_note,
     )
  
  

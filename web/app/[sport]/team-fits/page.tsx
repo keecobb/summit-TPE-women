@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { apiFetch, ApiError } from "@/lib/api";
-import type { Team, TeamFits, TeamNeeds, TeamNeedCategory, TeamRoles, FitCandidate } from "@/lib/types";
+import type { Team, TeamFits, TeamNeeds, TeamNeedCategory, TeamRoles, FitCandidate, DepartingPlayer } from "@/lib/types";
 import { FIT_STATS, FIT_STAT_LABELS, ROLE_NAMES, roleLabel, TIERS, tierAbbrev } from "@/lib/types";
 import Typeahead from "@/components/Typeahead";
 import SortableTh from "@/components/SortableTh";
@@ -27,6 +27,11 @@ interface SP {
   position?: string;
   sort?: string;
   dir?: string;
+  // "full" = this past season's actual roster (the old default, and
+  // still useful for reference). Anything else (including unset) means
+  // "returning roster" -- Seniors/Grads excluded, since they won't be on
+  // next season's team. See the returning_only writeup below.
+  view?: string;
 }
 
 // Confidence isn't a number in the API response -- rank it Low/Medium/High
@@ -51,6 +56,22 @@ function fitsSortValue(c: FitCandidate & { fit_score: number }, column: string):
     case "confidence": return CONFIDENCE_RANK[c.confidence] ?? -1;
     default: return "";
   }
+}
+
+// Rebuilds the current query string with the given overrides applied
+// (undefined = drop that key) -- used by the returning/full-roster toggle
+// so it preserves whatever filters the coach already has set (stat
+// checkboxes, level, class, position, sort, etc.) instead of resetting
+// the page.
+function toggleQuery(sp: SP, overrides: Partial<SP>): string {
+  const merged: Record<string, string | string[] | undefined> = { ...sp, ...overrides };
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(merged)) {
+    if (value === undefined) continue;
+    if (Array.isArray(value)) value.forEach((v) => params.append(key, v));
+    else params.set(key, value);
+  }
+  return params.toString();
 }
 
 export default async function TeamFitsPage({
@@ -102,9 +123,23 @@ async function FitsView({ sp, sport }: { sp: SP; sport: string }) {
   // too-thin roster even when the team and its roles both load fine --
   // this section is a nice-to-have "here's why you're looking at this"
   // callout, not a hard dependency for the fits search itself.
+  //
+  // Default view is "returning roster" (returning_only=true): Seniors and
+  // Grad students won't be back for 2026-27, so ranking needs off THIS
+  // season's full roster overstates strength in categories a departing
+  // class carried and understates it elsewhere. This is still just an
+  // approximation off last season's game logs -- underclassmen who
+  // transfer out, incoming transfers/signees, and redshirt/eligibility
+  // changes aren't (and can't yet be) reflected, since next season's
+  // roster isn't finalized. A "full roster" toggle (view=full) is kept
+  // for reference against this past season's actual numbers.
+  const returningOnly = sp.view !== "full";
   let needs: TeamNeeds | null = null;
   try {
-    needs = await apiFetch<TeamNeeds>(`/${sport}/teams/${sp.team_id}/needs`, { params: { top_n: 3, level: team.tier }, revalidate: 60 });
+    needs = await apiFetch<TeamNeeds>(`/${sport}/teams/${sp.team_id}/needs`, {
+      params: { top_n: 3, level: team.tier, returning_only: returningOnly },
+      revalidate: 60,
+    });
   } catch (e) {
     if (!(e instanceof ApiError)) throw e;
   }
@@ -155,6 +190,27 @@ async function FitsView({ sp, sport }: { sp: SP; sport: string }) {
 
       <div className="card">
         <h2>{team.name} Snapshot</h2>
+        <p className="section-note" style={{ marginTop: -4 }}>
+          {returningOnly ? (
+            <>
+              Showing needs for the <strong>returning roster</strong> (Seniors/Grads removed) -- an approximation of
+              2026-27, not a finalized roster.{" "}
+              <Link href={`/${sport}/team-fits?${toggleQuery(sp, { view: "full" })}`}>
+                View based on this past season&apos;s full roster instead
+              </Link>
+              .
+            </>
+          ) : (
+            <>
+              Showing needs based on <strong>this past season&apos;s full roster</strong>, including players who
+              won&apos;t be back next season.{" "}
+              <Link href={`/${sport}/team-fits?${toggleQuery(sp, { view: undefined })}`}>
+                View based on the returning roster instead
+              </Link>
+              .
+            </>
+          )}
+        </p>
         <div className="stat-grid">
           <div className="stat-tile">
             <div className="value">{team.current_rating.toFixed(1)}</div>
@@ -188,6 +244,12 @@ async function FitsView({ sp, sport }: { sp: SP; sport: string }) {
             the same thing automatically, targeting the single biggest weakness.)
           </p>
         )}
+        {needs && needs.returning_only && needs.returning_note && (
+          <p className="section-note" style={{ marginTop: 8 }}>{needs.returning_note}</p>
+        )}
+        {needs && needs.returning_only && needs.departing_players && needs.departing_players.length > 0 && (
+          <DepartingPlayersList players={needs.departing_players} />
+        )}
       </div>
 
       <div className="card">
@@ -216,7 +278,8 @@ async function FitsView({ sp, sport }: { sp: SP; sport: string }) {
             </span>
           </h2>
           <p className="section-note">
-            All {needs.full_profile.length} tracked categories vs. {needs.comparison_group}, worst to best. Bars
+            {needs.returning_only ? "Returning roster (Seniors/Grads excluded) " : "Full roster "}
+            vs. {needs.comparison_group}. All {needs.full_profile.length} tracked categories, worst to best. Bars
             left of center (gold) are below-peer-average, right of center (green) are above -- hover a row for{" "}
             {team.name}&apos;s actual value alongside the peer and conference averages.
           </p>
@@ -373,6 +436,30 @@ async function FitsView({ sp, sport }: { sp: SP; sport: string }) {
       <p style={{ marginTop: 20 }}>
         <Link href={`/${sport}/team-fits`}>&larr; Choose a different team</Link>
       </p>
+    </div>
+  );
+}
+
+// Lists the Seniors/Grads whose production got pulled out of the
+// returning-roster profile above -- lets a coach eyeball whether the
+// "weakness" the tool is flagging is really a next-season gap or just
+// this list of departing players walking out the door.
+function DepartingPlayersList({ players }: { players: DepartingPlayer[] }) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="section-note" style={{ marginBottom: 6 }}>
+        Not returning ({players.length} Senior{players.length === 1 ? "" : "s"}/Grad{players.length === 1 ? "" : "s"}
+        , this past season&apos;s production):
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {players.map((p) => (
+          <span key={p.player_id} className="pill" title={`${p.position ?? ""} ${p.class_year ?? ""}`.trim()}>
+            {p.name}
+            {p.ppg != null && ` -- ${p.ppg.toFixed(1)} ppg`}
+            {p.hoop_score != null && ` / ${p.hoop_score.toFixed(1)} score`}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
