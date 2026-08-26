@@ -4,7 +4,7 @@ export default async function TeamBuilderPage({ params }: { params: Promise<{ sp
   const { sport } = await params;
   return (
     <div>
-      <h1>Build-a-Team</h1>
+      <h1>Roster Lab</h1>
       <p className="subtitle">
         Assemble a hypothetical roster and see how it would project as a team -- start from a real team&apos;s
         current players, swap in anyone from the transfer pool, and fill open spots with a freeform entry for an

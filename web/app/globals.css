@@ -731,6 +731,18 @@ tbody tr td:first-child a:hover {
   margin-bottom: 16px;
 }
 
+/* Roster Lab's roster rows (real players + custom entries) -- shared base
+   so both row kinds pick up the same mobile-compacting rules below rather
+   than duplicating padding/border per row type. */
+.roster-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.roster-row-custom {
+  padding: 10px 0;
+}
+
 .hint {
   display: inline-flex;
   align-items: center;
@@ -1038,6 +1050,39 @@ tbody tr td:first-child a:hover {
 
   .bar-row {
     grid-template-columns: 86px 1fr 40px;
+  }
+
+  /* Roster Lab on a phone: rows were running name + role line + identity
+     line + a wrapped control row each -- 4+ lines per player meant only a
+     couple fit on screen without scrolling. Tighter padding/gaps and a
+     smaller identity/sub line claw back vertical space; the name stays
+     full-size since it's what a coach is scanning for. */
+  .roster-row {
+    padding: 6px 0;
+    gap: 6px;
+  }
+
+  .roster-row .sub {
+    font-size: 0.72rem;
+  }
+
+  .roster-row select,
+  .roster-row input[type="number"] {
+    padding: 6px 8px;
+    font-size: 0.85rem;
+    min-width: 0;
+  }
+
+  .roster-row-custom {
+    padding: 8px 0;
+  }
+
+  .roster-row-custom label {
+    font-size: 0.7rem;
+  }
+
+  .roster-row-custom input[type="number"] {
+    width: 52px !important;
   }
 }
 

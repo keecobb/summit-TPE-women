@@ -29,7 +29,7 @@ const SPORT_SECTIONS = [
 const LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
   { section: "tpe", label: "Transfer Projection" },
   { section: "team-fits", label: "Team Fits" },
-  { section: "team-builder", label: "Build-a-Team" },
+  { section: "team-builder", label: "Roster Lab" },
   { section: "compare", label: "Compare" },
   { section: "data", label: "Data" },
   { section: "players", label: "Players" },

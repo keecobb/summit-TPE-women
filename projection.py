@@ -572,7 +572,8 @@ def team_roles(conn, team_id):
     team_games = team_games_row[0] if team_games_row else 0
 
     rows = conn.execute(
-        "SELECT player_id, name, avg_minutes, games, hoop_score, thin_sample FROM players "
+        "SELECT player_id, name, avg_minutes, games, hoop_score, thin_sample, "
+        "position, height, class_year FROM players "
         "WHERE team_id = ? ORDER BY avg_minutes DESC",
         (team_id,),
     ).fetchall()
@@ -584,6 +585,8 @@ def team_roles(conn, team_id):
         roster.append(dict(
             player_id=r["player_id"], name=r["name"], avg_minutes=r["avg_minutes"], games=r["games"],
             games_started=games_started, start_pct=start_pct, team_start_pct=team_start_pct,
+            position=r["position"], height=r["height"], class_year=r["class_year"],
+            hoop_score=r["hoop_score"],
         ))
 
     # Roster-wide Summit Score average -- only real (non-thin-sample) profiles
@@ -691,6 +694,8 @@ def team_roles(conn, team_id):
             player_id=p["player_id"], name=p["name"],
             avg_minutes=round(p["avg_minutes"], 1) if p["avg_minutes"] is not None else None,
             games=p["games"], games_started=p["games_started"], role=role,
+            position=p["position"], height=p["height"], class_year=p["class_year"],
+            hoop_score=p["hoop_score"],
         ))
 
     return dict(
@@ -1577,6 +1582,7 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
  
     result = dict(
         player=dict(id=player["player_id"], name=player["name"], position=player["position"],
+                    height=player.get("height"), height_in=player.get("height_in"),
                     class_year=player["class_year"], current_team=current_team["name"],
                     current_division=player["division"], current_tier=current_team["tier"],
                     games=player["games"], games_started=player.get("games_started"), season=meta["season"]),
@@ -1637,8 +1643,44 @@ def _core_projection(player, current_team, target_team, meta, minutes_override=N
     if role is not None:
         result["role_applied"] = dict(role=role, **role_info)
     return result
- 
- 
+
+
+def _previous_season_profile(conn, player_id, current_season):
+    """The single most recent season BEFORE current_season on record for
+    this player, from player_history -- e.g. a coach looking at a real
+    player's line while building a roster wants to see last year's actual
+    production too, not just this season's. Season strings are all the
+    same "YYYY-YY" shape, so a plain string comparison sorts them
+    correctly without parsing.
+
+    Returns None when there's no prior season at all (a true freshman, or
+    a transfer whose old-school history isn't in this workbook). A prior
+    season that IS on record but fell under the site's games/minutes floor
+    is still returned (not silently dropped) -- `thin_sample` is included
+    on the result so a caller can grey it out or add a "(limited sample)"
+    note instead of presenting a 2-minute cameo at face value.
+    """
+    row = conn.execute(
+        "SELECT season, team_name, games, ppg, rpg, apg, bpg, spg, topg, ts_pct, hoop_score, thin_sample "
+        "FROM player_history WHERE player_id = ? AND season < ? ORDER BY season DESC LIMIT 1",
+        (player_id, current_season),
+    ).fetchone()
+    if row is None:
+        return None
+    return dict(
+        season=row["season"], team=row["team_name"], games=row["games"],
+        ppg=round(row["ppg"], 1) if row["ppg"] is not None else None,
+        rpg=round(row["rpg"], 1) if row["rpg"] is not None else None,
+        apg=round(row["apg"], 1) if row["apg"] is not None else None,
+        bpg=round(row["bpg"], 1) if row["bpg"] is not None else None,
+        spg=round(row["spg"], 1) if row["spg"] is not None else None,
+        topg=round(row["topg"], 1) if row["topg"] is not None else None,
+        ts_pct=round(row["ts_pct"] * 100, 1) if row["ts_pct"] is not None else None,
+        hoop_score=row["hoop_score"],
+        thin_sample=bool(row["thin_sample"]),
+    )
+
+
 def project_player(conn, player_id, target_team_id, minutes_override=None, role=None):
     """Returns a dict with the player's static current profile plus a
     projection at target_team_id.
@@ -1687,10 +1729,12 @@ def project_player(conn, player_id, target_team_id, minutes_override=None, role=
         roles = team_roles(conn, target_team_id)
         role_info = roles[role]
 
-    return _core_projection(player, current_team, target_team, meta,
-                             minutes_override=minutes_override, role=role, role_info=role_info)
- 
- 
+    result = _core_projection(player, current_team, target_team, meta,
+                               minutes_override=minutes_override, role=role, role_info=role_info)
+    result["previous_season"] = _previous_season_profile(conn, player_id, meta["season"])
+    return result
+
+
 # ---------- "who fits my team's biggest hole" (reverse lookup) ----------
  
 def _level_comparison_stats(conn, level):
@@ -2285,10 +2329,12 @@ def _custom_player_result(custom):
     minutes = clamp(float(custom.get("minutes") or 0.0), 0.0, 40.0)
     return dict(
         player=dict(id=None, name=name, position=custom.get("position"),
+                    height=None, height_in=None,
                     class_year=custom.get("class_year") or "Custom", current_team=None,
                     current_division=None, current_tier=None, games=None, games_started=None, season=None),
         current=None,
         target=None,
+        previous_season=None,
         minutes_source="custom_entry",
         projected=dict(
             minutes=round(minutes, 1),

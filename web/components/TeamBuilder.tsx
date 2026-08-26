@@ -18,6 +18,31 @@ interface Picked {
   id: number;
   label: string;
   sub?: string;
+  // Present only for a player-search pick (kind="players", see
+  // app/api/search/route.ts) -- absent (undefined) for a team pick. Lets
+  // addRealPlayer carry the same identity info onto the roster row that a
+  // roster-loaded player already gets from /teams/{id}/roles, without a
+  // second round trip.
+  position?: string | null;
+  height?: string | null;
+  classYear?: string | null;
+  teamName?: string | null;
+  hoopScore?: number | null;
+}
+
+// Position/height/class/current Summit Score/school -- shown as a small
+// identity line under a roster row's name, and (for a roster-loaded
+// player) sourced straight from /teams/{id}/roles' roster_roles; for a
+// player added via search, from the search proxy's structured fields.
+// Left entirely undefined fields just render as "--" rather than being
+// required, since not every player has a recorded position (see
+// ARCHITECTURE_HOSTING_PLAN.md's phase 19 note on position sourcing gaps).
+interface PlayerIdentity {
+  position?: string | null;
+  height?: string | null;
+  classYear?: string | null;
+  teamName?: string | null;
+  hoopScore?: number | null;
 }
 
 interface RealEntry {
@@ -26,6 +51,7 @@ interface RealEntry {
   playerId: number;
   name: string;
   sub?: string;
+  identity?: PlayerIdentity;
   role: string; // "" = Auto
   minutes: string; // "" = not set, wins over role when filled
 }
@@ -83,7 +109,7 @@ function blankCustom(): CustomEntry {
 }
 
 /**
- * Build-a-Team: pick one real team as the projection context (its rating
+ * Roster Lab: pick one real team as the projection context (its rating
  * is what every real roster player's strength-gap and role-minutes are
  * resolved against, same as /project's target_team_id), then assemble a
  * roster against it -- start from that team's actual current players
@@ -139,12 +165,24 @@ export default function TeamBuilder({ sport }: { sport: string }) {
         return;
       }
       const entries: RealEntry[] = (data.roster_roles ?? []).map(
-        (r: { player_id: number; name: string; role: string | null }) => ({
+        (r: {
+          player_id: number;
+          name: string;
+          role: string | null;
+          position: string | null;
+          height: string | null;
+          class_year: string | null;
+          hoop_score: number | null;
+        }) => ({
           kind: "real" as const,
           key: nextKey(),
           playerId: r.player_id,
           name: r.name,
           sub: r.role ?? "Unclassified",
+          identity: {
+            position: r.position, height: r.height, classYear: r.class_year,
+            teamName: data.team_name, hoopScore: r.hoop_score,
+          },
           role: r.role ? (CLASSIFIED_ROLE_TO_ROLE_NAME[r.role] ?? "") : "",
           minutes: "",
         })
@@ -170,7 +208,22 @@ export default function TeamBuilder({ sport }: { sport: string }) {
     setRoster((prev) =>
       prev.some((e) => e.kind === "real" && e.playerId === p.id)
         ? prev
-        : [...prev, { kind: "real", key: nextKey(), playerId: p.id, name: p.label, sub: p.sub, role: "", minutes: "" }]
+        : [
+            ...prev,
+            {
+              kind: "real",
+              key: nextKey(),
+              playerId: p.id,
+              name: p.label,
+              sub: p.sub,
+              identity: {
+                position: p.position, height: p.height, classYear: p.classYear,
+                teamName: p.teamName, hoopScore: p.hoopScore,
+              },
+              role: "",
+              minutes: "",
+            },
+          ]
     );
     setAddKey((k) => k + 1);
     setResult(null);
@@ -335,23 +388,43 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   );
 }
 
+// "G · 5' 11" · SR · UConn · 98.1 Summit" -- built from whatever identity
+// fields are actually available (a roster-loaded player has all of them
+// from /teams/{id}/roles; a search-added player has whatever the search
+// proxy returned; position specifically is null for a real chunk of the
+// cache -- see ARCHITECTURE_HOSTING_PLAN.md's phase 19 note -- so this
+// just skips any field that's missing rather than showing a row of
+// "--"s). Returns "" (render nothing) when nothing at all is known.
+function identityLine(identity?: PlayerIdentity): string {
+  if (!identity) return "";
+  const parts: string[] = [];
+  if (identity.position) parts.push(identity.position);
+  if (identity.height) parts.push(identity.height);
+  if (identity.classYear) parts.push(identity.classYear);
+  if (identity.teamName) parts.push(identity.teamName);
+  if (identity.hoopScore != null) parts.push(`${identity.hoopScore} Summit`);
+  return parts.join(" · ");
+}
+
 function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (patch: Partial<RealEntry>) => void; onRemove: () => void }) {
+  const idLine = identityLine(entry.identity);
+  // Role and identity used to be two separate lines under the name (up to
+  // 3 lines total per row before you even reach the controls) -- on a
+  // phone-width screen where every row already wraps its select/input/
+  // button onto their own line below, that meant 4+ lines per player and
+  // only a couple of players visible without scrolling. Merged into one
+  // "role · position · height · class · school · Summit" line so a roster
+  // row is name + one subline, same info, roughly a third less height.
+  const subLine = [entry.sub, idLine].filter(Boolean).join(" · ");
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 8,
-        alignItems: "center",
-        flexWrap: "wrap",
-        padding: "8px 0",
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
+    <div className="roster-row" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
       <div style={{ flex: "1 1 200px", minWidth: 0 }}>
         <div style={{ fontWeight: 600 }}>{entry.name}</div>
-        <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
-          {entry.sub}
-        </div>
+        {subLine && (
+          <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
+            {subLine}
+          </div>
+        )}
       </div>
       <select value={entry.role} onChange={(ev) => onChange({ role: ev.target.value })} disabled={entry.minutes.trim() !== ""} style={{ minWidth: 160 }}>
         <option value="">Auto (current minutes, scaled)</option>
@@ -419,7 +492,7 @@ function CustomRow({
   }
 
   return (
-    <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+    <div className="roster-row roster-row-custom">
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
         <span className="pill pill-warn">Custom / not modeled</span>
         <input
@@ -562,40 +635,67 @@ function ResultsCard({ sport, result }: { sport: string; result: BatchBuildResul
           <thead>
             <tr>
               <th>Player</th>
+              <th>Pos / Ht / Class</th>
               <th>Minutes source</th>
               <th>Proj. minutes</th>
               <th>Proj. line</th>
-              <th>Summit Score</th>
+              <th>Current Summit</th>
+              <th>Proj. Summit</th>
+              <th>Previous Season</th>
               <th>Confidence</th>
             </tr>
           </thead>
           <tbody>
-            {result.players.map((p, i) => (
-              <tr key={p.player.id ?? `custom-${i}`}>
-                <td>
-                  {p.player.id ? (
-                    <Link href={`/${sport}/players/${p.player.id}`}>{p.player.name}</Link>
-                  ) : (
-                    <>
-                      {p.player.name} <span className="pill pill-warn">custom</span>
-                    </>
-                  )}
-                  {p.player.current_team && <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{p.player.current_team}</div>}
-                </td>
-                <td>{minutesSourceLabel(p)}</td>
-                <td>{p.projected.minutes?.toFixed?.(1) ?? p.projected.minutes}</td>
-                <td>
-                  {p.projected.ppg ?? "--"} ppg, {p.projected.rpg ?? "--"} rpg, {p.projected.apg ?? "--"} apg
-                </td>
-                <td>{p.projected.hoop_score != null ? p.projected.hoop_score : "--"}</td>
-                <td>
-                  <span className={p.extreme_mismatch ? "pill pill-warn" : "pill pill-good"}>{p.confidence}</span>
-                </td>
-              </tr>
-            ))}
+            {result.players.map((p, i) => {
+              const prev = p.previous_season;
+              const currentSummit = (p.current as { hoop_score?: number | null } | null)?.hoop_score;
+              return (
+                <tr key={p.player.id ?? `custom-${i}`}>
+                  <td>
+                    {p.player.id ? (
+                      <Link href={`/${sport}/players/${p.player.id}`}>{p.player.name}</Link>
+                    ) : (
+                      <>
+                        {p.player.name} <span className="pill pill-warn">custom</span>
+                      </>
+                    )}
+                    {p.player.current_team && <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{p.player.current_team}</div>}
+                  </td>
+                  <td>
+                    {[p.player.position, p.player.height, p.player.class_year].filter(Boolean).join(" / ") || "--"}
+                  </td>
+                  <td>{minutesSourceLabel(p)}</td>
+                  <td>{p.projected.minutes?.toFixed?.(1) ?? p.projected.minutes}</td>
+                  <td>
+                    {p.projected.ppg ?? "--"} ppg, {p.projected.rpg ?? "--"} rpg, {p.projected.apg ?? "--"} apg
+                  </td>
+                  <td>{currentSummit != null ? currentSummit : "--"}</td>
+                  <td>{p.projected.hoop_score != null ? p.projected.hoop_score : "--"}</td>
+                  <td style={{ fontSize: "0.85rem" }}>
+                    {prev ? (
+                      <>
+                        {prev.season} ({prev.team}): {prev.ppg ?? "--"}/{prev.rpg ?? "--"}/{prev.apg ?? "--"}, Summit{" "}
+                        {prev.hoop_score ?? "--"}
+                        {prev.thin_sample && <span> (limited sample)</span>}
+                      </>
+                    ) : (
+                      "--"
+                    )}
+                  </td>
+                  <td>
+                    <span className={p.extreme_mismatch ? "pill pill-warn" : "pill pill-good"}>{p.confidence}</span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+      <p className="section-note" style={{ marginTop: 8, marginBottom: 0 }}>
+        &quot;Current Summit&quot; and &quot;Previous Season&quot; are this player&apos;s actual real production -- not
+        projections. &quot;Proj. Summit&quot; is the only Summit Score number here that reflects the target team above;
+        a custom/coach-entered entry has neither a current nor a previous real season on record.
+      </p>
     </div>
   );
 }
@@ -620,7 +720,18 @@ function SearchOnly({
   onPick: (p: Picked) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<{ id: number; label: string; sub: string }[]>([]);
+  const [results, setResults] = useState<
+    {
+      id: number;
+      label: string;
+      sub: string;
+      position?: string | null;
+      height?: string | null;
+      classYear?: string | null;
+      teamName?: string | null;
+      hoopScore?: number | null;
+    }[]
+  >([]);
   const [open, setOpen] = useState(false);
 
   async function onChange(v: string) {
@@ -661,7 +772,11 @@ function SearchOnly({
               className="typeahead-option"
               onMouseDown={(e) => {
                 e.preventDefault();
-                onPick({ id: r.id, label: r.label, sub: r.sub });
+                onPick({
+                  id: r.id, label: r.label, sub: r.sub,
+                  position: r.position, height: r.height, classYear: r.classYear,
+                  teamName: r.teamName, hoopScore: r.hoopScore,
+                });
                 setQuery("");
                 setResults([]);
                 setOpen(false);

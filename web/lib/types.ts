@@ -122,6 +122,10 @@ export interface TeamRoles {
     games: number;
     games_started: number | null;
     role: "Solidified Starter" | "Sixth Man" | "Role Player" | "Depth Piece" | null;
+    position: string | null;
+    height: string | null;
+    class_year: string | null;
+    hoop_score: number | null;
   }[];
 }
 
@@ -920,6 +924,8 @@ export interface BatchBuildPlayer {
     id: number | null;
     name: string;
     position: string | null;
+    height: string | null;
+    height_in: number | null;
     class_year: string | null;
     current_team: string | null;
     current_division: string | null;
@@ -928,8 +934,28 @@ export interface BatchBuildPlayer {
     games_started: number | null;
     season: string | null;
   };
-  current: Record<string, number> | null;
+  current: (Record<string, number> & { hoop_score?: number | null }) | null;
   target: { team: string; division: string; tier: string; current_rating: number } | null;
+  // The single most recent season before this one on record for this
+  // player (player_history) -- null for a true freshman/no-history
+  // transfer, or a custom (coach-entered) slot. thin_sample marks a real
+  // prior season that fell under the site's games/minutes floor, so the
+  // UI can note it's a smaller sample rather than presenting it at face
+  // value. See _previous_season_profile() in projection.py.
+  previous_season: {
+    season: string;
+    team: string;
+    games: number;
+    ppg: number | null;
+    rpg: number | null;
+    apg: number | null;
+    bpg: number | null;
+    spg: number | null;
+    topg: number | null;
+    ts_pct: number | null;
+    hoop_score: number | null;
+    thin_sample: boolean;
+  } | null;
   minutes_source: string;
   projected: Record<string, number | null>;
   confidence: string;

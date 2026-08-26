@@ -32,6 +32,17 @@ export async function GET(req: NextRequest) {
           id: p.player_id,
           label: p.name,
           sub: `${p.team_name ?? "--"} · ${p.position}`,
+          // Structured fields alongside `sub` (which stays a fixed, short
+          // display string every existing typeahead consumer already
+          // renders as-is) -- lets a richer consumer like Build-a-Team's
+          // roster picker show position/height/class/current Summit Score
+          // without re-parsing `sub` text. Additive only: any consumer
+          // that doesn't know these fields exist just ignores them.
+          position: p.position,
+          height: p.height ?? null,
+          classYear: p.class_year,
+          teamName: p.team_name ?? null,
+          hoopScore: p.hoop_score ?? null,
         })),
       });
     }
