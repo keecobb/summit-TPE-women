@@ -280,6 +280,48 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   const [report, setReport] = useState<ScoutingReport | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
+  // Which of the 4 role buckets (starter/sixth_man/role_player/depth_piece)
+  // the currently-picked TARGET team's own real roster can actually
+  // resolve real calibrated minutes for -- team_roles() returns a null
+  // `minutes` for a bucket a thin/unusual roster can't fill (e.g. no
+  // player started 65%+ of the team's games this season), and picking
+  // that role for a real player makes project_player() raise a clean but
+  // hard error ("not enough rotation players on record for that role").
+  // autoRoleAssignments() below reads this to only rank-assign a bucket
+  // it knows will actually resolve, so a data gap on the TARGET team
+  // can't turn into a build-breaking error for an Auto player who never
+  // asked for that specific role -- she just falls back to her own real
+  // minutes (the original Auto behavior) instead.
+  const [roleBucketsAvailable, setRoleBucketsAvailable] = useState<Record<string, boolean>>({});
+
+  // Fetched whenever the target team changes, independent of whether the
+  // roster board itself gets auto-loaded from this team's current roster
+  // (loadCurrentRoster only fires when the board is empty) -- this needs
+  // the role-availability block on every team pick, not just the first
+  // one, since a coach can clear the board and keep building against the
+  // same team.
+  useEffect(() => {
+    if (!team) {
+      setRoleBucketsAvailable({});
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/team-roster?sport=${sport}&team_id=${team.id}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        setRoleBucketsAvailable({
+          starter: data.starter?.minutes != null,
+          sixth_man: data.sixth_man?.minutes != null,
+          role_player: data.role_player?.minutes != null,
+          depth_piece: data.depth_piece?.minutes != null,
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [sport, team]);
 
   // Fetched once per sport, not per custom row -- this is season-aggregate
   // data (real averages by class year x team level x archetype x
@@ -371,7 +413,20 @@ export default function TeamBuilder({ sport }: { sport: string }) {
               key: nextKey(),
               playerId: p.id,
               name: p.label,
-              sub: p.sub,
+              // NOT p.sub here: the search proxy's `sub` string is
+              // "{team} · {position}" (useful in the search dropdown
+              // itself, before a player's added), and `identity` below
+              // already carries position/height/class/team/Summit
+              // separately -- RealRow's subLine joins [entry.sub, idLine],
+              // so reusing p.sub here rendered position twice on the
+              // roster row ("Team · G" then "G · Height · Class · Team ·
+              // Summit" right after it). Leaving sub blank for a
+              // search-added player lets subLine fall back to idLine
+              // alone. Roster-loaded players (loadCurrentRoster above)
+              // are unaffected -- their sub is a real role classification
+              // ("Solidified Starter" etc.), not position, so it's
+              // genuinely distinct info and stays.
+              sub: "",
               identity: {
                 position: p.position, height: p.height, classYear: p.classYear,
                 teamName: p.teamName, hoopScore: p.hoopScore, games: p.games,
@@ -421,16 +476,78 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   }
 
   // "Reset roles": every real player's role/exact-minutes override clears
-  // back to Auto (her own real minutes, normalized into the 200-team-
-  // minute build below) -- a quick way to see what this exact group of
-  // players would put up left to their own real usage, before hand-tuning
-  // anyone's role.
+  // back to Auto (rank-assigned into a starter/sixth-man/role-player/
+  // depth-piece shape by the pool below, normalized into the 200-team-
+  // minute build) -- a quick way to see what this exact group of players
+  // would put up in a realistic minutes shape, before hand-tuning anyone's
+  // role individually.
   function resetRoles() {
     setRoster((prev) =>
       prev.map((e) => (e.kind === "real" ? { ...e, role: "", minutes: "" } : e))
     );
     setResult(null);
     setReport(null);
+  }
+
+  // Auto used to mean "use this player's own real per-game minutes from
+  // her actual current team, then proportionally rescale into the 200-
+  // team-minute build" -- correct for one player in isolation, but on a
+  // built-from-scratch roster it produces a flat, unrealistic shape: if
+  // every real player added happened to average, say, 15-20 minutes on
+  // her OWN real team, the whole "Auto" group comes out bunched in that
+  // same range with no true starter (28-32 min) or true deep bench player
+  // (under 10) -- reported directly against a GCU build where only one
+  // Auto player cleared 20 minutes. A real team never looks like that
+  // (see any team's live Stats Breakdown tab: a clear starting five, one
+  // go-to bench player, then a taper to single digits -- team_roles() in
+  // projection.py already models this exact shape for one real team's own
+  // roster). This resolves it the same way a coach manually picking a
+  // role per player already does -- by sending an explicit role string
+  // per Auto player instead of leaving it blank -- just chosen
+  // automatically by rank within the Auto pool (highest real Summit Score
+  // first, since that's the best single signal on hand for "who should
+  // start" among players pulled from different real teams) rather than
+  // requiring the coach to assign each one by hand. The backend then
+  // resolves each role to the TARGET team's own real calibrated minutes
+  // for that bucket (team_roles(target_team_id) via role_translation,
+  // the exact same real-data path an explicitly-picked role already
+  // uses) -- no new backend logic, no fabricated numbers.
+  //
+  // Scoped to the Auto pool only: a player with an explicit role or exact
+  // minutes override is left untouched, and this doesn't look at custom/
+  // preset entries (their minutes already come from an explicitly-picked
+  // entry-type/archetype tier, never Auto) -- so a custom "Day 1 Starter"
+  // freshman and an Auto-ranked real starter aren't reconciled against
+  // each other's slot; each pool gets a sensible shape on its own terms.
+  //
+  // A rank that lands on a bucket the TARGET team can't itself resolve
+  // (roleBucketsAvailable above) is deliberately left unassigned rather
+  // than sent anyway -- that player's request just carries no role, which
+  // is exactly the original Auto behavior (her own real minutes), so a
+  // thin/unusual target roster degrades one player's minutes shape
+  // instead of failing her out of the build entirely.
+  const ROLE_ORDER = ["starter", "sixth_man", "role_player", "depth_piece"] as const;
+  function autoRoleAssignments(activeRoster: Entry[]): Map<string, (typeof ROLE_ORDER)[number]> {
+    const pool = activeRoster.filter(
+      (e): e is RealEntry => e.kind === "real" && !e.role && e.minutes.trim() === ""
+    );
+    const ranked = [...pool].sort(
+      (a, b) => (b.identity?.hoopScore ?? -Infinity) - (a.identity?.hoopScore ?? -Infinity)
+    );
+    const assignments = new Map<string, (typeof ROLE_ORDER)[number]>();
+    const starterCount = Math.min(5, ranked.length);
+    const sixthManCount = ranked.length > starterCount ? 1 : 0;
+    const remaining = ranked.length - starterCount - sixthManCount;
+    const rolePlayerCount = Math.ceil(remaining / 2);
+    ranked.forEach((e, i) => {
+      let role: (typeof ROLE_ORDER)[number];
+      if (i < starterCount) role = "starter";
+      else if (i < starterCount + sixthManCount) role = "sixth_man";
+      else if (i < starterCount + sixthManCount + rolePlayerCount) role = "role_player";
+      else role = "depth_piece";
+      if (roleBucketsAvailable[role]) assignments.set(e.key, role);
+    });
+    return assignments;
   }
 
   async function runBuild() {
@@ -443,11 +560,16 @@ export default function TeamBuilder({ sport }: { sport: string }) {
     // they won't play this season, so they shouldn't touch the combined
     // total, the position mix, or the scouting report.
     const activeRoster = roster.filter((e) => !e.redshirt);
+    const autoRoles = autoRoleAssignments(activeRoster);
     const players: BatchPlayerInput[] = activeRoster.map((e) => {
       if (e.kind === "real") {
         const input: BatchPlayerInput = { player_id: e.playerId };
         if (e.minutes.trim() !== "") input.minutes = Number(e.minutes);
         else if (e.role) input.role = e.role;
+        else {
+          const autoRole = autoRoles.get(e.key);
+          if (autoRole) input.role = autoRole;
+        }
         return input;
       }
       return {
@@ -1030,14 +1152,48 @@ function minutesSourceLabel(p: { is_custom?: boolean; minutes_source: string; ro
   return p.minutes_source;
 }
 
-// Compact "2024-25: 13.6/2.0/1.8, Summit 93.2 · 2023-24: ..." rendering of
-// career_history (every season strictly before 2025-26 on record) -- the
-// fuller-history counterpart to a single previous_season lookup, since a
-// coach evaluating a real player for next season benefits from seeing
-// more than just one prior year when it's on record.
-function careerHistoryLine(history?: PriorSeasonLine[]): string {
-  if (!history || history.length === 0) return "--";
-  return history
+// Compact "2025-26: 14.8/3.1/2.2, Summit 65.3 · 2024-25: ... · 2023-24: ..."
+// rendering of a real player's season history for the "Earlier Seasons"
+// column. Two sources feed this, stitched together here rather than in
+// the backend: career_history (projection.py's _career_prior_seasons(),
+// every season STRICTLY BEFORE the site's current built season -- i.e.
+// 2024-25 and earlier) is the fuller multi-year history, but on its own
+// it skipped the player's actual most recent real season (2025-26) --
+// that season is real production too, and now that Team Builder frames
+// everything around projecting forward to 2026-27 (phase 26), 2025-26
+// reads as an "earlier" season relative to that target, not "current."
+// The player's 2025-26 line lives in the `current` block (ppg/rpg/apg/
+// hoop_score, the same source "2025-26 Summit" already reads from), so
+// it's synthesized into a leading PriorSeasonLine-shaped entry here and
+// prepended -- no backend change needed, since every field this needs
+// (season, current) is already on the batch result.
+function careerHistoryLine(
+  season: string | null | undefined,
+  current: (Record<string, number> & { hoop_score?: number | null }) | null | undefined,
+  history?: PriorSeasonLine[]
+): string {
+  const entries: PriorSeasonLine[] = [];
+  if (season && current) {
+    // team/games/bpg/spg/topg/ts_pct aren't rendered by the map below --
+    // filled with placeholders only to satisfy PriorSeasonLine's shape.
+    entries.push({
+      season,
+      team: "",
+      games: 0,
+      ppg: current.ppg ?? null,
+      rpg: current.rpg ?? null,
+      apg: current.apg ?? null,
+      bpg: current.bpg ?? null,
+      spg: current.spg ?? null,
+      topg: current.topg ?? null,
+      ts_pct: current.ts_pct ?? null,
+      hoop_score: current.hoop_score ?? null,
+      thin_sample: false,
+    });
+  }
+  entries.push(...(history ?? []));
+  if (entries.length === 0) return "--";
+  return entries
     .map((s) => `${s.season}: ${s.ppg ?? "--"}/${s.rpg ?? "--"}/${s.apg ?? "--"}, Summit ${s.hoop_score ?? "--"}${s.thin_sample ? " (ltd)" : ""}`)
     .join(" · ");
 }
@@ -1137,7 +1293,7 @@ function ResultsCard({
                   </td>
                   <td>{currentSummit != null ? currentSummit : "--"}</td>
                   <td>{p.projected.hoop_score != null ? p.projected.hoop_score : "--"}</td>
-                  <td style={{ fontSize: "0.85rem" }}>{careerHistoryLine(p.career_history)}</td>
+                  <td style={{ fontSize: "0.85rem" }}>{careerHistoryLine(p.player.season, p.current, p.career_history)}</td>
                   <td>
                     <span className={p.extreme_mismatch ? "pill pill-warn" : "pill pill-good"}>{p.confidence}</span>
                   </td>

@@ -3016,6 +3016,17 @@ def leaderboard(conn, stat="hoop_score", level=None, division=None, conference=N
         if info["source"] == "pct":
             makes, attempts = d.pop("makes"), d.pop("attempts")
             d["stat_value"] = round(makes / attempts * 100, 1) if attempts else None
+        elif stat in ("ts_pct", "fg_pct") and d.get("stat_value") is not None:
+            # p.{stat} (selected directly as stat_value above) is stored as a
+            # 0-1 fraction like every other ts_pct/fg_pct column in the
+            # schema -- scale it to a real percentage here too, matching the
+            # d["ts_pct"]/d["fg_pct"] display fields right above and the
+            # already-percentage-scaled stat_value the "pct" source branch
+            # produces for tfg_pct/ft_pct. Previously this stayed a raw
+            # fraction (e.g. 0.5 instead of 50.2), so the Data page's
+            # Leaderboard table showed True Shooting %/Field Goal % as a
+            # near-zero decimal instead of a real percentage.
+            d["stat_value"] = round(d["stat_value"] * 100, 1)
         result_rows.append(d)
 
     return dict(
