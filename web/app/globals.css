@@ -576,6 +576,21 @@ select:focus {
   outline-offset: 1px;
 }
 
+/* The generic `input` rule above (min-width: 160px, padding: 8px 10px) is
+   meant for text/number fields -- applied unscoped, it also inflates a
+   checkbox into a huge empty box far wider than its label text (this is
+   what made Team Builder's redshirt checkbox look like it was floating
+   away from the word "Redshirt" next to it). Checkboxes/radios opt back
+   out to their natural size here so a `<label>` wrapping one sits as
+   tight as the `gap` between them says it should. */
+input[type="checkbox"],
+input[type="radio"] {
+  min-width: auto;
+  width: 16px;
+  padding: 0;
+  accent-color: var(--gold-dim);
+}
+
 .table-scroll {
   width: 100%;
   overflow-x: auto;

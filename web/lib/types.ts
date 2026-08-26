@@ -917,6 +917,12 @@ export interface BatchPlayerInput {
     // then overridden with a preset) -- keeps her name linkable to a real
     // profile page. See CustomPlayerRequest.linked_player_id in api.py.
     linked_player_id?: number;
+    // Free-text coach-entered height and which Team Builder entry type
+    // this slot represents ("freshman" / "juco_transfer" /
+    // "lower_transfer") -- both display-only passthroughs, see
+    // CustomPlayerRequest.height/entry_type in api.py.
+    height?: string;
+    entry_type?: string;
   };
 }
 
@@ -938,6 +944,11 @@ export interface BatchBuildPlayer {
     games: number | null;
     games_started: number | null;
     season: string | null;
+    // Set only on a custom (coach-entered) slot -- "freshman" /
+    // "juco_transfer" / "lower_transfer", echoing back whichever Team
+    // Builder entry type produced this line. See CustomPlayerRequest.
+    // entry_type in api.py.
+    entry_type?: string | null;
   };
   current: (Record<string, number> & { hoop_score?: number | null }) | null;
   target: { team: string; division: string; tier: string; current_rating: number } | null;

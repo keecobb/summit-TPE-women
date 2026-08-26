@@ -2450,14 +2450,27 @@ def _custom_player_result(custom):
     profile page. Purely a display passthrough -- it has zero effect on
     how this line is computed, which is still the coach's entered/preset
     line, used exactly as-is, same as any other custom entry.
+
+    height (phase 28): optional free-text height (e.g. "6' 2\""), coach-
+    entered same as every other custom field -- display only, never fed
+    into height_in or any computation.
+
+    entry_type (phase 28): optional -- "freshman" / "juco_transfer" /
+    "lower_transfer" (Team Builder's own entry-type keys, see ENTRY_TYPES
+    in TeamBuilder.tsx). Passed straight through onto the result's
+    `player` dict so the Roster Breakdown table can correctly label a
+    coach-entered slot as a Freshman vs. a JUCO Transfer vs. a Lower-Level
+    Transfer instead of just showing a bare class-year letter -- purely a
+    display tag, has zero effect on how this line is computed.
     """
     name = (custom.get("name") or "").strip() or "Custom entry"
     minutes = clamp(float(custom.get("minutes") or 0.0), 0.0, 40.0)
     return dict(
         player=dict(id=custom.get("linked_player_id"), name=name, position=custom.get("position"),
-                    height=None, height_in=None,
+                    height=custom.get("height"), height_in=None,
                     class_year=custom.get("class_year") or "Custom", current_team=None,
-                    current_division=None, current_tier=None, games=None, games_started=None, season=None),
+                    current_division=None, current_tier=None, games=None, games_started=None, season=None,
+                    entry_type=custom.get("entry_type")),
         current=None,
         target=None,
         previous_season=None,

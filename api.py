@@ -729,6 +729,14 @@ class CustomPlayerRequest(BaseModel):
     # can still link to a real profile page; has zero effect on how this
     # line is computed.
     linked_player_id: int | None = None
+    # Free-text coach-entered height (e.g. "6' 2\"") -- display only, same
+    # convention as every other custom field. (phase 28)
+    height: str | None = None
+    # Which of Team Builder's entry types this slot represents ("freshman"
+    # / "juco_transfer" / "lower_transfer") -- passed straight through so
+    # the Roster Breakdown table can label the slot correctly instead of
+    # just showing a bare class-year letter. Display only. (phase 28)
+    entry_type: str | None = None
 
 
 class BatchPlayerRequest(BaseModel):

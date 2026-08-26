@@ -44,6 +44,34 @@ const ENTRY_TYPES = [
 ] as const;
 type EntryTypeKey = (typeof ENTRY_TYPES)[number]["key"];
 
+// Short label for a custom entry's origin, shown next to her class year in
+// the Roster Breakdown table (e.g. "FR (Freshman)" vs. "SO (JUCO
+// Transfer)") so a coach-entered slot is correctly identified rather than
+// just showing a bare class-year letter indistinguishable from a real
+// player's. "Transfer" (not the full "Lower-Level Transfer (D2/NAIA)"
+// label used in the picker) since table space is tight.
+const ENTRY_TYPE_TABLE_LABEL: Record<EntryTypeKey, string> = {
+  freshman: "Freshman",
+  juco_transfer: "JUCO Transfer",
+  lower_transfer: "Transfer",
+};
+
+// A real player's class_year on a build result is her actual, current
+// 2025-26 status -- Team Builder projects the 2026-27 season, one year
+// later, so the Roster Breakdown table advances it by one class rather
+// than showing a stale year. A custom/preset entry's class_year is never
+// advanced: a coach picking "FR" for a Freshman entry already means "an
+// incoming freshman in 2026-27," not "currently a freshman in 2025-26."
+// (A redshirted real player's class wouldn't advance either, since a
+// redshirt year doesn't use a season of eligibility -- but a redshirted
+// entry never reaches this table at all, see runBuild()'s activeRoster
+// filter, so that case can't actually occur here.)
+const CLASS_YEAR_ADVANCE: Record<string, string> = { FR: "SO", SO: "JR", JR: "SR", SR: "GR" };
+function advanceClassYear(cy: string | null | undefined): string {
+  if (!cy) return "--";
+  return CLASS_YEAR_ADVANCE[cy] ?? cy;
+}
+
 interface Picked {
   id: number;
   label: string;
@@ -106,6 +134,9 @@ interface CustomEntry {
   entryType: EntryTypeKey;
   classYear: ClassYearKey;
   position: (typeof POSITIONS)[number];
+  // Free-text, coach-entered (e.g. 6' 2") -- display only, same as every
+  // other custom field. See CustomPlayerRequest.height in api.py.
+  height: string;
   archetype: FreshmanArchetypeKey;
   productionTier: ProductionTierKey;
   minutes: string; // always derived from the preset -- never hand-typed
@@ -117,6 +148,13 @@ interface CustomEntry {
   topg: string;
   // See RealEntry.redshirt -- same meaning, same build-time exclusion.
   redshirt?: boolean;
+  // Collapses this row to a one-line summary once a coach has entered/
+  // applied data -- a fully expanded custom row is the tallest thing on
+  // the board (name/type/class/position/height controls, the preset
+  // picker, then 6 stat inputs), and a roster with several of them left
+  // open gets hard to scan against the compact real-player rows next to
+  // them. Purely a display toggle -- doesn't touch what gets built.
+  collapsed?: boolean;
 }
 
 type Entry = RealEntry | CustomEntry;
@@ -147,6 +185,7 @@ function blankCustom(): CustomEntry {
     entryType: "freshman",
     classYear: "FR",
     position: "G",
+    height: "",
     archetype: "role_player",
     productionTier: "good",
     minutes: "",
@@ -156,6 +195,7 @@ function blankCustom(): CustomEntry {
     bpg: "",
     spg: "",
     topg: "",
+    collapsed: false,
   };
 }
 
@@ -179,6 +219,7 @@ function convertToOverride(entry: RealEntry): CustomEntry {
     entryType,
     classYear: cy,
     position: (entry.identity?.position as (typeof POSITIONS)[number] | undefined) ?? "G",
+    height: entry.identity?.height ?? "",
   };
 }
 
@@ -422,6 +463,8 @@ export default function TeamBuilder({ sport }: { sport: string }) {
           spg: e.spg.trim() !== "" ? Number(e.spg) : undefined,
           topg: e.topg.trim() !== "" ? Number(e.topg) : undefined,
           linked_player_id: e.linkedPlayerId,
+          height: e.height.trim() || undefined,
+          entry_type: e.entryType,
         },
       };
     });
@@ -519,11 +562,14 @@ export default function TeamBuilder({ sport }: { sport: string }) {
         {rosterError && <div className="error-box" style={{ marginTop: 12 }}>{rosterError}</div>}
         <p className="section-note" style={{ marginTop: 8, marginBottom: 0 }}>
           Team Builder projects this roster for the <strong>2026-27 season</strong>. Every real player&apos;s stats
-          shown are her actual <strong>2025-26</strong> production (and earlier seasons on record, when available) --
+          shown are their actual <strong>2025-26</strong> production (and earlier seasons on record, when available) --
           2026-27 hasn&apos;t happened yet. Loading a roster replaces everyone currently below with that team&apos;s
           actual current players (prefilled with their real role, e.g. Solidified Starter). &quot;Reset roles to
           Auto&quot; clears every role/exact-minutes override back to each player&apos;s own real usage. You can
           remove any of them, add players from any other team, or clear the board entirely and build from scratch.
+          Class years shown after a build reflect the projected <strong>2026-27</strong> season (a real player&apos;s
+          class advances one year from her current record; a Freshman/JUCO/Lower-Level Transfer entry is already
+          entered at the class she&apos;d be entering as).
         </p>
       </div>
 
@@ -544,7 +590,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
             <p className="section-note" style={{ marginTop: -4 }}>
               {roster.filter((e) => e.redshirt).length} player{roster.filter((e) => e.redshirt).length === 1 ? "" : "s"} marked
               redshirt -- still on the roster (counts toward the 15 cap) but excluded from the build, the position
-              mix, and the scouting report since she won&apos;t play this season.
+              mix, and the scouting report since they won&apos;t play this season.
             </p>
           )}
           {roster.map((e) =>
@@ -601,9 +647,9 @@ export default function TeamBuilder({ sport }: { sport: string }) {
           reportLoading={reportLoading}
         />
       )}
-      {result && <RosterMixCard result={result} />}
       {reportError && <div className="error-box" style={{ marginTop: 12 }}>{reportError}</div>}
       {report && <ScoutingReportCard report={report} />}
+      {result && <RosterMixCard result={result} />}
     </div>
   );
 }
@@ -746,6 +792,12 @@ function CustomRow({
       bpg: String(line.bpg ?? 0),
       spg: String(line.spg ?? 0),
       topg: String(line.topg ?? 0),
+      // A preset click is the clearest "data has been entered" signal for
+      // this row -- collapse it down to a one-line summary automatically
+      // so a roster with several custom entries doesn't stay full of open
+      // forms once they're filled in. Still just one click to expand and
+      // fine-tune afterward.
+      collapsed: true,
     });
   }
 
@@ -767,16 +819,59 @@ function CustomRow({
     onChange({ entryType: key, classYear });
   }
 
+  const redshirtCheckbox = (
+    <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.78rem", color: "var(--text-dim)" }}>
+      <input type="checkbox" checked={!!entry.redshirt} onChange={(ev) => onChange({ redshirt: ev.target.checked })} />
+      Redshirt
+    </label>
+  );
+
+  // Collapsed to a one-line summary (see CustomEntry.collapsed) -- a
+  // full-height custom row is the tallest thing on the board, and this
+  // reads roughly like a real-player row's density once the coach is done
+  // entering/applying data. Click the chevron (or "Use these averages",
+  // which auto-collapses) to get here; click it again to expand and edit.
+  if (entry.collapsed) {
+    const bits: string[] = [entryTypeDef.label, entry.classYear, entry.position];
+    if (entry.height) bits.push(entry.height);
+    if (entry.minutes) bits.push(`${entry.minutes} min`);
+    if (entry.ppg || entry.rpg || entry.apg) bits.push(`${entry.ppg || 0}/${entry.rpg || 0}/${entry.apg || 0} ppg/rpg/apg`);
+    return (
+      <div className="roster-row roster-row-custom" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", opacity: entry.redshirt ? 0.6 : 1 }}>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => onChange({ collapsed: false })}
+          style={{ padding: "2px 8px" }}
+          aria-label={`Expand ${entry.name || "custom entry"}`}
+          title="Expand to edit"
+        >
+          ▸
+        </button>
+        <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+          <div style={{ fontWeight: 600 }}>
+            {entry.name || "Custom entry"}{" "}
+            <span className="pill pill-warn" style={{ fontSize: "0.7rem", verticalAlign: "middle" }}>
+              {entry.redshirt ? "Redshirt" : entry.linkedPlayerId ? "Preset override" : "Custom"}
+            </span>
+          </div>
+          <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{bits.join(" · ")}</div>
+        </div>
+        {redshirtCheckbox}
+        <button type="button" onClick={onRemove} className="btn" style={{ padding: "4px 10px" }} aria-label={`Remove ${entry.name || "custom entry"}`}>
+          Remove
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="roster-row roster-row-custom" style={{ opacity: entry.redshirt ? 0.6 : 1 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
         <span className="pill pill-warn">
           {entry.redshirt ? "Redshirt -- not counted" : entry.linkedPlayerId ? "Preset override" : "Custom / not modeled"}
         </span>
-        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.78rem", color: "var(--text-dim)" }}>
-          <input type="checkbox" checked={!!entry.redshirt} onChange={(ev) => onChange({ redshirt: ev.target.checked })} />
-          Redshirt
-        </label>
+        {redshirtCheckbox}
         <input
           type="text"
           placeholder="Name (e.g. incoming freshman)"
@@ -816,6 +911,17 @@ function CustomRow({
             </option>
           ))}
         </select>
+        <input
+          type="text"
+          placeholder="Height (e.g. 6' 2&quot;)"
+          value={entry.height}
+          onChange={(ev) => onChange({ height: ev.target.value })}
+          style={{ width: 120 }}
+          aria-label="Height"
+        />
+        <button type="button" className="btn" onClick={() => onChange({ collapsed: true })} style={{ padding: "4px 10px" }}>
+          Collapse
+        </button>
         <button type="button" onClick={onRemove} className="btn" style={{ padding: "4px 10px" }} aria-label={`Remove ${entry.name || "custom entry"}`}>
           Remove
         </button>
@@ -1007,7 +1113,22 @@ function ResultsCard({
                     {p.player.current_team && <div className="sub" style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>{p.player.current_team}</div>}
                   </td>
                   <td>
-                    {[p.player.position, p.player.height, p.player.class_year].filter(Boolean).join(" / ") || "--"}
+                    {(() => {
+                      const parts = [p.player.position, p.player.height].filter(Boolean) as string[];
+                      const classText = p.is_custom
+                        ? p.player.class_year
+                          ? `${p.player.class_year}${
+                              p.player.entry_type && ENTRY_TYPE_TABLE_LABEL[p.player.entry_type as EntryTypeKey]
+                                ? ` (${ENTRY_TYPE_TABLE_LABEL[p.player.entry_type as EntryTypeKey]})`
+                                : ""
+                            }`
+                          : null
+                        : advanceClassYear(p.player.class_year) !== "--"
+                          ? advanceClassYear(p.player.class_year)
+                          : null;
+                      if (classText) parts.push(classText);
+                      return parts.length ? parts.join(" / ") : "--";
+                    })()}
                   </td>
                   <td>{minutesSourceLabel(p)}</td>
                   <td>{p.projected.minutes?.toFixed?.(1) ?? p.projected.minutes}</td>
@@ -1029,7 +1150,10 @@ function ResultsCard({
       <p className="section-note" style={{ marginTop: 8, marginBottom: 0 }}>
         &quot;2025-26 Summit&quot; and &quot;Earlier Seasons&quot; are this player&apos;s actual real production, not
         projections -- there&apos;s no 2026-27 data yet. &quot;Proj. Summit&quot; is the only Summit Score number here
-        that reflects the target team above; a custom/preset entry has neither.
+        that reflects the target team above; a custom/preset entry has neither. A real player&apos;s class year is
+        advanced one year from her current record to match the 2026-27 season this roster is built for; a Freshman/
+        JUCO/Lower-Level Transfer entry&apos;s class is shown exactly as entered (already her entering class), with
+        the entry type noted alongside it.
       </p>
       <button type="button" className="btn btn-primary" onClick={onRunReport} disabled={reportLoading} style={{ marginTop: 12 }}>
         {reportLoading ? "Building scouting report..." : "Generate scouting report"}
@@ -1162,16 +1286,29 @@ function RosterMixCard({ result }: { result: BatchBuildResult }) {
 // A minimal 3-series (built roster / national average / target team)
 // horizontal bar per category -- each bar's width is relative to the
 // largest of the 3 values in that row, so every category is readable
-// regardless of its own scale (points vs. turnovers vs. blocks).
-function CategoryBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+// regardless of its own scale (points vs. turnovers vs. blocks). Every
+// row carries its own series name and a color swatch (not just a color),
+// so a row is identifiable on its own -- the original version left the
+// national-average/target-team rows unlabeled and relied entirely on a
+// separate legend line above the whole chart, whose manual pixel-margin
+// alignment to the category-label column broke as soon as a label was a
+// different width, and even lined up correctly it asked a reader to hold
+// 3 colors in mind across a dozen category groups.
+function CategoryBar({ seriesLabel, value, max, color }: { seriesLabel: string; value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.max(2, Math.min(100, (value / max) * 100)) : 0;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.78rem" }}>
-      <div style={{ width: 90, color: "var(--text-dim)", flexShrink: 0 }}>{label}</div>
+      <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0 }} aria-hidden="true" />
+      <div
+        style={{ width: 108, color: "var(--text-dim)", flexShrink: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        title={seriesLabel}
+      >
+        {seriesLabel}
+      </div>
       <div style={{ flex: 1, background: "var(--bg-panel-2)", borderRadius: 4, height: 10, position: "relative" }}>
         <div style={{ width: `${pct}%`, background: color, height: "100%", borderRadius: 4 }} />
       </div>
-      <div style={{ width: 40, textAlign: "right", flexShrink: 0 }}>{value}</div>
+      <div style={{ width: 44, textAlign: "right", flexShrink: 0, fontVariantNumeric: "tabular-nums" }}>{value}</div>
     </div>
   );
 }
@@ -1212,20 +1349,29 @@ function ScoutingReportCard({ report }: { report: ScoutingReport }) {
       </div>
 
       <h3>vs. 2025-26 National Average &amp; {report.target_team}</h3>
-      <div style={{ display: "flex", gap: 4, marginBottom: 4, fontSize: "0.72rem", color: "var(--text-dim)" }}>
-        <span style={{ marginLeft: 98 }}>🟢 This roster</span>
-        <span style={{ marginLeft: 12 }}>⚪ National avg</span>
-        <span style={{ marginLeft: 12 }}>🟡 {report.target_team}</span>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <p className="section-note" style={{ marginTop: -2 }}>
+        Each category below shows three bars: this built roster, the 2025-26 national average, and{" "}
+        {report.target_team}&apos;s own real production.
+      </p>
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {report.categories.map((c) => {
           const values = [c.built_value, c.national_mean ?? 0, c.target_team_value ?? 0];
           const max = Math.max(...values, 1);
           return (
-            <div key={c.stat}>
-              <CategoryBar label={c.label} value={c.built_value} max={max} color="var(--green)" />
-              {c.national_mean != null && <CategoryBar label="" value={c.national_mean} max={max} color="var(--text-dim)" />}
-              {c.target_team_value != null && <CategoryBar label="" value={c.target_team_value} max={max} color="var(--gold)" />}
+            <div
+              key={c.stat}
+              style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px" }}
+            >
+              <div style={{ fontWeight: 600, fontSize: "0.85rem", marginBottom: 8 }}>{c.label}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                <CategoryBar seriesLabel="This roster" value={c.built_value} max={max} color="var(--green-light)" />
+                {c.national_mean != null && (
+                  <CategoryBar seriesLabel="National avg" value={c.national_mean} max={max} color="var(--text-dim)" />
+                )}
+                {c.target_team_value != null && (
+                  <CategoryBar seriesLabel={report.target_team} value={c.target_team_value} max={max} color="var(--gold)" />
+                )}
+              </div>
             </div>
           );
         })}
