@@ -7,12 +7,42 @@ import {
   roleLabel,
   type BatchBuildResult,
   type BatchPlayerInput,
+  type ClassArchetypeCell,
+  type ClassArchetypes,
+  type ClassYearKey,
   type FreshmanArchetypeKey,
-  type FreshmanArchetypes,
+  type PriorSeasonLine,
+  type ProductionTierKey,
+  type ScoutingReport,
 } from "@/lib/types";
 
-const FRESHMAN_ARCHETYPE_KEYS: FreshmanArchetypeKey[] = ["day1_starter", "role_player", "depth_piece"];
-const FRESHMAN_TIERS = ["High-Major", "Mid-Major", "Low-Major"] as const;
+const ARCHETYPE_KEYS: FreshmanArchetypeKey[] = ["day1_starter", "role_player", "depth_piece"];
+const PRODUCTION_TIER_KEYS: ProductionTierKey[] = ["great", "good", "average"];
+const TEAM_TIERS = ["High-Major", "Mid-Major", "Low-Major"] as const;
+const POSITIONS = ["G", "F", "C"] as const;
+
+// NCAA women's/men's D1 basketball rosters are capped at 15 -- a coach
+// building a hypothetical roster shouldn't be able to assemble something
+// that couldn't legally exist. A redshirted entry still occupies a real
+// roster spot (she's on the team, just not playing) so she still counts
+// against this cap even though she's excluded from every build/report
+// computation below.
+const ROSTER_CAP = 15;
+
+// The 3 ways a custom roster slot can be grounded in real production (all
+// backed by the SAME class_archetypes() real-data grid, just pointed at a
+// different class year -- see class-archetypes/route.ts). "Freshman" is
+// locked to FR (a true incoming freshman). "JUCO Transfer" models a 1-2
+// year junior-college transfer, who typically enters with a class jump
+// already earned (locked to SO/JR, not FR -- she's not a true freshman by
+// eligibility). "Lower-Level Transfer" (D2/NAIA, etc.) can enter at any
+// class, since those transfers aren't on a fixed JUCO clock.
+const ENTRY_TYPES = [
+  { key: "freshman", label: "Freshman", classYears: ["FR"] as ClassYearKey[] },
+  { key: "juco_transfer", label: "JUCO Transfer", classYears: ["SO", "JR"] as ClassYearKey[] },
+  { key: "lower_transfer", label: "Lower-Level Transfer (D2/NAIA)", classYears: ["FR", "SO", "JR", "SR"] as ClassYearKey[] },
+] as const;
+type EntryTypeKey = (typeof ENTRY_TYPES)[number]["key"];
 
 interface Picked {
   id: number;
@@ -28,9 +58,10 @@ interface Picked {
   classYear?: string | null;
   teamName?: string | null;
   hoopScore?: number | null;
+  games?: number | null;
 }
 
-// Position/height/class/current Summit Score/school -- shown as a small
+// Position/height/class/2025-26 Summit Score/school -- shown as a small
 // identity line under a roster row's name, and (for a roster-loaded
 // player) sourced straight from /teams/{id}/roles' roster_roles; for a
 // player added via search, from the search proxy's structured fields.
@@ -43,6 +74,7 @@ interface PlayerIdentity {
   classYear?: string | null;
   teamName?: string | null;
   hoopScore?: number | null;
+  games?: number | null;
 }
 
 interface RealEntry {
@@ -54,21 +86,37 @@ interface RealEntry {
   identity?: PlayerIdentity;
   role: string; // "" = Auto
   minutes: string; // "" = not set, wins over role when filled
+  // Redshirted this season -- she's on the roster (still counts against
+  // the 15-player cap) but won't play, so she's excluded entirely from
+  // the build payload sent to /project/batch: no minutes, no stat line,
+  // no contribution to the combined total, the position mix, or the
+  // scouting report. Purely a frontend filter -- no backend involvement.
+  redshirt?: boolean;
 }
 
 interface CustomEntry {
   kind: "custom";
   key: string;
+  // Set when this slot is a real player already in the cache with no
+  // 2025-26 production to project from -- see convertToOverride() below.
+  // Purely a display/link passthrough; doesn't change how this slot is
+  // computed.
+  linkedPlayerId?: number;
   name: string;
-  classYear: string;
-  position: string;
-  minutes: string;
+  entryType: EntryTypeKey;
+  classYear: ClassYearKey;
+  position: (typeof POSITIONS)[number];
+  archetype: FreshmanArchetypeKey;
+  productionTier: ProductionTierKey;
+  minutes: string; // always derived from the preset -- never hand-typed
   ppg: string;
   rpg: string;
   apg: string;
   bpg: string;
   spg: string;
   topg: string;
+  // See RealEntry.redshirt -- same meaning, same build-time exclusion.
+  redshirt?: boolean;
 }
 
 type Entry = RealEntry | CustomEntry;
@@ -96,8 +144,11 @@ function blankCustom(): CustomEntry {
     kind: "custom",
     key: nextKey(),
     name: "",
+    entryType: "freshman",
     classYear: "FR",
     position: "G",
+    archetype: "role_player",
+    productionTier: "good",
     minutes: "",
     ppg: "",
     rpg: "",
@@ -108,18 +159,72 @@ function blankCustom(): CustomEntry {
   };
 }
 
+// Turns a flagged real player (loaded/searched but with zero 2025-26
+// games -- see RealRow's "no 2025-26 stats" pill) into a custom slot
+// pre-filled with her real identity, keeping her player_id as a display
+// link (linked_player_id, see _custom_player_result()'s docstring in
+// projection.py) even though her actual stat line now comes from a
+// preset instead of the model. Defaults entryType by her real class year
+// when known (FR -> freshman, anything else -> lower_transfer, the
+// broadest bucket) since there's no way to know from the data alone
+// whether she's a true incoming freshman or an already-enrolled transfer
+// who simply redshirted/sat out -- the coach can change it either way.
+function convertToOverride(entry: RealEntry): CustomEntry {
+  const cy = (entry.identity?.classYear as ClassYearKey | undefined) ?? "FR";
+  const entryType: EntryTypeKey = cy === "FR" ? "freshman" : "lower_transfer";
+  return {
+    ...blankCustom(),
+    linkedPlayerId: entry.playerId,
+    name: entry.name,
+    entryType,
+    classYear: cy,
+    position: (entry.identity?.position as (typeof POSITIONS)[number] | undefined) ?? "G",
+  };
+}
+
+// Resolves the real-data class_archetypes cell a custom entry's current
+// selectors point at, falling back from a position-specific slice to the
+// position-blind cell when the position slice isn't offered (see
+// class_archetypes()'s docstring in projection.py -- position coverage is
+// genuinely sparse site-wide, so this fallback is the common case, not an
+// edge case).
+function resolveCell(archetypes: ClassArchetypes | null, entry: CustomEntry): ClassArchetypeCell | undefined {
+  const tierCell = archetypes?.classes?.[entry.classYear]?.[teamTierFor(entry) ?? ""]?.[entry.archetype];
+  if (!tierCell) return undefined;
+  const posCell = tierCell.positions?.[entry.position];
+  return posCell && posCell.player_count > 0 ? posCell : tierCell;
+}
+
+// Placeholder replaced by the real target-team tier at call sites below --
+// kept as a small helper so resolveCell's signature doesn't need the tier
+// threaded through separately everywhere it's used.
+let _teamTierForCurrentBuild: string | undefined;
+function teamTierFor(_entry: CustomEntry): string | undefined {
+  return _teamTierForCurrentBuild;
+}
+
+function presetLine(cell: ClassArchetypeCell | undefined, tier: ProductionTierKey) {
+  if (!cell) return undefined;
+  return cell.tiers?.[tier] ?? cell;
+}
+
 /**
- * Roster Lab: pick one real team as the projection context (its rating
+ * Team Builder: pick one real team as the projection context (its rating
  * is what every real roster player's strength-gap and role-minutes are
  * resolved against, same as /project's target_team_id), then assemble a
- * roster against it -- start from that team's actual current players
- * (prefilled with their real classified role), remove/add freely, add any
- * other team's players, and/or add freeform "custom" slots for an
- * incoming freshman or anyone else with no real season in the cache. See
- * app/api/team-builder/route.ts and POST /project/batch's `custom`
- * support (projection.py's _custom_player_result) for how a custom slot's
- * coach-entered line flows through unmodeled, clearly labeled, alongside
- * every real player's actual model-backed projection.
+ * roster against it for a projected 2026-27 season -- start from that
+ * team's actual current players (prefilled with their real classified
+ * role), remove/add freely, add any other team's players, and/or add
+ * freeform slots for an incoming freshman, a JUCO transfer, a lower-level
+ * (D2/NAIA) transfer, or anyone else with no real 2025-26 season in the
+ * cache. Every real player's stats shown are their actual 2025-26
+ * production (2026-27 hasn't happened yet) -- see app/api/team-builder/
+ * route.ts and POST /project/batch's `custom`/`normalize_minutes` support
+ * (projection.py's _custom_player_result/project_batch) for how a custom
+ * slot's preset/coach-entered line flows through unmodeled, clearly
+ * labeled, alongside every real player's actual model-backed projection,
+ * and how the whole roster's minutes get rescaled to a real game's 200
+ * team-minutes.
  */
 export default function TeamBuilder({ sport }: { sport: string }) {
   const [team, setTeam] = useState<Picked | null>(null);
@@ -130,18 +235,22 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [result, setResult] = useState<BatchBuildResult | null>(null);
-  const [archetypes, setArchetypes] = useState<FreshmanArchetypes | null>(null);
+  const [archetypes, setArchetypes] = useState<ClassArchetypes | null>(null);
+  const [report, setReport] = useState<ScoutingReport | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   // Fetched once per sport, not per custom row -- this is season-aggregate
-  // data (real freshman averages by team level x archetype), the same for
-  // every custom entry a coach adds. See app/api/freshman-archetypes/
-  // route.ts and freshman_archetypes() in projection.py.
+  // data (real averages by class year x team level x archetype x
+  // position), the same for every custom/preset entry a coach adds. See
+  // app/api/class-archetypes/route.ts and class_archetypes() in
+  // projection.py.
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/freshman-archetypes?sport=${sport}`)
+    fetch(`/api/class-archetypes?sport=${sport}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled && data) setArchetypes(data as FreshmanArchetypes);
+        if (!cancelled && data) setArchetypes(data as ClassArchetypes);
       })
       .catch(() => {});
     return () => {
@@ -150,9 +259,12 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   }, [sport]);
 
   // team.sub is "<Tier> · <Conference>" (see app/api/search/route.ts) --
-  // used only to default the archetype picker's team-level dropdown to the
-  // target team's own level; the coach can still pick a different level.
+  // used to resolve which tier's real-data grid a custom/preset entry
+  // pulls from, and to default the preset picker's label. A coach picks a
+  // target team before adding a freshman/transfer to it, so there's
+  // nothing extra to ask here.
   const targetTier = team?.sub?.split(" · ")[0];
+  _teamTierForCurrentBuild = targetTier;
 
   async function loadCurrentRoster(teamId: number) {
     setRosterLoading(true);
@@ -173,6 +285,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
           height: string | null;
           class_year: string | null;
           hoop_score: number | null;
+          games: number | null;
         }) => ({
           kind: "real" as const,
           key: nextKey(),
@@ -181,7 +294,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
           sub: r.role ?? "Unclassified",
           identity: {
             position: r.position, height: r.height, classYear: r.class_year,
-            teamName: data.team_name, hoopScore: r.hoop_score,
+            teamName: data.team_name, hoopScore: r.hoop_score, games: r.games,
           },
           role: r.role ? (CLASSIFIED_ROLE_TO_ROLE_NAME[r.role] ?? "") : "",
           minutes: "",
@@ -189,6 +302,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
       );
       setRoster(entries);
       setResult(null);
+      setReport(null);
     } catch {
       setRosterError("Couldn't reach the site's search proxy -- try again.");
     } finally {
@@ -199,6 +313,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
   function onPickTeam(p: Picked | null) {
     setTeam(p);
     setResult(null);
+    setReport(null);
     if (p && roster.length === 0) {
       loadCurrentRoster(p.id);
     }
@@ -206,7 +321,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
 
   function addRealPlayer(p: Picked) {
     setRoster((prev) =>
-      prev.some((e) => e.kind === "real" && e.playerId === p.id)
+      prev.length >= ROSTER_CAP || prev.some((e) => e.kind === "real" && e.playerId === p.id)
         ? prev
         : [
             ...prev,
@@ -218,7 +333,7 @@ export default function TeamBuilder({ sport }: { sport: string }) {
               sub: p.sub,
               identity: {
                 position: p.position, height: p.height, classYear: p.classYear,
-                teamName: p.teamName, hoopScore: p.hoopScore,
+                teamName: p.teamName, hoopScore: p.hoopScore, games: p.games,
               },
               role: "",
               minutes: "",
@@ -227,33 +342,67 @@ export default function TeamBuilder({ sport }: { sport: string }) {
     );
     setAddKey((k) => k + 1);
     setResult(null);
+    setReport(null);
   }
 
   function addCustom() {
-    setRoster((prev) => [...prev, blankCustom()]);
+    setRoster((prev) => (prev.length >= ROSTER_CAP ? prev : [...prev, blankCustom()]));
     setResult(null);
+    setReport(null);
   }
 
   function removeEntry(key: string) {
     setRoster((prev) => prev.filter((e) => e.key !== key));
     setResult(null);
+    setReport(null);
   }
 
   function updateEntry(key: string, patch: Partial<RealEntry> | Partial<CustomEntry>) {
     setRoster((prev) => prev.map((e) => (e.key === key ? ({ ...e, ...patch } as Entry) : e)));
     setResult(null);
+    setReport(null);
+  }
+
+  // Converts a flagged real entry (no 2025-26 games) into a preset-backed
+  // custom slot in place, same position in the roster list.
+  function overrideEntry(key: string) {
+    setRoster((prev) =>
+      prev.map((e) => (e.key === key && e.kind === "real" ? convertToOverride(e) : e))
+    );
+    setResult(null);
+    setReport(null);
   }
 
   function clearRoster() {
     setRoster([]);
     setResult(null);
+    setReport(null);
+  }
+
+  // "Reset roles": every real player's role/exact-minutes override clears
+  // back to Auto (her own real minutes, normalized into the 200-team-
+  // minute build below) -- a quick way to see what this exact group of
+  // players would put up left to their own real usage, before hand-tuning
+  // anyone's role.
+  function resetRoles() {
+    setRoster((prev) =>
+      prev.map((e) => (e.kind === "real" ? { ...e, role: "", minutes: "" } : e))
+    );
+    setResult(null);
+    setReport(null);
   }
 
   async function runBuild() {
     if (!team || roster.length === 0) return;
     setSubmitting(true);
     setSubmitError(null);
-    const players: BatchPlayerInput[] = roster.map((e) => {
+    setReport(null);
+    // Redshirted entries stay on the board (they still occupy a real
+    // roster spot, see ROSTER_CAP above) but never reach the build --
+    // they won't play this season, so they shouldn't touch the combined
+    // total, the position mix, or the scouting report.
+    const activeRoster = roster.filter((e) => !e.redshirt);
+    const players: BatchPlayerInput[] = activeRoster.map((e) => {
       if (e.kind === "real") {
         const input: BatchPlayerInput = { player_id: e.playerId };
         if (e.minutes.trim() !== "") input.minutes = Number(e.minutes);
@@ -272,14 +421,20 @@ export default function TeamBuilder({ sport }: { sport: string }) {
           bpg: e.bpg.trim() !== "" ? Number(e.bpg) : undefined,
           spg: e.spg.trim() !== "" ? Number(e.spg) : undefined,
           topg: e.topg.trim() !== "" ? Number(e.topg) : undefined,
+          linked_player_id: e.linkedPlayerId,
         },
       };
     });
+    if (players.length === 0) {
+      setSubmitError("Everyone on the board is marked as a redshirt -- add at least one active player before building.");
+      setSubmitting(false);
+      return;
+    }
     try {
       const res = await fetch(`/api/team-builder?sport=${sport}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_team_id: team.id, players }),
+        body: JSON.stringify({ target_team_id: team.id, players, normalize_minutes: true }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -291,6 +446,29 @@ export default function TeamBuilder({ sport }: { sport: string }) {
       setSubmitError("Couldn't reach the site's build proxy -- try again.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function runScoutingReport() {
+    if (!team || !result) return;
+    setReportLoading(true);
+    setReportError(null);
+    try {
+      const res = await fetch(`/api/team-builder/scouting-report?sport=${sport}&target_team_id=${team.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result.combined),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setReportError(data?.error ?? "Couldn't build a scouting report for this roster.");
+        return;
+      }
+      setReport(data as ScoutingReport);
+    } catch {
+      setReportError("Couldn't reach the site's scouting-report proxy -- try again.");
+    } finally {
+      setReportLoading(false);
     }
   }
 
@@ -330,6 +508,9 @@ export default function TeamBuilder({ sport }: { sport: string }) {
             <button type="button" className="btn" onClick={() => loadCurrentRoster(team.id)} disabled={rosterLoading}>
               {rosterLoading ? "Loading..." : `Load ${team.label}'s current roster`}
             </button>
+            <button type="button" className="btn" onClick={resetRoles} disabled={roster.length === 0}>
+              Reset roles to Auto
+            </button>
             <button type="button" className="btn" onClick={clearRoster} disabled={roster.length === 0}>
               Clear roster
             </button>
@@ -337,44 +518,73 @@ export default function TeamBuilder({ sport }: { sport: string }) {
         )}
         {rosterError && <div className="error-box" style={{ marginTop: 12 }}>{rosterError}</div>}
         <p className="section-note" style={{ marginTop: 8, marginBottom: 0 }}>
-          Loading a roster replaces everyone currently below with that team's actual current players (prefilled with
-          their real role, e.g. Solidified Starter). You can remove any of them, add players from any other team, or
-          clear the board entirely and build from scratch.
+          Team Builder projects this roster for the <strong>2026-27 season</strong>. Every real player&apos;s stats
+          shown are her actual <strong>2025-26</strong> production (and earlier seasons on record, when available) --
+          2026-27 hasn&apos;t happened yet. Loading a roster replaces everyone currently below with that team&apos;s
+          actual current players (prefilled with their real role, e.g. Solidified Starter). &quot;Reset roles to
+          Auto&quot; clears every role/exact-minutes override back to each player&apos;s own real usage. You can
+          remove any of them, add players from any other team, or clear the board entirely and build from scratch.
         </p>
       </div>
 
       {team && (
         <div className="card" style={{ marginTop: 16 }}>
-          <h2>Roster ({roster.length})</h2>
+          <h2>
+            Roster ({roster.length}/{ROSTER_CAP})
+            {roster.length >= ROSTER_CAP && (
+              <span className="pill pill-warn" style={{ marginLeft: 8, fontSize: "0.7rem", verticalAlign: "middle" }}>
+                Roster full
+              </span>
+            )}
+          </h2>
           {roster.length === 0 && (
             <p className="section-note">Nothing on the board yet -- load a current roster above, or start adding players below.</p>
           )}
+          {roster.some((e) => e.redshirt) && (
+            <p className="section-note" style={{ marginTop: -4 }}>
+              {roster.filter((e) => e.redshirt).length} player{roster.filter((e) => e.redshirt).length === 1 ? "" : "s"} marked
+              redshirt -- still on the roster (counts toward the 15 cap) but excluded from the build, the position
+              mix, and the scouting report since she won&apos;t play this season.
+            </p>
+          )}
           {roster.map((e) =>
             e.kind === "real" ? (
-              <RealRow key={e.key} entry={e} onChange={(patch) => updateEntry(e.key, patch)} onRemove={() => removeEntry(e.key)} />
+              <RealRow
+                key={e.key}
+                entry={e}
+                onChange={(patch) => updateEntry(e.key, patch)}
+                onRemove={() => removeEntry(e.key)}
+                onOverride={() => overrideEntry(e.key)}
+              />
             ) : (
               <CustomRow
                 key={e.key}
                 entry={e}
                 archetypes={archetypes}
-                defaultTier={targetTier}
+                teamTier={targetTier}
                 onChange={(patch) => updateEntry(e.key, patch)}
                 onRemove={() => removeEntry(e.key)}
               />
             )
           )}
 
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 16 }}>
-            <div className="field" style={{ flex: "1 1 260px" }}>
-              <label htmlFor="builder-player-search">Add a player from any team</label>
-              <SearchOnly key={addKey} sport={sport} kind="players" inputId="builder-player-search" placeholder="Search a player to add..." onPick={addRealPlayer} />
+          {roster.length >= ROSTER_CAP ? (
+            <p className="section-note" style={{ marginTop: 16 }}>
+              Roster is full ({ROSTER_CAP}/{ROSTER_CAP}) -- remove a player above to add another.
+            </p>
+          ) : (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 16 }}>
+              <div className="field" style={{ flex: "1 1 260px" }}>
+                <label htmlFor="builder-player-search">Add a player from any team</label>
+                <SearchOnly key={addKey} sport={sport} kind="players" inputId="builder-player-search" placeholder="Search a player to add..." onPick={addRealPlayer} />
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end" }}>
+                <button type="button" className="btn" onClick={addCustom}>
+                  + Add a freshman / transfer / custom entry
+                </button>
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "flex-end" }}>
-              <button type="button" className="btn" onClick={addCustom}>
-                + Add a freshman / custom entry
-              </button>
-            </div>
-          </div>
+          )}
 
           <button className="btn btn-primary" type="button" onClick={runBuild} disabled={roster.length === 0 || submitting} style={{ marginTop: 16 }}>
             {submitting ? "Building..." : "Build team"}
@@ -383,7 +593,17 @@ export default function TeamBuilder({ sport }: { sport: string }) {
         </div>
       )}
 
-      {result && <ResultsCard sport={sport} result={result} />}
+      {result && (
+        <ResultsCard
+          sport={sport}
+          result={result}
+          onRunReport={runScoutingReport}
+          reportLoading={reportLoading}
+        />
+      )}
+      {result && <RosterMixCard result={result} />}
+      {reportError && <div className="error-box" style={{ marginTop: 12 }}>{reportError}</div>}
+      {report && <ScoutingReportCard report={report} />}
     </div>
   );
 }
@@ -406,7 +626,17 @@ function identityLine(identity?: PlayerIdentity): string {
   return parts.join(" · ");
 }
 
-function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (patch: Partial<RealEntry>) => void; onRemove: () => void }) {
+function RealRow({
+  entry,
+  onChange,
+  onRemove,
+  onOverride,
+}: {
+  entry: RealEntry;
+  onChange: (patch: Partial<RealEntry>) => void;
+  onRemove: () => void;
+  onOverride: () => void;
+}) {
   const idLine = identityLine(entry.identity);
   // Role and identity used to be two separate lines under the name (up to
   // 3 lines total per row before you even reach the controls) -- on a
@@ -416,8 +646,17 @@ function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (p
   // "role · position · height · class · school · Summit" line so a roster
   // row is name + one subline, same info, roughly a third less height.
   const subLine = [entry.sub, idLine].filter(Boolean).join(" · ");
+  // A real player already in the cache but with zero 2025-26 games (an
+  // already-loaded signee/transfer with no production yet) can't be
+  // projected by the model at all -- flag it and offer to convert this
+  // row into a preset-backed slot instead of letting "Build team" fail on
+  // her with an opaque error.
+  const missingStats = entry.identity?.games === 0;
   return (
-    <div className="roster-row" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+    <div
+      className="roster-row"
+      style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", opacity: entry.redshirt ? 0.6 : 1 }}
+    >
       <div style={{ flex: "1 1 200px", minWidth: 0 }}>
         <div style={{ fontWeight: 600 }}>{entry.name}</div>
         {subLine && (
@@ -425,8 +664,30 @@ function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (p
             {subLine}
           </div>
         )}
+        {missingStats && !entry.redshirt && (
+          <div style={{ marginTop: 4, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span className="pill pill-warn">No 2025-26 stats</span>
+            <button type="button" className="btn" onClick={onOverride} style={{ padding: "2px 8px", fontSize: "0.78rem" }}>
+              Set a class/role average instead
+            </button>
+          </div>
+        )}
+        {entry.redshirt && (
+          <div style={{ marginTop: 4 }}>
+            <span className="pill pill-warn">Redshirt -- won&apos;t play, not counted</span>
+          </div>
+        )}
       </div>
-      <select value={entry.role} onChange={(ev) => onChange({ role: ev.target.value })} disabled={entry.minutes.trim() !== ""} style={{ minWidth: 160 }}>
+      <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.78rem", color: "var(--text-dim)" }}>
+        <input type="checkbox" checked={!!entry.redshirt} onChange={(ev) => onChange({ redshirt: ev.target.checked })} />
+        Redshirt
+      </label>
+      <select
+        value={entry.role}
+        onChange={(ev) => onChange({ role: ev.target.value })}
+        disabled={entry.minutes.trim() !== "" || entry.redshirt}
+        style={{ minWidth: 160 }}
+      >
         <option value="">Auto (current minutes, scaled)</option>
         {ROLE_NAMES.map((r) => (
           <option key={r} value={r}>
@@ -442,8 +703,9 @@ function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (p
         placeholder="Exact min."
         value={entry.minutes}
         onChange={(ev) => onChange({ minutes: ev.target.value })}
+        disabled={entry.redshirt}
         style={{ width: 90 }}
-        title="Exact minutes overrides the role dropdown when set."
+        title="Exact minutes overrides the role dropdown when set, and is kept fixed when the team's minutes get normalized to 200."
       />
       <button type="button" onClick={onRemove} className="btn" style={{ padding: "4px 10px" }} aria-label={`Remove ${entry.name}`}>
         Remove
@@ -455,62 +717,100 @@ function RealRow({ entry, onChange, onRemove }: { entry: RealEntry; onChange: (p
 function CustomRow({
   entry,
   archetypes,
-  defaultTier,
+  teamTier,
   onChange,
   onRemove,
 }: {
   entry: CustomEntry;
-  archetypes: FreshmanArchetypes | null;
-  defaultTier?: string;
+  archetypes: ClassArchetypes | null;
+  teamTier?: string;
   onChange: (patch: Partial<CustomEntry>) => void;
   onRemove: () => void;
 }) {
-  const [presetArchetype, setPresetArchetype] = useState<FreshmanArchetypeKey>("role_player");
+  const presetTier = teamTier && TEAM_TIERS.includes(teamTier as (typeof TEAM_TIERS)[number]) ? teamTier : undefined;
+  const cell = presetTier ? resolveCell(archetypes, entry) : undefined;
+  const line = presetLine(cell, entry.productionTier);
+  const hasData = !!line && (line.player_count ?? 0) > 0;
+  const positionMatched = !!cell && !!archetypes?.classes?.[entry.classYear]?.[presetTier ?? ""]?.[entry.archetype]
+    ?.positions?.[entry.position];
 
-  // Team level is no longer a separate choice -- it's always the already-
-  // picked target team's own tier (a coach picks a team before adding a
-  // freshman to it, so there's nothing to ask here). If somehow no tier
-  // can be resolved (defaultTier missing or not one of the 3 real tiers --
-  // shouldn't happen once a team is picked, but guarded anyway), the
-  // preset picker just has nothing to offer rather than falling back to a
-  // silently-wrong league default.
-  const presetTier = defaultTier && FRESHMAN_TIERS.includes(defaultTier as (typeof FRESHMAN_TIERS)[number]) ? defaultTier : undefined;
-  const cell = presetTier ? archetypes?.tiers?.[presetTier]?.[presetArchetype] : undefined;
-  const hasData = !!cell && cell.player_count > 0;
+  const entryTypeDef = ENTRY_TYPES.find((t) => t.key === entry.entryType) ?? ENTRY_TYPES[0];
 
   function applyPreset() {
-    if (!cell || !hasData) return;
+    if (!line || !hasData) return;
     onChange({
-      minutes: String(cell.minutes ?? 0),
-      ppg: String(cell.ppg ?? 0),
-      rpg: String(cell.rpg ?? 0),
-      apg: String(cell.apg ?? 0),
-      bpg: String(cell.bpg ?? 0),
-      spg: String(cell.spg ?? 0),
-      topg: String(cell.topg ?? 0),
+      minutes: String(line.minutes ?? 0),
+      ppg: String(line.ppg ?? 0),
+      rpg: String(line.rpg ?? 0),
+      apg: String(line.apg ?? 0),
+      bpg: String(line.bpg ?? 0),
+      spg: String(line.spg ?? 0),
+      topg: String(line.topg ?? 0),
     });
   }
 
+  // Minutes is never hand-typed for a preset-backed slot -- always follows
+  // whatever the coach's selectors currently resolve to, so it can't drift
+  // out of sync with a role/production tier picked afterward. Recomputed
+  // whenever the resolved line changes (including the very first render,
+  // so a freshly-added row isn't left at "Min: --" until a button click).
+  useEffect(() => {
+    if (line && hasData) {
+      onChange({ minutes: String(line.minutes ?? 0) });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [line?.minutes, hasData]);
+
+  function onEntryTypeChange(key: EntryTypeKey) {
+    const def = ENTRY_TYPES.find((t) => t.key === key) ?? ENTRY_TYPES[0];
+    const classYear = def.classYears.includes(entry.classYear) ? entry.classYear : def.classYears[0];
+    onChange({ entryType: key, classYear });
+  }
+
   return (
-    <div className="roster-row roster-row-custom">
+    <div className="roster-row roster-row-custom" style={{ opacity: entry.redshirt ? 0.6 : 1 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 6 }}>
-        <span className="pill pill-warn">Custom / not modeled</span>
+        <span className="pill pill-warn">
+          {entry.redshirt ? "Redshirt -- not counted" : entry.linkedPlayerId ? "Preset override" : "Custom / not modeled"}
+        </span>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.78rem", color: "var(--text-dim)" }}>
+          <input type="checkbox" checked={!!entry.redshirt} onChange={(ev) => onChange({ redshirt: ev.target.checked })} />
+          Redshirt
+        </label>
         <input
           type="text"
           placeholder="Name (e.g. incoming freshman)"
           value={entry.name}
           onChange={(ev) => onChange({ name: ev.target.value })}
           style={{ flex: "1 1 200px" }}
+          disabled={!!entry.linkedPlayerId}
         />
-        <select value={entry.classYear} onChange={(ev) => onChange({ classYear: ev.target.value })} style={{ width: 90 }}>
-          {["FR", "SO", "JR", "SR"].map((c) => (
+        <select
+          value={entry.entryType}
+          onChange={(ev) => onEntryTypeChange(ev.target.value as EntryTypeKey)}
+          style={{ width: 200 }}
+          aria-label="Entry type"
+        >
+          {ENTRY_TYPES.map((t) => (
+            <option key={t.key} value={t.key}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={entry.classYear}
+          onChange={(ev) => onChange({ classYear: ev.target.value as ClassYearKey })}
+          style={{ width: 90 }}
+          aria-label="Entering class"
+        >
+          {entryTypeDef.classYears.map((c) => (
             <option key={c} value={c}>
               {c}
             </option>
           ))}
         </select>
-        <select value={entry.position} onChange={(ev) => onChange({ position: ev.target.value })} style={{ width: 80 }}>
-          {["G", "F", "C"].map((p) => (
+        <select value={entry.position} onChange={(ev) => onChange({ position: ev.target.value as (typeof POSITIONS)[number] })} style={{ width: 80 }}>
+          {POSITIONS.map((p) => (
             <option key={p} value={p}>
               {p}
             </option>
@@ -534,18 +834,32 @@ function CustomRow({
         }}
       >
         <span style={{ fontSize: "0.8rem", color: "var(--text-dim)" }}>
-          Start from a real {presetTier ?? ""} freshman archetype:
+          Real {presetTier ?? ""} {entry.classYear} average:
         </span>
         <select
-          value={presetArchetype}
-          onChange={(ev) => setPresetArchetype(ev.target.value as FreshmanArchetypeKey)}
+          value={entry.archetype}
+          onChange={(ev) => onChange({ archetype: ev.target.value as FreshmanArchetypeKey })}
           style={{ width: 150 }}
-          aria-label="Freshman archetype"
+          aria-label="Role/archetype"
           disabled={!presetTier}
         >
-          {FRESHMAN_ARCHETYPE_KEYS.map((k) => (
+          {ARCHETYPE_KEYS.map((k) => (
             <option key={k} value={k}>
-              {archetypes?.labels?.[k] ?? k}
+              {archetypes?.archetype_labels?.[k] ?? k}
+            </option>
+          ))}
+        </select>
+        <select
+          value={entry.productionTier}
+          onChange={(ev) => onChange({ productionTier: ev.target.value as ProductionTierKey })}
+          style={{ width: 170 }}
+          aria-label="Production tier"
+          disabled={!presetTier || !cell?.tiers}
+          title={!cell?.tiers ? "Not enough real players in this exact bucket to split into tiers -- using one blended average instead." : undefined}
+        >
+          {PRODUCTION_TIER_KEYS.map((k) => (
+            <option key={k} value={k}>
+              {archetypes?.production_tier_labels?.[k] ?? k}
             </option>
           ))}
         </select>
@@ -554,19 +868,29 @@ function CustomRow({
         </button>
         <span style={{ fontSize: "0.78rem", color: "var(--text-dim)" }}>
           {!presetTier
-            ? "Pick a target team above to see real freshman averages for its level."
+            ? "Pick a target team above to see real averages for its level."
             : !archetypes
-              ? "Loading real freshman averages..."
+              ? "Loading real averages..."
               : hasData
-                ? `Real average of ${cell!.player_count} actual ${presetTier} freshmen this season: ${cell!.minutes} min, ${cell!.ppg} ppg, ${cell!.rpg} rpg, ${cell!.apg} apg.`
-                : "No real freshmen in this tier/archetype yet this season -- enter a line by hand below."}
+                ? `Real average of ${line!.player_count} actual ${entry.classYear}${
+                    positionMatched ? ` ${entry.position}` : ""
+                  } ${presetTier} players this season: ${line!.minutes} min, ${line!.ppg} ppg, ${line!.rpg} rpg, ${line!.apg} apg.${
+                    !positionMatched ? " (no position-specific sample -- any position, same class/tier/role.)" : ""
+                  }`
+                : "No real players in this class/tier/archetype yet this season -- enter a line by hand below."}
         </span>
       </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        {(["minutes", "ppg", "rpg", "apg", "bpg", "spg", "topg"] as const).map((field) => (
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div style={{ display: "flex", flexDirection: "column", fontSize: "0.75rem", gap: 2 }}>
+          Min
+          <span style={{ fontWeight: 600, padding: "6px 4px" }} title="Minutes always follow the role/production tier picked above -- not hand-entered.">
+            {entry.minutes || "--"}
+          </span>
+        </div>
+        {(["ppg", "rpg", "apg", "bpg", "spg", "topg"] as const).map((field) => (
           <label key={field} style={{ display: "flex", flexDirection: "column", fontSize: "0.75rem", gap: 2, minWidth: "auto" }}>
-            {field === "minutes" ? "Min" : field.toUpperCase()}
+            {field.toUpperCase()}
             <input
               type="number"
               min={0}
@@ -579,9 +903,9 @@ function CustomRow({
         ))}
       </div>
       <p className="section-note" style={{ marginTop: 6, marginBottom: 0 }}>
-        This line is used exactly as entered -- no model, no Summit Score. The preset above fills in a real
-        historical average as a starting point (still editable); it isn't a projection for this specific player
-        either.
+        This line is used exactly as entered -- no model, no Summit Score. Minutes always come from the role/
+        production tier picked above; the other stat fields start from that same real average (still editable) and
+        aren&apos;t a projection for this specific player.
       </p>
     </div>
   );
@@ -600,7 +924,29 @@ function minutesSourceLabel(p: { is_custom?: boolean; minutes_source: string; ro
   return p.minutes_source;
 }
 
-function ResultsCard({ sport, result }: { sport: string; result: BatchBuildResult }) {
+// Compact "2024-25: 13.6/2.0/1.8, Summit 93.2 · 2023-24: ..." rendering of
+// career_history (every season strictly before 2025-26 on record) -- the
+// fuller-history counterpart to a single previous_season lookup, since a
+// coach evaluating a real player for next season benefits from seeing
+// more than just one prior year when it's on record.
+function careerHistoryLine(history?: PriorSeasonLine[]): string {
+  if (!history || history.length === 0) return "--";
+  return history
+    .map((s) => `${s.season}: ${s.ppg ?? "--"}/${s.rpg ?? "--"}/${s.apg ?? "--"}, Summit ${s.hoop_score ?? "--"}${s.thin_sample ? " (ltd)" : ""}`)
+    .join(" · ");
+}
+
+function ResultsCard({
+  sport,
+  result,
+  onRunReport,
+  reportLoading,
+}: {
+  sport: string;
+  result: BatchBuildResult;
+  onRunReport: () => void;
+  reportLoading: boolean;
+}) {
   return (
     <div className="card" style={{ marginTop: 16 }}>
       <h2>Combined Team Total</h2>
@@ -638,16 +984,15 @@ function ResultsCard({ sport, result }: { sport: string; result: BatchBuildResul
               <th>Pos / Ht / Class</th>
               <th>Minutes source</th>
               <th>Proj. minutes</th>
-              <th>Proj. line</th>
-              <th>Current Summit</th>
+              <th>Proj. line (2026-27)</th>
+              <th>2025-26 Summit</th>
               <th>Proj. Summit</th>
-              <th>Previous Season</th>
+              <th>Earlier Seasons</th>
               <th>Confidence</th>
             </tr>
           </thead>
           <tbody>
             {result.players.map((p, i) => {
-              const prev = p.previous_season;
               const currentSummit = (p.current as { hoop_score?: number | null } | null)?.hoop_score;
               return (
                 <tr key={p.player.id ?? `custom-${i}`}>
@@ -671,17 +1016,7 @@ function ResultsCard({ sport, result }: { sport: string; result: BatchBuildResul
                   </td>
                   <td>{currentSummit != null ? currentSummit : "--"}</td>
                   <td>{p.projected.hoop_score != null ? p.projected.hoop_score : "--"}</td>
-                  <td style={{ fontSize: "0.85rem" }}>
-                    {prev ? (
-                      <>
-                        {prev.season} ({prev.team}): {prev.ppg ?? "--"}/{prev.rpg ?? "--"}/{prev.apg ?? "--"}, Summit{" "}
-                        {prev.hoop_score ?? "--"}
-                        {prev.thin_sample && <span> (limited sample)</span>}
-                      </>
-                    ) : (
-                      "--"
-                    )}
-                  </td>
+                  <td style={{ fontSize: "0.85rem" }}>{careerHistoryLine(p.career_history)}</td>
                   <td>
                     <span className={p.extreme_mismatch ? "pill pill-warn" : "pill pill-good"}>{p.confidence}</span>
                   </td>
@@ -692,10 +1027,230 @@ function ResultsCard({ sport, result }: { sport: string; result: BatchBuildResul
         </table>
       </div>
       <p className="section-note" style={{ marginTop: 8, marginBottom: 0 }}>
-        &quot;Current Summit&quot; and &quot;Previous Season&quot; are this player&apos;s actual real production -- not
-        projections. &quot;Proj. Summit&quot; is the only Summit Score number here that reflects the target team above;
-        a custom/coach-entered entry has neither a current nor a previous real season on record.
+        &quot;2025-26 Summit&quot; and &quot;Earlier Seasons&quot; are this player&apos;s actual real production, not
+        projections -- there&apos;s no 2026-27 data yet. &quot;Proj. Summit&quot; is the only Summit Score number here
+        that reflects the target team above; a custom/preset entry has neither.
       </p>
+      <button type="button" className="btn btn-primary" onClick={onRunReport} disabled={reportLoading} style={{ marginTop: 12 }}>
+        {reportLoading ? "Building scouting report..." : "Generate scouting report"}
+      </button>
+    </div>
+  );
+}
+
+// A typical starting 5 splits roughly 2 guards / 2 forwards / 1 center --
+// 40% / 40% / 20% of the floor. Used as the reference point for the
+// Roster Mix report below: not a hard rule (plenty of real, successful
+// lineups deviate from it), just a plain-language baseline for "guard
+// heavy" / "forward heavy" / "thin at center" framing. A share within 8
+// points of its target reads as balanced; further off reads as heavy or
+// thin.
+const POSITION_MIX_TARGET: Record<(typeof POSITIONS)[number], number> = { G: 40, F: 40, C: 20 };
+const POSITION_MIX_TOLERANCE = 8;
+
+// Position-balance check for a just-built roster ("guard heavy," "thin at
+// center," etc.) plus a couple of plain suggestions -- computed entirely
+// client-side from data the build result already carries (`p.player.
+// position`, `p.projected.minutes`), no extra fetch needed. Weighted by
+// projected minutes rather than a flat headcount, since a true center who
+// plays 4 minutes a game doesn't offset a real shortage of center
+// minutes the way one who plays 28 does. Real position data is a known
+// sparse column site-wide (see class_archetypes()'s docstring in
+// projection.py) -- any player with no position on record is counted and
+// shown separately rather than silently dropped or guessed at.
+function RosterMixCard({ result }: { result: BatchBuildResult }) {
+  const minutesByPos: Record<(typeof POSITIONS)[number], number> = { G: 0, F: 0, C: 0 };
+  const countByPos: Record<(typeof POSITIONS)[number], number> = { G: 0, F: 0, C: 0 };
+  let unknownCount = 0;
+  for (const p of result.players) {
+    const rawPos = p.player.position;
+    const pos = rawPos && (POSITIONS as readonly string[]).includes(rawPos) ? (rawPos as (typeof POSITIONS)[number]) : null;
+    const minutes = typeof p.projected.minutes === "number" ? p.projected.minutes : 0;
+    if (pos) {
+      minutesByPos[pos] += minutes;
+      countByPos[pos] += 1;
+    } else {
+      unknownCount += 1;
+    }
+  }
+  const totalKnownMinutes = POSITIONS.reduce((sum, pos) => sum + minutesByPos[pos], 0);
+
+  if (totalKnownMinutes <= 0) {
+    return (
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2>Roster Mix</h2>
+        <p className="section-note">
+          No player on this build has a recorded position, so a guard/forward/center mix can&apos;t be computed for
+          this roster.
+        </p>
+      </div>
+    );
+  }
+
+  const rows = POSITIONS.map((pos) => {
+    const share = (minutesByPos[pos] / totalKnownMinutes) * 100;
+    const diff = share - POSITION_MIX_TARGET[pos];
+    const status: "heavy" | "thin" | "balanced" =
+      diff > POSITION_MIX_TOLERANCE ? "heavy" : diff < -POSITION_MIX_TOLERANCE ? "thin" : "balanced";
+    return { pos, share, status, count: countByPos[pos] };
+  });
+
+  const posLabel: Record<(typeof POSITIONS)[number], string> = { G: "Guards", F: "Forwards", C: "Centers" };
+  const thin = rows.filter((r) => r.status === "thin");
+  const heavy = rows.filter((r) => r.status === "heavy");
+  const suggestions: string[] = [];
+  for (const r of thin) {
+    suggestions.push(
+      `Thin at ${posLabel[r.pos].toLowerCase()} (${r.share.toFixed(0)}% of known-position minutes, vs. a typical ~${
+        POSITION_MIX_TARGET[r.pos]
+      }%) -- consider adding a ${r.pos} via search, or a Freshman/JUCO/Lower-Level Transfer entry set to that position.`
+    );
+  }
+  if (heavy.length > 0 && thin.length > 0) {
+    suggestions.push(
+      `${heavy.map((r) => posLabel[r.pos]).join(" and ")} ${
+        heavy.length === 1 ? "is" : "are"
+      } carrying more of the floor than usual -- some of that could shift toward ${thin
+        .map((r) => posLabel[r.pos].toLowerCase())
+        .join(" and ")} if a better-balanced rotation is the goal.`
+    );
+  }
+  if (thin.length === 0 && heavy.length === 0) {
+    suggestions.push("This roster's guard/forward/center minutes split is close to a typical balanced rotation.");
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h2>Roster Mix</h2>
+      <p className="section-note">
+        Guard/forward/center split of this build&apos;s projected minutes, weighted by playing time (not just a
+        headcount) -- compared against a typical ~40/40/20 starting-lineup baseline.
+        {unknownCount > 0 &&
+          ` ${unknownCount} player${unknownCount === 1 ? " has" : "s have"} no position on record and ${
+            unknownCount === 1 ? "isn't" : "aren't"
+          } counted here.`}
+      </p>
+      <div className="stat-grid">
+        {rows.map((r) => (
+          <div className="stat-tile" key={r.pos}>
+            <div className="value">{r.share.toFixed(0)}%</div>
+            <div className="label">
+              {posLabel[r.pos]} ({r.count})
+              {r.status !== "balanced" && (
+                <>
+                  {" "}
+                  <span className={r.status === "thin" ? "pill pill-warn" : "pill pill-good"} style={{ fontSize: "0.65rem" }}>
+                    {r.status === "thin" ? "Thin" : "Heavy"}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <ul style={{ marginTop: 12, marginBottom: 0, paddingLeft: 20 }}>
+        {suggestions.map((s, i) => (
+          <li key={i} className="section-note" style={{ marginBottom: 4 }}>
+            {s}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// A minimal 3-series (built roster / national average / target team)
+// horizontal bar per category -- each bar's width is relative to the
+// largest of the 3 values in that row, so every category is readable
+// regardless of its own scale (points vs. turnovers vs. blocks).
+function CategoryBar({ label, value, max, color }: { label: string; value: number; max: number; color: string }) {
+  const pct = max > 0 ? Math.max(2, Math.min(100, (value / max) * 100)) : 0;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.78rem" }}>
+      <div style={{ width: 90, color: "var(--text-dim)", flexShrink: 0 }}>{label}</div>
+      <div style={{ flex: 1, background: "var(--bg-panel-2)", borderRadius: 4, height: 10, position: "relative" }}>
+        <div style={{ width: `${pct}%`, background: color, height: "100%", borderRadius: 4 }} />
+      </div>
+      <div style={{ width: 40, textAlign: "right", flexShrink: 0 }}>{value}</div>
+    </div>
+  );
+}
+
+function ScoutingReportCard({ report }: { report: ScoutingReport }) {
+  const pr = report.projected_record;
+  // Round wins and losses for display (a coach wants "15-14", not
+  // "14.9-14.1") -- losses is derived as games minus rounded wins rather
+  // than independently rounded, so the two always add back up to the real
+  // games-considered count instead of occasionally landing a game off
+  // (e.g. 14.9 + 14.1 independently rounding to 15 + 14 = 29 is fine, but
+  // 14.5 + 14.5 would round to 15 + 15 = 30, one more game than was
+  // actually played).
+  const roundedWins = pr ? Math.round(pr.projected_wins) : 0;
+  const roundedLosses = pr ? pr.games_considered - roundedWins : 0;
+  return (
+    <div className="card" style={{ marginTop: 16 }}>
+      <h2>Scouting Report</h2>
+      <p className="section-note">{report.note}</p>
+
+      <div style={{ display: "flex", gap: 24, flexWrap: "wrap", marginBottom: 16 }}>
+        <div>
+          <h3 style={{ marginBottom: 6 }}>Strengths</h3>
+          {report.strengths.map((c) => (
+            <div key={c.stat} className="pill pill-good" style={{ marginRight: 6, marginBottom: 6, display: "inline-block" }}>
+              {c.label} ({c.z != null && c.z > 0 ? "+" : ""}{c.z})
+            </div>
+          ))}
+        </div>
+        <div>
+          <h3 style={{ marginBottom: 6 }}>Needs</h3>
+          {report.weaknesses.map((c) => (
+            <div key={c.stat} className="pill pill-warn" style={{ marginRight: 6, marginBottom: 6, display: "inline-block" }}>
+              {c.label} ({c.z != null && c.z > 0 ? "+" : ""}{c.z})
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <h3>vs. 2025-26 National Average &amp; {report.target_team}</h3>
+      <div style={{ display: "flex", gap: 4, marginBottom: 4, fontSize: "0.72rem", color: "var(--text-dim)" }}>
+        <span style={{ marginLeft: 98 }}>🟢 This roster</span>
+        <span style={{ marginLeft: 12 }}>⚪ National avg</span>
+        <span style={{ marginLeft: 12 }}>🟡 {report.target_team}</span>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {report.categories.map((c) => {
+          const values = [c.built_value, c.national_mean ?? 0, c.target_team_value ?? 0];
+          const max = Math.max(...values, 1);
+          return (
+            <div key={c.stat}>
+              <CategoryBar label={c.label} value={c.built_value} max={max} color="var(--green)" />
+              {c.national_mean != null && <CategoryBar label="" value={c.national_mean} max={max} color="var(--text-dim)" />}
+              {c.target_team_value != null && <CategoryBar label="" value={c.target_team_value} max={max} color="var(--gold)" />}
+            </div>
+          );
+        })}
+      </div>
+
+      {pr && (
+        <>
+          <h3 style={{ marginTop: 20 }}>Projected Record ({pr.season_used} schedule)</h3>
+          <div className="stat-grid">
+            <div className="stat-tile">
+              <div className="value">{roundedWins}</div>
+              <div className="label">Proj. Wins</div>
+            </div>
+            <div className="stat-tile">
+              <div className="value">{roundedLosses}</div>
+              <div className="label">Proj. Losses</div>
+            </div>
+            <div className="stat-tile">
+              <div className="value">{pr.games_considered}</div>
+              <div className="label">Games</div>
+            </div>
+          </div>
+          <p className="section-note" style={{ marginTop: 8 }}>{pr.note}</p>
+        </>
+      )}
     </div>
   );
 }
@@ -730,6 +1285,7 @@ function SearchOnly({
       classYear?: string | null;
       teamName?: string | null;
       hoopScore?: number | null;
+      games?: number | null;
     }[]
   >([]);
   const [open, setOpen] = useState(false);
@@ -775,7 +1331,7 @@ function SearchOnly({
                 onPick({
                   id: r.id, label: r.label, sub: r.sub,
                   position: r.position, height: r.height, classYear: r.classYear,
-                  teamName: r.teamName, hoopScore: r.hoopScore,
+                  teamName: r.teamName, hoopScore: r.hoopScore, games: r.games,
                 });
                 setQuery("");
                 setResults([]);

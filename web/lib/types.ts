@@ -912,6 +912,11 @@ export interface BatchPlayerInput {
     bpg?: number;
     spg?: number;
     topg?: number;
+    // Set when this custom slot is actually a real player already in the
+    // cache with no previous-season production to project from (flagged,
+    // then overridden with a preset) -- keeps her name linkable to a real
+    // profile page. See CustomPlayerRequest.linked_player_id in api.py.
+    linked_player_id?: number;
   };
 }
 
@@ -942,20 +947,13 @@ export interface BatchBuildPlayer {
   // prior season that fell under the site's games/minutes floor, so the
   // UI can note it's a smaller sample rather than presenting it at face
   // value. See _previous_season_profile() in projection.py.
-  previous_season: {
-    season: string;
-    team: string;
-    games: number;
-    ppg: number | null;
-    rpg: number | null;
-    apg: number | null;
-    bpg: number | null;
-    spg: number | null;
-    topg: number | null;
-    ts_pct: number | null;
-    hoop_score: number | null;
-    thin_sample: boolean;
-  } | null;
+  previous_season: PriorSeasonLine | null;
+  // Every season strictly before this one on record, most recent first,
+  // capped at 3 -- fuller history than previous_season's single most
+  // recent year, for a coach weighing more than one prior year. Empty
+  // array (not present) for a custom slot. See _career_prior_seasons() in
+  // projection.py.
+  career_history?: PriorSeasonLine[];
   minutes_source: string;
   projected: Record<string, number | null>;
   confidence: string;
@@ -964,6 +962,21 @@ export interface BatchBuildPlayer {
   extreme_mismatch: boolean;
   role_applied?: { role: string; minutes: number; player_count?: number; note?: string };
   is_custom?: boolean;
+}
+
+export interface PriorSeasonLine {
+  season: string;
+  team: string;
+  games: number;
+  ppg: number | null;
+  rpg: number | null;
+  apg: number | null;
+  bpg: number | null;
+  spg: number | null;
+  topg: number | null;
+  ts_pct: number | null;
+  hoop_score: number | null;
+  thin_sample: boolean;
 }
 
 export interface BatchBuildResult {
@@ -983,13 +996,19 @@ export interface BatchBuildResult {
   };
 }
 
-// GET /freshman-archetypes -- real per-game averages of this season's
-// actual freshmen, grouped by team level (tiers) and by a minutes-based
-// archetype (day1_starter/role_player/depth_piece), for the Build-a-Team
-// custom-entry preset picker. A cell with no qualifying freshmen this
-// season comes back as { player_count: 0 } with no stat fields -- see
-// freshman_archetypes()'s docstring in projection.py.
-export interface FreshmanArchetypeCell {
+// GET /class-archetypes -- real per-game averages of this season's actual
+// players, grouped by class year (FR/SO/JR/SR), team level (tiers), a
+// minutes-based archetype (day1_starter/role_player/depth_piece), and
+// (when the sample's big enough) position (G/F/C) -- for Team Builder's
+// custom-entry preset picker (a true freshman, a JUCO transfer entering
+// as SO/JR, or a lower-level/D2/NAIA transfer entering at any class), each
+// optionally narrowed to a Great/Good/Average production tier within the
+// bucket. A cell with no qualifying players this season comes back as
+// { player_count: 0 } with no stat fields -- see class_archetypes()'s
+// docstring in projection.py. Position is a genuinely sparse column
+// site-wide (see phase 19's note), so `positions` is very often empty --
+// the frontend always falls back to the plain (position-blind) cell.
+export interface ClassArchetypeLine {
   player_count: number;
   minutes?: number;
   ppg?: number;
@@ -1000,9 +1019,58 @@ export interface FreshmanArchetypeCell {
   topg?: number;
 }
 
-export type FreshmanArchetypeKey = "day1_starter" | "role_player" | "depth_piece";
+export interface ClassArchetypeCell extends ClassArchetypeLine {
+  tiers?: Record<ProductionTierKey, ClassArchetypeLine> | null;
+  positions?: Record<string, ClassArchetypeCell>;
+}
 
-export interface FreshmanArchetypes {
-  labels: Record<FreshmanArchetypeKey, string>;
-  tiers: Record<string, Record<FreshmanArchetypeKey, FreshmanArchetypeCell>>;
+export type FreshmanArchetypeKey = "day1_starter" | "role_player" | "depth_piece";
+export type ProductionTierKey = "average" | "good" | "great";
+// Reuses the CLASS_YEARS/POSITIONS constants declared above (Leaderboard
+// filter dropdowns) -- same four class years, no need for a second copy.
+export type ClassYearKey = (typeof CLASS_YEARS)[number];
+
+export interface ClassArchetypes {
+  archetype_labels: Record<FreshmanArchetypeKey, string>;
+  production_tier_labels: Record<ProductionTierKey, string>;
+  classes: Record<ClassYearKey, Record<string, Record<FreshmanArchetypeKey, ClassArchetypeCell>>>;
+}
+
+// POST /team-builder/scouting-report -- a Team Builder scouting report for
+// an already-built roster. See team_builder_scouting_report()'s docstring
+// in projection.py for exactly what's an estimate here (built_rating_estimate,
+// projected_record) vs. real data (national_mean/target_team_value).
+export interface ScoutingReportCategory {
+  stat: string;
+  label: string;
+  built_value: number;
+  national_mean: number | null;
+  target_team_value: number | null;
+  z: number | null;
+}
+
+export interface ScoutingReportGame {
+  opponent: string;
+  opponent_team_id: number;
+  is_home: boolean;
+  win_prob: number;
+}
+
+export interface ScoutingReport {
+  target_team: string;
+  target_team_tier: string;
+  season_compared: string;
+  built_rating_estimate: number;
+  categories: ScoutingReportCategory[];
+  strengths: ScoutingReportCategory[];
+  weaknesses: ScoutingReportCategory[];
+  projected_record: {
+    season_used: string;
+    games_considered: number;
+    projected_wins: number;
+    projected_losses: number;
+    games: ScoutingReportGame[];
+    note: string;
+  } | null;
+  note: string;
 }

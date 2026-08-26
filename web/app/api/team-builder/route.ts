@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing or invalid sport." }, { status: 400 });
   }
 
-  let body: { target_team_id: number; players: BatchPlayerInput[] };
+  let body: { target_team_id: number; players: BatchPlayerInput[]; normalize_minutes?: boolean };
   try {
     body = await req.json();
   } catch {

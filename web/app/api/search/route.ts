@@ -43,6 +43,11 @@ export async function GET(req: NextRequest) {
           classYear: p.class_year,
           teamName: p.team_name ?? null,
           hoopScore: p.hoop_score ?? null,
+          // Team Builder (phase 26) flags a real player with zero games last
+          // season (an already-loaded signee/transfer with no production yet)
+          // so a coach can override her with a preset instead of hitting the
+          // model's "not enough data to project" error.
+          games: p.games,
         })),
       });
     }
