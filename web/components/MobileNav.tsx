@@ -22,12 +22,14 @@ import ThemeToggle from "./ThemeToggle";
 // still counts as a "safe to jump straight to when switching sport"
 // bare listing page.
 const SPORT_SECTIONS = [
-  "tpe", "team-fits", "compare", "data", "players", "teams", "conferences", "glossary", "about", "contact",
+  "tpe", "team-fits", "team-builder", "compare", "data", "players", "teams", "conferences", "glossary", "about",
+  "contact",
 ] as const;
 
 const LINKS: { section: (typeof SPORT_SECTIONS)[number]; label: string }[] = [
   { section: "tpe", label: "Transfer Projection" },
   { section: "team-fits", label: "Team Fits" },
+  { section: "team-builder", label: "Build-a-Team" },
   { section: "compare", label: "Compare" },
   { section: "data", label: "Data" },
   { section: "players", label: "Players" },

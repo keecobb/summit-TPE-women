@@ -716,6 +716,99 @@ def team_roles(conn, team_id):
     )
 
 
+# Freshman-archetype minutes thresholds for freshman_archetypes() below.
+# Collapses team_roles()'s 4 real-roster buckets (starter/sixth_man/
+# role_player/depth_piece) down to the 3 the Build-a-Team custom-entry
+# preset picker asks for -- "Day 1 Starter" folds in both starter- and
+# sixth-man-level minutes, since a true freshman archetype picker doesn't
+# need to distinguish "started every game" from "first player off the
+# bench," just "plays starter-level minutes" vs. "rotation piece" vs.
+# "bench depth." FRESHMAN_DEPTH_PIECE_MAX_MINUTES reuses the exact same
+# cutoff as ROLE_DEPTH_PIECE_MAX_MINUTES (10.0) so the two stay consistent
+# at the low end even though the high end collapses differently.
+FRESHMAN_DAY1_STARTER_MIN_MINUTES = 20.0
+FRESHMAN_DEPTH_PIECE_MAX_MINUTES = ROLE_DEPTH_PIECE_MAX_MINUTES
+FRESHMAN_ARCHETYPE_NAMES = ("day1_starter", "role_player", "depth_piece")
+FRESHMAN_ARCHETYPE_LABELS = {
+    "day1_starter": "Day 1 Starter", "role_player": "Role Player", "depth_piece": "Depth Piece",
+}
+
+
+def _freshman_archetype_bucket(avg_minutes):
+    if avg_minutes is None:
+        return None
+    if avg_minutes >= FRESHMAN_DAY1_STARTER_MIN_MINUTES:
+        return "day1_starter"
+    if avg_minutes < FRESHMAN_DEPTH_PIECE_MAX_MINUTES:
+        return "depth_piece"
+    return "role_player"
+
+
+_FRESHMAN_ARCHETYPE_STAT_COLS = ("avg_minutes", "ppg", "rpg", "apg", "bpg", "spg", "topg")
+
+
+def freshman_archetypes(conn):
+    """Real averages of this season's actual freshmen (class_year='FR'),
+    grouped by team level (High-Major/Mid-Major/Low-Major, via each
+    player's own current team's tier) and by a minutes-based archetype
+    bucket (Day 1 Starter / Role Player / Depth Piece -- see the
+    thresholds above). This is what the Build-a-Team page's "starting
+    point" preset picker for a freeform freshman/custom entry is built
+    from: real historical freshman production, not a hand-picked guess --
+    same "ground everything in real data" principle as every other number
+    on the site.
+
+    thin_sample rows are excluded (same convention as roster_avg_summit_score
+    in team_roles() above and every ranking/leaderboard endpoint) -- a
+    2-minute cameo's inflated per-game rate shouldn't drag a bucket's
+    average around. Zero-game placeholder rows have no avg_minutes to
+    bucket by anyway and fall out naturally (_freshman_archetype_bucket
+    returns None for them, and they're skipped).
+
+    Returns a dict keyed "High-Major"/"Mid-Major"/"Low-Major", each value a
+    dict keyed "day1_starter"/"role_player"/"depth_piece", each of THOSE a
+    dict with `player_count` and, when player_count > 0, mean `minutes`/
+    `ppg`/`rpg`/`apg`/`bpg`/`spg`/`topg` (each rounded to 1 decimal) --
+    or `player_count: 0` and no stat fields when no real freshman this
+    season falls in that (tier x archetype) cell.
+    """
+    rows = conn.execute(
+        "SELECT p.avg_minutes, p.ppg, p.rpg, p.apg, p.bpg, p.spg, p.topg, t.tier "
+        "FROM players p LEFT JOIN teams t ON p.team_id = t.team_id "
+        "WHERE p.class_year = 'FR' AND COALESCE(p.thin_sample, 0) = 0"
+    ).fetchall()
+
+    buckets = {tier: {name: [] for name in FRESHMAN_ARCHETYPE_NAMES} for tier in VALID_LEVELS}
+    for r in rows:
+        tier = r["tier"]
+        if tier not in buckets:
+            continue  # no/unrecognized tier on record -- can't place her in the HM/MM/LM grid
+        archetype = _freshman_archetype_bucket(r["avg_minutes"])
+        if archetype is None:
+            continue
+        buckets[tier][archetype].append(r)
+
+    result = {}
+    for tier, archetype_map in buckets.items():
+        result[tier] = {}
+        for archetype, players in archetype_map.items():
+            n = len(players)
+            if n == 0:
+                result[tier][archetype] = dict(player_count=0)
+                continue
+            result[tier][archetype] = dict(
+                player_count=n,
+                minutes=round(sum(p["avg_minutes"] for p in players) / n, 1),
+                ppg=round(sum(p["ppg"] for p in players) / n, 1),
+                rpg=round(sum(p["rpg"] for p in players) / n, 1),
+                apg=round(sum(p["apg"] for p in players) / n, 1),
+                bpg=round(sum((p["bpg"] or 0.0) for p in players) / n, 1),
+                spg=round(sum((p["spg"] or 0.0) for p in players) / n, 1),
+                topg=round(sum((p["topg"] or 0.0) for p in players) / n, 1),
+            )
+    return result
+
+
 # Maps team_roles()'s per-player `roster_roles[i]["role"]` label (a display
 # string: "Solidified Starter" / "Sixth Man" / "Role Player" / "Depth Piece"
 # / None) back to the ROLE_NAMES key it came from, so role_translation()
@@ -2166,36 +2259,108 @@ def leap_candidates(conn, team_id, role=None, minutes=None, limit=8, min_games=5
 
 
 # ---------- multi-target roster building ----------
- 
+
+def _custom_player_result(custom):
+    """Builds a project_player()-shaped result for a coach-entered "custom"
+    roster slot (see project_batch's docstring) -- an incoming freshman or
+    any other player with no real box-score history in this cache, so
+    nothing here can go through _core_projection()/the transfer-calibration
+    model at all. The coach types in an assumed per-game line directly
+    (e.g. "similar to a rotation freshman combo guard") and it's used
+    exactly as entered, with no model adjustment of any kind -- every field
+    that would normally come from real per-40 rates, a strength-gap
+    calculation, or the transfer-spread table is either omitted or
+    explicitly null/labeled below so this can never be mistaken for a
+    Summit-Score-backed projection by a consumer that isn't checking
+    `minutes_source`.
+
+    custom: {"name": str, "class_year": str|None, "position": str|None,
+             "minutes": float, "ppg": float, "rpg": float, "apg": float,
+             "bpg": float|None, "spg": float|None, "topg": float|None}
+    minutes/ppg/rpg/apg are required (defaulted to 0.0 by the API layer if
+    omitted); bpg/spg/topg stay null if not given, same convention as a
+    real player who's never recorded a block/steal.
+    """
+    name = (custom.get("name") or "").strip() or "Custom entry"
+    minutes = clamp(float(custom.get("minutes") or 0.0), 0.0, 40.0)
+    return dict(
+        player=dict(id=None, name=name, position=custom.get("position"),
+                    class_year=custom.get("class_year") or "Custom", current_team=None,
+                    current_division=None, current_tier=None, games=None, games_started=None, season=None),
+        current=None,
+        target=None,
+        minutes_source="custom_entry",
+        projected=dict(
+            minutes=round(minutes, 1),
+            ppg=round(float(custom.get("ppg") or 0.0), 1),
+            rpg=round(float(custom.get("rpg") or 0.0), 1),
+            apg=round(float(custom.get("apg") or 0.0), 1),
+            bpg=round(float(custom["bpg"]), 1) if custom.get("bpg") is not None else None,
+            spg=round(float(custom["spg"]), 1) if custom.get("spg") is not None else None,
+            topg=round(float(custom["topg"]), 1) if custom.get("topg") is not None else None,
+            ts_pct=None, fg_pct=None, tfg_pct=None,
+            hoop_score=None,
+        ),
+        projected_range=None,
+        projected_range_wide=None,
+        confidence="Coach-entered (not modeled)",
+        strength_gap=None,
+        gap_std=None,
+        extreme_mismatch=False,
+        is_custom=True,
+    )
+
+
 def project_batch(conn, target_team_id, requests):
-    """requests: [{"player_id": int, "minutes": float|None, "role": str|None}, ...]
-    Projects each one at target_team_id (same rules/priority as
+    """requests: [{"player_id": int, "minutes": float|None, "role": str|None,
+                    "custom": {...}|None}, ...]
+    Projects each real player at target_team_id (same rules/priority as
     project_player) and adds a simple combined total across all of them --
     useful for "I've got 2 scholarships and these 5 names" instead of
-    running /project one at a time and adding it up by hand.
- 
-    The combined total is a plain sum of individually-projected per-game
-    lines. It does NOT re-solve team Off/Def/Rat with these players
-    inserted -- that would need re-running the same iterative solver
-    build_cache.py uses over a hypothetical roster, which is a bigger,
-    separate feature. Treat the combined total as "what these players
-    would put up individually in this role mix," not a new team rating.
+    running /project one at a time and adding it up by hand. Also powers
+    the Build-a-Team page (a coach assembles a full ~10-12 player roster
+    against one target team and sees a combined team-style stat line).
+
+    An entry with `custom` set (and no player_id) bypasses the model
+    entirely -- see _custom_player_result()'s docstring. This is the
+    mechanism for adding an incoming freshman or any other player with no
+    real season in this cache: there's no per-40 production to project
+    from, so the coach's own assumed line is used as-is instead of
+    fabricating a number the model has no basis for. A request with
+    neither player_id nor custom is a plain input error, not a
+    ProjectionError against real data, and is reported the same way in
+    `errors` either way.
+
+    The combined total is a plain sum of individually-projected (or
+    custom-entered) per-game lines. It does NOT re-solve team Off/Def/Rat
+    with these players inserted -- that would need re-running the same
+    iterative solver build_cache.py uses over a hypothetical roster, which
+    is a bigger, separate feature. Treat the combined total as "what these
+    players would put up individually in this role mix," not a new team
+    rating.
     """
     target_team = get_team(conn, target_team_id)
     if target_team is None:
         raise ProjectionError(f"No team with id {target_team_id} in the current-season cache.")
- 
+
     results = []
     errors = []
     for req in requests:
+        custom = req.get("custom")
+        if custom:
+            results.append(_custom_player_result(custom))
+            continue
         pid = req.get("player_id")
+        if pid is None:
+            errors.append(dict(player_id=None, error="Each roster slot needs either a player_id or a custom entry."))
+            continue
         try:
             r = project_player(conn, pid, target_team_id,
                                 minutes_override=req.get("minutes"), role=req.get("role"))
             results.append(r)
         except ProjectionError as exc:
             errors.append(dict(player_id=pid, error=str(exc)))
- 
+
     totals = defaultdict(float)
     total_minutes = 0.0
     for r in results:

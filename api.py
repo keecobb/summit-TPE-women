@@ -58,9 +58,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
  
 from projection import (
-    CATEGORY_INFO, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES, VALID_LEVELS,
-    back_half_leaderboard, best_single_game_performances, conference_standings, find_fits, game_detail,
-    games_started_by_player, leaderboard, leap_candidates, opponent_split_leaderboard, optimal_lineup,
+    CATEGORY_INFO, FRESHMAN_ARCHETYPE_LABELS, LEADERBOARD_STATS, OPPONENT_SPLIT_STATS, ProjectionError, ROLE_NAMES,
+    VALID_LEVELS,
+    back_half_leaderboard, best_single_game_performances, conference_standings, find_fits, freshman_archetypes,
+    game_detail, games_started_by_player, leaderboard, leap_candidates, opponent_split_leaderboard, optimal_lineup,
     player_efficiency_quadrant, player_game_logs, player_splits, player_trajectory, project_batch, project_player,
     role_translation, season_jump_leaderboard, standout_projections, team_efficiency_quadrant, team_needs,
     team_roles, team_schedule,
@@ -222,6 +223,29 @@ def get_team_roles(sport: str,
     # exercising this endpoint against the live cache, not just reading
     # the code -- it 500'd for every team tested, not just some).
     return dict(team_name=team["name"], **roles)
+
+
+@router.get("/freshman-archetypes", dependencies=[Depends(require_api_key)])
+def get_freshman_archetypes(sport: str):
+    """Real averages of THIS season's actual freshmen, grouped by team
+    level (High-Major/Mid-Major/Low-Major, from each freshman's own
+    current team) and by a minutes-based archetype (Day 1 Starter/Role
+    Player/Depth Piece -- see FRESHMAN_DAY1_STARTER_MIN_MINUTES/
+    FRESHMAN_DEPTH_PIECE_MAX_MINUTES in projection.py for the exact
+    cutoffs). Powers the Build-a-Team page's freshman/custom-entry preset
+    picker: instead of typing a stat line from nothing, a coach can start
+    from "what did an actual Mid-Major Day 1 Starter freshman average this
+    season" and edit from there. thin_sample rows (short-sample cameos)
+    are excluded so a 2-minute appearance doesn't skew a bucket's average
+    -- same convention as every other real-data aggregate on the site.
+    Cells with zero qualifying freshmen this season come back as
+    `{"player_count": 0}` (no fabricated numbers) rather than being
+    omitted, so a UI can still show "no data yet" for that cell instead of
+    a cell that's just silently missing."""
+    conn = get_conn(sport)
+    archetypes = freshman_archetypes(conn)
+    conn.close()
+    return dict(labels=FRESHMAN_ARCHETYPE_LABELS, tiers=archetypes)
  
  
 
@@ -636,31 +660,67 @@ def get_team_leap_candidates(sport: str,
         conn.close()
 
 
+class CustomPlayerRequest(BaseModel):
+    # A coach-entered roster slot with no real player_id -- an incoming
+    # freshman, or anyone else with no box-score history in this cache. See
+    # _custom_player_result()'s docstring in projection.py: this line is
+    # used exactly as typed, with zero model involvement (no per-40 rates,
+    # no strength-gap adjustment, no transfer-spread range), so it's
+    # clearly labeled (minutes_source="custom_entry", confidence="Coach-
+    # entered (not modeled)") everywhere it flows.
+    name: str
+    class_year: str | None = None
+    position: str | None = None
+    minutes: float = 0.0
+    ppg: float = 0.0
+    rpg: float = 0.0
+    apg: float = 0.0
+    bpg: float | None = None
+    spg: float | None = None
+    topg: float | None = None
+
+
 class BatchPlayerRequest(BaseModel):
-    player_id: int
+    # Exactly one of player_id or custom should be set -- validated in the
+    # endpoint below (project_batch() also tolerates neither by reporting
+    # it as a per-slot error rather than failing the whole request, since
+    # this same model backs the multi-player Batch Scouting Board, which
+    # never sends `custom` at all).
+    player_id: int | None = None
     minutes: float | None = None
     role: str | None = None
- 
- 
+    custom: CustomPlayerRequest | None = None
+
+
 class BatchProjectRequest(BaseModel):
     target_team_id: int
     players: list[BatchPlayerRequest]
- 
- 
+
+
 @router.post("/project/batch", dependencies=[Depends(require_api_key)])
 def project_batch_endpoint(sport: str,
     body: BatchProjectRequest = Body(...)):
     """Project several players at the same target team in one call, plus
     a combined per-game total across all of them -- for evaluating a
-    shortlist of transfer targets against open roster spots at once,
-    instead of one /project call per name. See project_batch()'s
-    docstring for exactly what the combined total does and doesn't mean
-    (it's a sum of individual projections, not a re-solved team rating)."""
+    shortlist of transfer targets against open roster spots at once
+    (Batch Scouting Board), or assembling a full hypothetical roster
+    (Build-a-Team) instead of one /project call per name. See
+    project_batch()'s docstring for exactly what the combined total does
+    and doesn't mean (it's a sum of individual projections, not a
+    re-solved team rating), and for how a `custom` entry (no player_id --
+    a freshman or other player with no real season in this cache) bypasses
+    the model entirely and uses the coach's own entered line as-is."""
     conn = get_conn(sport)
     try:
         result = project_batch(
             conn, body.target_team_id,
-            [dict(player_id=p.player_id, minutes=p.minutes, role=p.role) for p in body.players],
+            [
+                dict(
+                    player_id=p.player_id, minutes=p.minutes, role=p.role,
+                    custom=p.custom.model_dump() if p.custom is not None else None,
+                )
+                for p in body.players
+            ],
         )
     except ProjectionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

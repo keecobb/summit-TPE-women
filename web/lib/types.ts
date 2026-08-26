@@ -885,3 +885,98 @@ export interface OptimalLineup {
   notes: string[];
   method_note: string;
 }
+
+// -------- Build-a-Team (phase 23) --------
+
+// One roster slot as sent to POST /project/batch -- exactly one of
+// player_id or custom is set. See _custom_player_result()'s docstring in
+// projection.py for what a `custom` slot means (a coach-entered line for
+// an incoming freshman or anyone else with no real season in the cache --
+// bypasses the projection model entirely).
+export interface BatchPlayerInput {
+  player_id?: number;
+  minutes?: number;
+  role?: string;
+  custom?: {
+    name: string;
+    class_year?: string;
+    position?: string;
+    minutes: number;
+    ppg: number;
+    rpg: number;
+    apg: number;
+    bpg?: number;
+    spg?: number;
+    topg?: number;
+  };
+}
+
+// One player's line in the /project/batch response -- current/target/
+// projected_range(_wide) are null for a custom (coach-entered, unmodeled)
+// slot; is_custom marks those explicitly rather than relying on player.id
+// being null.
+export interface BatchBuildPlayer {
+  player: {
+    id: number | null;
+    name: string;
+    position: string | null;
+    class_year: string | null;
+    current_team: string | null;
+    current_division: string | null;
+    current_tier: string | null;
+    games: number | null;
+    games_started: number | null;
+    season: string | null;
+  };
+  current: Record<string, number> | null;
+  target: { team: string; division: string; tier: string; current_rating: number } | null;
+  minutes_source: string;
+  projected: Record<string, number | null>;
+  confidence: string;
+  strength_gap: number | null;
+  gap_std: number | null;
+  extreme_mismatch: boolean;
+  role_applied?: { role: string; minutes: number; player_count?: number; note?: string };
+  is_custom?: boolean;
+}
+
+export interface BatchBuildResult {
+  target: { team: string; division: string; tier: string; current_rating: number };
+  players: BatchBuildPlayer[];
+  errors: { player_id: number | null; error: string }[];
+  combined: {
+    player_count: number;
+    total_minutes: number;
+    total_minutes_note: string;
+    ppg?: number;
+    rpg?: number;
+    apg?: number;
+    bpg?: number;
+    spg?: number;
+    topg?: number;
+  };
+}
+
+// GET /freshman-archetypes -- real per-game averages of this season's
+// actual freshmen, grouped by team level (tiers) and by a minutes-based
+// archetype (day1_starter/role_player/depth_piece), for the Build-a-Team
+// custom-entry preset picker. A cell with no qualifying freshmen this
+// season comes back as { player_count: 0 } with no stat fields -- see
+// freshman_archetypes()'s docstring in projection.py.
+export interface FreshmanArchetypeCell {
+  player_count: number;
+  minutes?: number;
+  ppg?: number;
+  rpg?: number;
+  apg?: number;
+  bpg?: number;
+  spg?: number;
+  topg?: number;
+}
+
+export type FreshmanArchetypeKey = "day1_starter" | "role_player" | "depth_piece";
+
+export interface FreshmanArchetypes {
+  labels: Record<FreshmanArchetypeKey, string>;
+  tiers: Record<string, Record<FreshmanArchetypeKey, FreshmanArchetypeCell>>;
+}
